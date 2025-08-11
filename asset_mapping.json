@@ -1,0 +1,191 @@
+
+{
+    "_meta": {
+        "description": "Global asset field mapping configuration",
+        "version": "1.0",
+        "last_updated": "2025-08-07"
+    },
+    "field_mappings": {
+        "timestamp": "last_scanned",
+        "status": "status_code", 
+        "url": "url",
+        "time": "response_time",
+        "title": "title",
+        "tech_stack": "tech_stack",
+        "size": "content_length",
+        "method": "discovery_method",
+        "screenshot": "screenshot_path",
+        "response": "response_body",
+        "source": "host",
+        "id": "id",
+        "takeover_risk": "subdomain_takeover_risk",
+        "discovered_params": "discovered_parameters",
+        "api_endpoints": "discovered_apis",
+        "security_headers": "security_headers_analysis",
+        "tech_versions": "technology_versions",
+        "dns_records": "dns_enumeration_data",
+        "asn_info": "asn_info"
+    },
+    "display_config": {
+        "date_format": "MM/DD/YY HH:mm:ss",
+        "size_format": "bytes_human",
+        "time_format": "milliseconds",
+        "screenshot_endpoint": "/api/screenshots/",
+        "default_values": {
+            "status": "-",
+            "time": "-",
+            "size": "-",
+            "source": "-",
+            "title": "Unknown",
+            "tech_stack": "-",
+            "method": "Legacy",
+            "screenshot": "NONE",
+            "response": "No response captured",
+            "takeover_risk": "SAFE",
+            "discovered_params": "[]",
+            "api_endpoints": "[]",
+            "security_headers": "{}",
+            "tech_versions": "{}",
+            "dns_records": "{}",
+            "asn_info": "{}"
+        }
+    },
+    "status_classes": {
+        "200": "status-success",
+        "3xx": "status-redirect", 
+        "403": "status-forbidden",
+        "404": "status-not-found",
+        "4xx": "status-client-error",
+        "5xx": "status-server-error",
+        "default": "status-unknown"
+    },
+    "method_display": {
+        "cert_transparency": {
+            "icon": "🔍",
+            "label": "CT Discovery",
+            "color": "#94a3b8"
+        },
+        "subdomain_bruteforce": {
+            "icon": "🔍",
+            "label": "Bruteforce",
+            "color": "#fbbf24"
+        },
+        "scanned": {
+            "icon": "✅",
+            "label": "Scanned",
+            "color": "#4ade80"
+        },
+        "discovered": {
+            "icon": "📋",
+            "label": "Discovered", 
+            "color": "#fbbf24"
+        }
+    },
+    "vulnerability_mappings": {
+        "id": "id",
+        "asset_id": "asset_id", 
+        "vuln_type": "type",
+        "severity": "severity",
+        "description": "description",
+        "evidence": "evidence",
+        "payload": "payload",
+        "confidence": "confidence",
+        "discovered_at": "detected_at",
+        "asset_url": "asset_url"
+    },
+    "vulnerability_display": {
+        "severity_colors": {
+            "CRITICAL": "#dc2626",
+            "HIGH": "#ea580c", 
+            "MEDIUM": "#ca8a04",
+            "LOW": "#16a34a",
+            "INFO": "#0ea5e9"
+        },
+        "severity_icons": {
+            "CRITICAL": "🚨",
+            "HIGH": "⚠️",
+            "MEDIUM": "⚡",
+            "LOW": "ℹ️",
+            "INFO": "📋"
+        },
+        "type_display": {
+            "xss": {
+                "icon": "🎯",
+                "label": "Cross-Site Scripting",
+                "color": "#dc2626"
+            },
+            "sqli": {
+                "icon": "💉", 
+                "label": "SQL Injection",
+                "color": "#dc2626"
+            },
+            "lfi": {
+                "icon": "📁",
+                "label": "Local File Inclusion", 
+                "color": "#ea580c"
+            },
+            "rfi": {
+                "icon": "🌐",
+                "label": "Remote File Inclusion",
+                "color": "#ea580c"
+            },
+            "csrf": {
+                "icon": "🔄",
+                "label": "Cross-Site Request Forgery",
+                "color": "#ca8a04"
+            },
+            "cors": {
+                "icon": "🌐",
+                "label": "CORS Misconfiguration",
+                "color": "#ea580c"
+            },
+            "xxe": {
+                "icon": "📄",
+                "label": "XML External Entity",
+                "color": "#dc2626"
+            },
+            "ssrf": {
+                "icon": "🔗",
+                "label": "Server-Side Request Forgery",
+                "color": "#dc2626"
+            },
+            "deserialization": {
+                "icon": "📦",
+                "label": "Unsafe Deserialization",
+                "color": "#dc2626"
+            },
+            "prototype_pollution": {
+                "icon": "🔧",
+                "label": "Prototype Pollution",
+                "color": "#ca8a04"
+            },
+            "graphql_injection": {
+                "icon": "🎯",
+                "label": "GraphQL Injection",
+                "color": "#ea580c"
+            },
+            "client_side_xss": {
+                "icon": "🖥️",
+                "label": "Client-Side XSS",
+                "color": "#dc2626"
+            },
+            "sensitive_data_exposure": {
+                "icon": "🔐",
+                "label": "Sensitive Data Exposure",
+                "color": "#dc2626"
+            },
+            "client_side_security_issue": {
+                "icon": "⚠️",
+                "label": "Client-Side Security Issue",
+                "color": "#ca8a04"
+            }
+        }
+    },
+    "activity_mappings": {
+        "id": "id",
+        "timestamp": "timestamp", 
+        "action": "action",
+        "details": "details",
+        "created_at": "created_at"
+    }
+}
