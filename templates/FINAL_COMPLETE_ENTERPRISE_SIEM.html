@@ -1,0 +1,2466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise Security Operations Center</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        /* Enterprise Header */
+        .siem-header {
+            background: #2d2d2d;
+            border-bottom: 2px solid #404040;
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 50px;
+        }
+
+        .siem-title {
+            color: #ffffff;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .system-stats {
+            display: flex;
+            gap: 20px;
+            font-size: 11px;
+            color: #ccc;
+        }
+
+        .stat {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .stat-label {
+            color: #999;
+            font-size: 9px;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: #fff;
+        }
+
+        /* Live Notification Popup System */
+        .notification-container {
+            position: fixed;
+            top: 60px;
+            right: 20px;
+            z-index: 9999;
+            pointer-events: none;
+        }
+
+        .notification-popup {
+            background: #2d4a2b;
+            border-left: 4px solid #4caf50;
+            color: white;
+            padding: 12px 16px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            font-size: 12px;
+            min-width: 300px;
+            max-width: 400px;
+            pointer-events: auto;
+            opacity: 0;
+            transform: translateX(100%);
+            transition: all 0.3s ease;
+        }
+
+        .notification-popup.show {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .notification-popup.error {
+            background: #4a2d2d;
+            border-left-color: #f44336;
+        }
+
+        .notification-popup.warning {
+            background: #4a3d2d;
+            border-left-color: #ff9800;
+        }
+
+        .notification-popup.discovery {
+            background: #2d3a4a;
+            border-left-color: #2196f3;
+        }
+
+        .notification-popup.vulnerability {
+            background: #4a2d4a;
+            border-left-color: #e91e63;
+        }
+
+        .notification-header {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .notification-details {
+            font-size: 11px;
+            opacity: 0.8;
+        }
+
+        .notification-close {
+            position: absolute;
+            top: 4px;
+            right: 8px;
+            background: none;
+            border: none;
+            color: white;
+            cursor: pointer;
+            font-size: 16px;
+            opacity: 0.7;
+        }
+
+        .notification-close:hover {
+            opacity: 1;
+        }
+
+        /* Enterprise Navigation */
+        .siem-nav {
+            background: #262626;
+            border-bottom: 1px solid #404040;
+            display: flex;
+            padding: 0;
+        }
+
+        .siem-nav-item {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            color: #ccc;
+            font-size: 12px;
+            cursor: pointer;
+            border-right: 1px solid #404040;
+            transition: all 0.2s;
+        }
+
+        .siem-nav-item:hover {
+            background: #333;
+            color: #fff;
+        }
+
+        .siem-nav-item.active {
+            background: #0066cc;
+            color: #fff;
+        }
+
+        /* Main Content Layout */
+        .siem-main {
+            display: flex;
+            height: calc(100vh - 101px);
+        }
+
+        .content-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .side-panel {
+            width: 300px;
+            background: #262626;
+            border-left: 1px solid #404040;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Search/Filter Bar */
+        .siem-search-bar {
+            background: #2d2d2d;
+            padding: 12px 16px;
+            border-bottom: 1px solid #404040;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .siem-search-input {
+            flex: 1;
+            min-width: 200px;
+            background: #1a1a1a;
+            border: 1px solid #555;
+            color: #fff;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .siem-btn {
+            background: #404040;
+            border: 1px solid #555;
+            color: #fff;
+            padding: 6px 12px;
+            font-size: 11px;
+            cursor: pointer;
+            border-radius: 2px;
+            white-space: nowrap;
+        }
+
+        .siem-btn:hover {
+            background: #555;
+        }
+
+        .siem-btn.primary {
+            background: #0066cc;
+            border-color: #0066cc;
+        }
+
+        .siem-btn.danger {
+            background: #dc2626;
+            border-color: #dc2626;
+        }
+
+        .siem-btn.success {
+            background: #16a34a;
+            border-color: #16a34a;
+        }
+
+        /* Alert Styles */
+        .alert {
+            padding: 12px;
+            margin: 12px 0;
+            border-radius: 4px;
+            border: 1px solid;
+        }
+
+        .alert-warning {
+            background: rgba(251, 191, 36, 0.1);
+            border-color: #fbbf24;
+            color: #fbbf24;
+        }
+
+        .alert-error {
+            background: rgba(239, 68, 68, 0.1);
+            border-color: #ef4444;
+            color: #ef4444;
+        }
+
+        .alert-success {
+            background: rgba(34, 197, 94, 0.1);
+            border-color: #22c55e;
+            color: #22c55e;
+        }
+
+        /* Stats Bar */
+        .siem-stats {
+            background: #2d2d2d;
+            padding: 8px 16px;
+            border-bottom: 1px solid #404040;
+            display: flex;
+            gap: 24px;
+            font-size: 11px;
+            flex-wrap: wrap;
+        }
+
+        .stat-item {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .stat-label {
+            color: #999;
+        }
+
+        .stat-value {
+            color: #fff;
+            font-weight: 600;
+        }
+
+        /* Content Container */
+        .content-container {
+            flex: 1;
+            overflow: auto;
+            background: #1a1a1a;
+            padding: 16px;
+        }
+
+        /* Enterprise Table */
+        .siem-table-container {
+            overflow: auto;
+            background: #1a1a1a;
+            border: 1px solid #404040;
+            border-radius: 4px;
+        }
+
+        .siem-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            min-width: 1200px;
+        }
+
+        .siem-table th {
+            background: #2d2d2d;
+            border-bottom: 2px solid #404040;
+            border-right: 1px solid #333;
+            padding: 8px 12px;
+            text-align: left;
+            color: #fff;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .siem-table th:hover {
+            background: #404040;
+        }
+
+        .siem-table th.sortable::after {
+            content: ' ⇅';
+            opacity: 0.5;
+        }
+
+        .siem-table th.sort-asc::after {
+            content: ' ↑';
+            opacity: 1;
+            color: #0066cc;
+        }
+
+        .siem-table th.sort-desc::after {
+            content: ' ↓';
+            opacity: 1;
+            color: #0066cc;
+        }
+
+        .siem-table td {
+            border-bottom: 1px solid #333;
+            border-right: 1px solid #333;
+            padding: 6px 12px;
+            vertical-align: top;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .siem-table tr:hover {
+            background: #262626;
+        }
+
+        /* Status Color Coding */
+        .status-200 { color: #4ade80; }
+        .status-301, .status-302, .status-307, .status-308 { color: #fbbf24; }
+        .status-403 { color: #f87171; }
+        .status-404 { color: #a78bfa; }
+        .status-500, .status-502, .status-503 { color: #ef4444; }
+        .status-default { color: #94a3b8; }
+
+        /* Vulnerability Severity Colors */
+        .vuln-critical, .status-critical { 
+            color: #ef4444; 
+            background: rgba(239, 68, 68, 0.1);
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-weight: 600;
+        }
+        .vuln-high, .status-high { 
+            color: #f97316; 
+            background: rgba(249, 115, 22, 0.1);
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-weight: 600;
+        }
+        .vuln-medium, .status-medium { 
+            color: #eab308; 
+            background: rgba(234, 179, 8, 0.1);
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-weight: 600;
+        }
+        .vuln-low, .status-low { 
+            color: #22c55e; 
+            background: rgba(34, 197, 94, 0.1);
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-weight: 600;
+        }
+
+        /* Screenshot Indicator */
+        .screenshot-indicator {
+            background: #0066cc;
+            color: #fff;
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-size: 9px;
+            cursor: pointer;
+            text-decoration: none;
+        }
+
+        .screenshot-indicator:hover {
+            background: #0080ff;
+        }
+
+        .no-screenshot {
+            color: #666;
+            font-size: 9px;
+        }
+
+        /* Asset URL Links */
+        .asset-url {
+            color: #60a5fa;
+            text-decoration: none;
+            max-width: 300px;
+            display: inline-block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .asset-url:hover {
+            color: #93c5fd;
+            text-decoration: underline;
+        }
+
+        /* Tech Stack */
+        .tech-stack {
+            color: #a78bfa;
+            font-size: 10px;
+        }
+
+        /* New Discovery Indicator */
+        .newly-discovered {
+            background: #dc2626;
+            color: #fff;
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        /* Domain Management */
+        .domain-list {
+            background: #262626;
+            border: 1px solid #404040;
+            border-radius: 4px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+
+        .domain-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #333;
+        }
+
+        .domain-item:last-child {
+            border-bottom: none;
+        }
+
+        .remove-btn {
+            background: #dc2626;
+            border: none;
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 10px;
+        }
+
+        .remove-btn:hover {
+            background: #b91c1c;
+        }
+
+        /* Side Panel Sections */
+        .panel-section {
+            border-bottom: 1px solid #404040;
+            padding: 16px;
+        }
+
+        .panel-title {
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .system-metric {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 11px;
+        }
+
+        .metric-label {
+            color: #999;
+        }
+
+        .metric-value {
+            color: #fff;
+            font-family: 'Courier New', monospace;
+        }
+
+        .progress-bar {
+            height: 4px;
+            background: #333;
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+
+        .progress-normal { background: #4ade80; }
+        .progress-warning { background: #fbbf24; }
+        .progress-critical { background: #ef4444; }
+
+        /* Live Activity Feed */
+        .activity-feed {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .activity-item {
+            padding: 8px;
+            border-bottom: 1px solid #333;
+            font-size: 10px;
+            font-family: 'Courier New', monospace;
+            position: relative;
+            transition: background-color 0.3s ease;
+        }
+
+        .activity-item.activity-new {
+            background-color: rgba(34, 197, 94, 0.1);
+            border-left: 3px solid #22c55e;
+            padding-left: 12px;
+        }
+
+        .activity-new-indicator {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #22c55e;
+            font-size: 10px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .activity-timestamp {
+            color: #666;
+        }
+
+        .activity-type {
+            color: #0066cc;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .activity-message {
+            color: #ccc;
+            margin-top: 2px;
+        }
+
+        /* Scanner Status */
+        .scanner-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            font-size: 10px;
+        }
+
+        .scanner-name {
+            color: #ccc;
+        }
+
+        .scanner-status {
+            padding: 2px 6px;
+            border-radius: 2px;
+            font-size: 9px;
+            text-transform: uppercase;
+        }
+
+        .status-running { background: #4ade80; color: #000; }
+        .status-idle { background: #666; color: #fff; }
+        .status-error { background: #ef4444; color: #fff; }
+
+        /* Modal for Screenshot Viewing */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+        }
+
+        .modal-content {
+            position: relative;
+            margin: 2% auto;
+            padding: 0;
+            width: 90%;
+            max-width: 1200px;
+            background: #2d2d2d;
+            border-radius: 4px;
+        }
+
+        .modal-header {
+            padding: 16px;
+            background: #404040;
+            border-radius: 4px 4px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: #fff;
+            font-size: 24px;
+            cursor: pointer;
+        }
+
+        .modal-body {
+            padding: 16px;
+            text-align: center;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .screenshot-img {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #555;
+            display: block;
+            margin: 0 auto;
+        }
+
+        /* Loading States */
+        .loading {
+            color: #999;
+            text-align: center;
+            padding: 20px;
+            font-family: 'Courier New', monospace;
+        }
+
+        /* Input Styles */
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            color: #ccc;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        .form-input {
+            width: 100%;
+            background: #1a1a1a;
+            border: 1px solid #555;
+            color: #fff;
+            padding: 8px 12px;
+            font-size: 12px;
+            border-radius: 2px;
+        }
+
+        .form-input:focus {
+            border-color: #0066cc;
+            outline: none;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 1024px) {
+            .side-panel {
+                width: 250px;
+            }
+            
+            .siem-stats {
+                gap: 12px;
+            }
+        }
+
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #404040;
+            border-radius: 2px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <!-- Enterprise SIEM Header -->
+    <header class="siem-header">
+        <h1 class="siem-title">Enterprise Security Operations Center</h1>
+        <div class="system-stats">
+            <div class="stat">
+                <div class="stat-label">CPU</div>
+                <div class="stat-value" id="cpu-usage">--%</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">RAM</div>
+                <div class="stat-value" id="ram-usage">--%</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">PROCESSES</div>
+                <div class="stat-value" id="process-count">--</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">CONNECTIONS</div>
+                <div class="stat-value" id="network-connections">--</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">LAST UPDATE</div>
+                <div class="stat-value" id="last-update">--:--:--</div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Live Notification Container -->
+    <div class="notification-container" id="notification-container">
+        <!-- Notifications will be dynamically inserted here -->
+    </div>
+
+    <!-- Enterprise Navigation -->
+    <nav class="siem-nav">
+        <button class="siem-nav-item active" onclick="showView('assets')">Asset Inventory</button>
+        <button class="siem-nav-item" onclick="showView('scope')">Scope Management</button>
+        <button class="siem-nav-item" onclick="showView('vulnerabilities')">Vulnerabilities</button>
+        <button class="siem-nav-item" onclick="showView('ml-xss')">ML XSS Results</button>
+        <button class="siem-nav-item" onclick="showView('bypasses')">403 Bypasses</button>
+    </nav>
+
+    <div class="siem-main">
+        <div class="content-area">
+            
+            <!-- Assets View -->
+            <div id="assets-view">
+                <!-- Search Bar -->
+                <div class="siem-search-bar">
+                    <input type="text" class="siem-search-input" id="asset-search" 
+                           placeholder="Search assets (e.g., host:*.temu.com status:200 tech:nginx)" 
+                           onkeypress="handleSearchKeypress(event)">
+                    <button class="siem-btn primary" onclick="searchAssets()">Search</button>
+                    <button class="siem-btn" onclick="clearSearch()">Clear</button>
+                    <button class="siem-btn success" onclick="showScannedOnly()">Scanned Only</button>
+                    <button class="siem-btn" onclick="refreshAssets()">Refresh</button>
+                    <button class="siem-btn" onclick="exportData('assets')">Export CSV</button>
+                    <button class="siem-btn" onclick="captureScreenshots()">Capture Screenshots</button>
+                </div>
+
+                <!-- Stats Bar -->
+                <div class="siem-stats">
+                    <div class="stat-item">
+                        <span class="stat-label">Total Assets:</span>
+                        <span class="stat-value" id="total-assets">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label" title="Assets that have been HTTP scanned">Scanned:</span>
+                        <span class="stat-value" style="color: #4ade80;" id="scanned-assets">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Active (200):</span>
+                        <span class="stat-value status-200" id="active-assets">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Forbidden (403):</span>
+                        <span class="stat-value status-403" id="forbidden-assets">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Redirects (3xx):</span>
+                        <span class="stat-value status-301" id="redirect-assets">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">New Today:</span>
+                        <span class="stat-value" id="new-today">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Screenshots:</span>
+                        <span class="stat-value" id="screenshot-count">0</span>
+                    </div>
+                </div>
+
+                <!-- Enterprise Table -->
+                <div class="siem-table-container">
+                    <table class="siem-table">
+                        <thead>
+                            <tr>
+                                <th class="sortable" data-sort="timestamp" style="width: 140px;">TIMESTAMP</th>
+                                <th class="sortable" data-sort="status_code" style="width: 60px;">STATUS</th>
+                                <th class="sortable" data-sort="url" style="width: 250px;">URL</th>
+                                <th class="sortable" data-sort="response_time" style="width: 80px;">TIME</th>
+                                <th class="sortable" data-sort="title" style="width: 180px;">TITLE</th>
+                                <th class="sortable" data-sort="tech_stack" style="width: 150px;">TECH STACK</th>
+                                <th class="sortable" data-sort="subdomain_takeover_risk" style="width: 100px;">TAKEOVER</th>
+                                <th class="sortable" data-sort="discovered_parameters" style="width: 100px;">PARAMS</th>
+                                <th class="sortable" data-sort="technology_versions" style="width: 120px;">VERSIONS</th>
+                                <th class="sortable" data-sort="asn_info" style="width: 100px;">ASN</th>
+                                <th class="sortable" data-sort="content_length" style="width: 80px;">SIZE</th>
+                                <th class="sortable" data-sort="discovery_method" style="width: 120px;">METHOD</th>
+                                <th style="width: 80px;">SCREENSHOT</th>
+                                <th style="width: 80px;">RESPONSE</th>
+                                <th style="width: 60px;">NEW</th>
+                                <th style="width: 120px; max-width: 120px;">SOURCE</th>
+                            </tr>
+                        </thead>
+                        <tbody id="assets-table-body">
+                            <tr>
+                                <td colspan="12" class="loading">Loading asset data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Scope Management View -->
+            <div id="scope-view" style="display: none;">
+                <div class="siem-search-bar">
+                    <button class="siem-btn primary" onclick="loadScope()">Refresh Scope</button>
+                    <button class="siem-btn success" onclick="showAddDomainForm()">Add Domain</button>
+                </div>
+
+                <div class="content-container">
+                    <div class="alert alert-warning">
+                        <strong>⚠️ CRITICAL LEGAL WARNING:</strong> Only test targets you have explicit written permission to scan. Unauthorized testing is illegal!
+                    </div>
+
+                    <div id="add-domain-form" style="display: none; margin-bottom: 20px;">
+                        <div class="form-group">
+                            <label class="form-label">Domain:</label>
+                            <input type="text" class="form-input" id="new-domain" placeholder="temu.com">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Type:</label>
+                            <select class="form-input" id="domain-type">
+                                <option value="authorized">Authorized Domain</option>
+                                <option value="wildcard">Wildcard Domain</option>
+                            </select>
+                        </div>
+                        <div>
+                            <button class="siem-btn primary" onclick="addDomain()">Add Domain</button>
+                            <button class="siem-btn" onclick="hideAddDomainForm()">Cancel</button>
+                        </div>
+                        <div id="add-domain-result"></div>
+                    </div>
+
+                    <div class="domain-list">
+                        <h4 style="color: #fff; margin-bottom: 12px;">Authorized Domains (<span id="authorized-count">0</span>)</h4>
+                        <div id="authorized-domains">
+                            <div class="loading">Loading authorized domains...</div>
+                        </div>
+                    </div>
+
+                    <div class="domain-list">
+                        <h4 style="color: #fff; margin-bottom: 12px;">Wildcard Domains (<span id="wildcard-count">0</span>)</h4>
+                        <div id="wildcard-domains">
+                            <div class="loading">Loading wildcard domains...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vulnerabilities View -->
+            <div id="vulnerabilities-view" style="display: none;">
+                <div class="siem-search-bar">
+                    <input type="text" class="siem-search-input" id="vuln-search" placeholder="Search vulnerabilities...">
+                    <button class="siem-btn primary" onclick="searchVulnerabilities()">Search</button>
+                    <button class="siem-btn" onclick="refreshVulnerabilities()">Refresh</button>
+                    <button class="siem-btn" onclick="exportData('vulnerabilities')">Export</button>
+                </div>
+                
+                <div class="content-container">
+                    <div id="vulnerabilities-table">
+                        <div class="loading">Loading vulnerability data...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ML XSS Results View -->
+            <div id="ml-xss-view" style="display: none;">
+                <div class="siem-search-bar">
+                    <input type="text" class="siem-search-input" id="ml-search" placeholder="Search ML XSS results...">
+                    <button class="siem-btn primary" onclick="searchMLResults()">Search</button>
+                    <button class="siem-btn" onclick="refreshMLResults()">Refresh</button>
+                    <button class="siem-btn" onclick="exportData('ml-xss')">Export</button>
+                </div>
+                
+                <div class="content-container">
+                    <div id="ml-results-table">
+                        <div class="loading">Loading ML XSS results...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 403 Bypasses View -->
+            <div id="bypasses-view" style="display: none;">
+                <div class="siem-search-bar">
+                    <button class="siem-btn primary" onclick="start403Scan()">Start New Scan</button>
+                    <button class="siem-btn" onclick="load403Results()">Refresh Results</button>
+                    <button class="siem-btn" onclick="exportData('bypasses')">Export</button>
+                </div>
+                
+                <div class="content-container">
+                    <div id="bypass-results-table">
+                        <div class="loading">Loading 403 bypass results...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- System Monitor View -->
+            <div id="system-view" style="display: none;">
+                <div class="siem-search-bar">
+                    <button class="siem-btn primary" onclick="refreshSystemMetrics()">Refresh Metrics</button>
+                    <button class="siem-btn danger" onclick="restartAllServices()">Restart Services</button>
+                </div>
+                
+                <div class="content-container">
+                    <div id="system-metrics-display">
+                        <div class="loading">Loading system metrics...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Side Panel -->
+        <div class="side-panel">
+            <!-- System Monitoring -->
+            <div class="panel-section">
+                <div class="panel-title">System Monitoring</div>
+                <div class="system-metric">
+                    <span class="metric-label">CPU Usage:</span>
+                    <span class="metric-value" id="detailed-cpu">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill progress-normal" id="cpu-progress"></div>
+                </div>
+                
+                <div class="system-metric" style="margin-top: 12px;">
+                    <span class="metric-label">Memory Usage:</span>
+                    <span class="metric-value" id="detailed-memory">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill progress-normal" id="memory-progress"></div>
+                </div>
+                
+                <div class="system-metric" style="margin-top: 12px;">
+                    <span class="metric-label">Disk Usage:</span>
+                    <span class="metric-value" id="detailed-disk">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill progress-normal" id="disk-progress"></div>
+                </div>
+
+                <div class="system-metric" style="margin-top: 12px;">
+                    <span class="metric-label">Active Threads:</span>
+                    <span class="metric-value" id="active-threads">0</span>
+                </div>
+
+                <div class="system-metric">
+                    <span class="metric-label">Proxy Connections:</span>
+                    <span class="metric-value" id="proxy-connections">0</span>
+                </div>
+            </div>
+
+            <!-- Scanner Status -->
+            <div class="panel-section">
+                <div class="panel-title">Scanner Status</div>
+                <div id="scanner-status-list">
+                    <div class="loading">Loading scanner status...</div>
+                </div>
+            </div>
+
+            <!-- Live Activity Feed -->
+            <div class="panel-section" style="flex: 1; display: flex; flex-direction: column;">
+                <div class="panel-title">Live Activity Feed</div>
+                <div class="activity-feed" id="activity-feed">
+                    <div class="loading">Loading activity...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Screenshot Modal -->
+    <div id="screenshot-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Screenshot</h3>
+                <button class="modal-close" onclick="closeScreenshotModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <img id="screenshot-image" class="screenshot-img" src="" alt="Screenshot">
+                <div id="screenshot-error" style="display: none; color: #ef4444; margin-top: 16px;">
+                    Screenshot not available for this URL
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+        // Global State
+        let currentView = 'assets';
+        let assetsData = [];
+        let currentSort = { column: 'timestamp', direction: 'desc' };
+        let systemMetrics = {};
+        let scopeData = {};
+        let globalConfig = {};
+        let assetMapping = {}; // Backwards compatibility
+
+        // Initialize
+        // Handle browser back/forward buttons for tab persistence
+        window.addEventListener('hashchange', function() {
+            const tab = getTabFromURL();
+            showView(tab);
+        });
+
+        document.addEventListener('DOMContentLoaded', async function() {
+            await fetchAssetMapping();
+            
+            // Initialize tab from URL hash instead of loading all data
+            const initialTab = getTabFromURL();
+            showView(initialTab);
+            
+            setInterval(updateSystemMetrics, 5000);   // Update every 5 seconds
+            setInterval(updateActivityFeed, 3000);    // Update every 3 seconds for more responsive updates
+            setInterval(updateTimestamp, 1000);       // Update timestamp every second
+            setInterval(checkForNotifications, 3000); // Check for live notifications every 3 seconds
+            
+            // Add sorting event listeners
+            document.querySelectorAll('.sortable').forEach(th => {
+                th.addEventListener('click', handleSort);
+            });
+        });
+
+        async function fetchAssetMapping() {
+            try {
+                const response = await fetch('/api/asset_mapping');
+                globalConfig = await response.json();
+                // Set backwards compatibility mapping
+                assetMapping = globalConfig.field_mappings || globalConfig;
+                console.log('Global config loaded:', globalConfig);
+            } catch (error) {
+                console.error('Error fetching global config:', error);
+                // Fallback mapping
+                assetMapping = {
+                    timestamp: "last_scanned", status: "status_code", url: "url",
+                    time: "response_time", title: "title", tech_stack: "tech_stack",
+                    size: "content_length", method: "discovery_method", 
+                    screenshot: "screenshot_path", response: "response_body", source: "host"
+                };
+            }
+        }
+        
+        function updateTimestamp() {
+            const now = new Date();
+            document.getElementById('last-update').textContent = 
+                now.toTimeString().split(' ')[0];
+        }
+
+        // View Management
+        // URL-based tab persistence functions
+        function getTabFromURL() {
+            const hash = window.location.hash.substring(1); // Remove #
+            return hash || 'assets'; // Default to assets tab
+        }
+        
+        function setURLTab(tab) {
+            window.location.hash = tab;
+        }
+
+        function showView(viewName) {
+            // Update URL hash for persistence
+            setURLTab(viewName);
+            
+            // Hide all views
+            document.querySelectorAll('[id$="-view"]').forEach(view => {
+                view.style.display = 'none';
+            });
+            
+            // Remove active class from all nav items
+            document.querySelectorAll('.siem-nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            
+            // Show selected view
+            document.getElementById(viewName + '-view').style.display = 'block';
+            
+            // Add active class to clicked nav item (handle both click events and programmatic calls)
+            if (typeof event !== 'undefined' && event && event.target) {
+                event.target.classList.add('active');
+            } else {
+                // Find nav item programmatically when not from click event
+                const navItems = document.querySelectorAll('.siem-nav-item');
+                navItems.forEach(item => {
+                    if (item.onclick && item.onclick.toString().includes(`'${viewName}'`)) {
+                        item.classList.add('active');
+                    }
+                });
+            }
+            
+            currentView = viewName;
+            
+            // Load view-specific data
+            switch(viewName) {
+                case 'assets':
+                    loadAssetData();
+                    break;
+                case 'scope':
+                    loadScope();
+                    break;
+                case 'vulnerabilities':
+                    loadVulnerabilityData();
+                    break;
+                case 'ml-xss':
+                    loadMLXSSData();
+                    break;
+                case 'bypasses':
+                    load403Data();
+                    break;
+                case 'system':
+                    loadSystemData();
+                    break;
+            }
+        }
+
+        // System Metrics Updates
+        async function updateSystemMetrics() {
+            try {
+                const response = await fetch('/api/system_metrics');
+                const metrics = await response.json();
+                systemMetrics = metrics;
+                
+                // Update header stats
+                document.getElementById('cpu-usage').textContent = metrics.cpu_percent + '%';
+                document.getElementById('ram-usage').textContent = metrics.memory_percent + '%';
+                document.getElementById('process-count').textContent = metrics.scanner_processes || 0;
+                document.getElementById('network-connections').textContent = metrics.proxy_connections || 0;
+                
+                // Update detailed side panel
+                document.getElementById('detailed-cpu').textContent = metrics.cpu_percent + '%';
+                document.getElementById('detailed-memory').textContent = metrics.memory_percent + '%';
+                document.getElementById('detailed-disk').textContent = metrics.disk_percent.toFixed(1) + '%';
+                
+                // Update active threads and proxy connections
+                const activeThreadsEl = document.getElementById('active-threads');
+                const proxyConnectionsEl = document.getElementById('proxy-connections');
+                if (activeThreadsEl) activeThreadsEl.textContent = metrics.active_threads || 0;
+                if (proxyConnectionsEl) proxyConnectionsEl.textContent = metrics.proxy_connections || 0;
+                
+                // Update progress bars
+                updateProgressBar('cpu-progress', metrics.cpu_percent);
+                updateProgressBar('memory-progress', metrics.memory_percent);
+                updateProgressBar('disk-progress', metrics.disk_percent);
+                
+                // Update scanner status
+                updateScannerStatus(metrics);
+                
+            } catch (error) {
+                console.error('Error updating system metrics:', error);
+            }
+        }
+
+        function updateProgressBar(elementId, percentage) {
+            const progressBar = document.getElementById(elementId);
+            if (!progressBar) return;
+            
+            progressBar.style.width = percentage + '%';
+            
+            // Update color based on usage
+            progressBar.className = 'progress-fill ';
+            if (percentage < 70) {
+                progressBar.className += 'progress-normal';
+            } else if (percentage < 90) {
+                progressBar.className += 'progress-warning';
+            } else {
+                progressBar.className += 'progress-critical';
+            }
+        }
+
+        function updateScannerStatus(metrics) {
+            const scannerList = document.getElementById('scanner-status-list');
+            if (!scannerList) return;
+            
+            const scanners = [
+                { name: 'Bypass Scanner', status: metrics.bypass_scanner_status || 'unknown' },
+                { name: 'Screenshot Queue', status: metrics.screenshot_queue_status || 'idle' },
+                { name: 'OpenVPN Proxies', status: metrics.openvpn_status || 'idle' },
+                { name: 'WireGuard Proxies', status: metrics.wireguard_status || 'idle' }
+            ];
+            
+            scannerList.innerHTML = scanners.map(scanner => `
+                <div class="scanner-item">
+                    <span class="scanner-name">${scanner.name}</span>
+                    <span class="scanner-status status-${scanner.status}">${scanner.status}</span>
+                </div>
+            `).join('');
+        }
+
+        // Activity Feed Updates
+        async function updateActivityFeed() {
+            try {
+                const response = await fetch('/api/activity');
+                const data = await response.json();
+                const activities = data.activities || [];
+                
+                const feed = document.getElementById('activity-feed');
+                if (!feed) return;
+                
+                if (activities.length === 0) {
+                    feed.innerHTML = '<div class="activity-item">No recent activity</div>';
+                    return;
+                }
+                
+                // Enhanced live activity feed with visual indicators for new items
+                const newHTML = activities.slice(0, 20).map(activity => {
+                    const timestamp = formatTimestamp(activity.timestamp);
+                    // Highlight very recent activities (last 30 seconds)
+                    const activityTime = new Date(activity.timestamp);
+                    const now = new Date();
+                    const isNew = (now - activityTime) < 30000;
+                    const newClass = isNew ? 'activity-new' : '';
+                    
+                    return `
+                        <div class="activity-item ${newClass}">
+                            <div class="activity-timestamp">${timestamp}</div>
+                            <div class="activity-type">${activity.action || 'SCAN'}</div>
+                            <div class="activity-message">${activity.details || activity.target || activity.message || 'No details'}</div>
+                            ${isNew ? '<div class="activity-new-indicator">●</div>' : ''}
+                        </div>
+                    `;
+                }).join('');
+                
+                // Only update if content has changed to reduce DOM manipulation
+                if (feed.innerHTML !== newHTML) {
+                    feed.innerHTML = newHTML;
+                }
+                
+            } catch (error) {
+                console.error('Error updating activity feed:', error);
+                const feed = document.getElementById('activity-feed');
+                if (feed) {
+                    feed.innerHTML = '<div class="activity-item alert-error">Error loading live activity</div>';
+                }
+            }
+        }
+
+        // Data Loading Functions
+        async function loadAllData() {
+            if (currentView === 'assets') {
+                await loadAssetData();
+            }
+        }
+
+        async function loadAssetData() {
+            try {
+                const searchQuery = document.getElementById('asset-search')?.value || '*';
+                const response = await fetch(`/api/assets?q=${encodeURIComponent(searchQuery)}&from=0&size=100`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError('assets-table-body', 'Failed to load asset data: ' + data.error, 11);
+                    return;
+                }
+
+                assetsData = data.assets || [];
+                updateAssetTable(assetsData);
+                
+                // Load summary stats
+                const summaryResponse = await fetch('/api/assets/summary');
+                const summaryData = await summaryResponse.json();
+                if (!summaryData.error) {
+                    updateAssetStats(summaryData);
+                }
+
+            } catch (error) {
+                showError('assets-table-body', 'Network error loading assets: ' + error.message, 11);
+            }
+        }
+
+        function getMethodDisplay(asset) {
+            // Get method value using global config mapping
+            const methodValue = asset[assetMapping.method];
+            const statusValue = asset[assetMapping.status];
+            
+            // Use global config method display if available
+            if (globalConfig.method_display) {
+                const methodConfig = globalConfig.method_display[methodValue];
+                if (methodConfig) {
+                    return `<span style="color: ${methodConfig.color}; font-size: 9px;">${methodConfig.icon} ${methodConfig.label}</span>`;
+                }
+            }
+            
+            // Fallback logic if method not in config
+            if (methodValue === 'cert_transparency') {
+                return '<span style="color: #94a3b8; font-size: 9px;">🔍 CT Discovery</span>';
+            } else if (statusValue) {
+                return `<span style="color: #4ade80; font-size: 9px;">✅ ${methodValue || 'Scanned'}</span>`;
+            } else {
+                return `<span style="color: #fbbf24; font-size: 9px;">📋 ${methodValue || 'Discovered'}</span>`;
+            }
+        }
+
+        function updateAssetTable(assets) {
+            const tbody = document.getElementById('assets-table-body');
+            if (!tbody) return;
+            
+            if (assets.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="11" class="loading">No assets found</td></tr>';
+                return;
+            }
+
+            // Sort assets if needed
+            if (currentSort.column) {
+                assets.sort((a, b) => sortAssets(a, b, currentSort.column, currentSort.direction));
+            }
+
+            tbody.innerHTML = assets.map(asset => {
+                const timestamp = formatTimestamp(asset[assetMapping.timestamp] || asset.discovered_at);
+                const statusClass = getStatusClass(asset[assetMapping.status]);
+                const techDisplay = asset[assetMapping.tech_stack] || '-';
+                const contentSize = asset[assetMapping.size] ? formatBytes(asset[assetMapping.size]) : '-';
+                const responseTime = asset[assetMapping.time] ? `${asset[assetMapping.time].toFixed(0)}ms` : '-';
+                // FIXED: More robust screenshot detection - check if path exists and isn't a placeholder
+                const screenshotPath = asset[assetMapping.screenshot];
+                const hasScreenshot = screenshotPath && 
+                                    screenshotPath !== 'NONE' && 
+                                    screenshotPath !== '' &&
+                                    !String(screenshotPath).includes('placeholder') &&
+                                    String(screenshotPath).endsWith('.png');
+                
+                // Debug logging for first few assets
+                if (window.debugScreenshots || (asset.url && asset.url.includes('temu.com'))) {
+                    console.log('🔍 Screenshot Debug:', {
+                        url: asset.url,
+                        screenshotPath: screenshotPath,
+                        hasScreenshot: hasScreenshot,
+                        conditions: {
+                            exists: !!screenshotPath,
+                            notNone: screenshotPath !== 'NONE',
+                            notEmpty: screenshotPath !== '',
+                            noPlaceholder: !String(screenshotPath || '').includes('placeholder'),
+                            endsWithPng: String(screenshotPath || '').endsWith('.png')
+                        }
+                    });
+                }
+                
+                // Debug log for first asset
+                if (window.debugAssets && asset.url.includes('nz.temu.com')) {
+                    console.log('🔍 DEBUG Asset Data:', {
+                        url: asset.url,
+                        status_raw: asset[assetMapping.status],
+                        time_raw: asset[assetMapping.time],
+                        size_raw: asset[assetMapping.size],
+                        source_raw: asset[assetMapping.source],
+                        screenshot_raw: asset[assetMapping.screenshot],
+                        mapping: assetMapping
+                    });
+                }
+                
+                return `
+                    <tr>
+                        <td class="timestamp">${timestamp}</td>
+                        <td><span class="${statusClass}">${asset[assetMapping.status] || '-'}</span></td>
+                        <td><a href="${asset[assetMapping.url]}" class="asset-url" target="_blank" title="${asset[assetMapping.url]}">${truncate(asset[assetMapping.url], 40)}</a></td>
+                        <td>${responseTime}</td>
+                        <td title="${asset[assetMapping.title] || ''}">${truncate(asset[assetMapping.title] || 'Unknown', 25)}</td>
+                        <td class="tech-stack" title="${techDisplay}">${truncate(techDisplay, 20)}</td>
+                        <td class="takeover-risk" onclick="showAssetDetails('${asset[assetMapping.id]}')" style="cursor: pointer;">
+                            ${asset[assetMapping.takeover_risk] === 'HIGH' ? '<span style="color: #dc2626;">HIGH</span>' : 
+                              asset[assetMapping.takeover_risk] === 'MEDIUM' ? '<span style="color: #ca8a04;">MED</span>' : 
+                              '<span style="color: #16a34a;">SAFE</span>'}
+                        </td>
+                        <td class="discovered-params" onclick="showAssetDetails('${asset[assetMapping.id]}')" style="cursor: pointer;">
+                            ${JSON.parse(asset[assetMapping.discovered_params] || '[]').length || '0'}
+                        </td>
+                        <td class="tech-versions" onclick="showAssetDetails('${asset[assetMapping.id]}')" style="cursor: pointer;">
+                            ${Object.keys(JSON.parse(asset[assetMapping.tech_versions] || '{}')).length || '0'}
+                        </td>
+                        <td class="asn-info" onclick="showAssetDetails('${asset[assetMapping.id]}')" style="cursor: pointer;">
+                            ${(() => {
+                                try {
+                                    const asnData = JSON.parse(asset[assetMapping.asn_info] || '{}');
+                                    return asnData.asn_number ? `AS${asnData.asn_number}` : '-';
+                                } catch(e) { return '-'; }
+                            })()}
+                        </td>
+                        <td>${contentSize}</td>
+                        <td>
+                            ${getMethodDisplay(asset)}
+                        </td>
+                        <td>
+                            ${hasScreenshot ? 
+                                `<a href="#" class="screenshot-indicator" onclick="viewScreenshot('${asset[assetMapping.url]}')">VIEW</a>` : 
+                                '<span class="no-screenshot">NONE</span>'
+                            }
+                        </td>
+                        <td>
+                            <a href="#" class="screenshot-indicator" onclick="showAssetResponse(this)" data-response="${escapeHtml(asset[assetMapping.response] || 'No response captured')}" data-url="${asset[assetMapping.url]}" style="background: #16a34a;">VIEW</a>
+                        </td>
+                        <td>${timestamp.includes(new Date().toISOString().split('T')[0]) ? '<span class="newly-discovered">NEW</span>' : ''}</td>
+                        <td title="Scanner: ${asset.tool || 'Unknown'}" style="max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${asset[assetMapping.source] || '-'}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function updateAssetStats(data) {
+            updateElementText('total-assets', data.total_assets || 0);
+            updateElementText('scanned-assets', data.scanned_assets || 0);
+            updateElementText('active-assets', data.active_200 || 0);
+            updateElementText('forbidden-assets', data.forbidden_403 || 0);
+            
+            // Calculate redirects
+            updateElementText('redirect-assets', data.redirects_3xx || 0);
+            
+            // Use API data directly
+            updateElementText('new-today', data.new_today || 0);
+            updateElementText('screenshot-count', data.screenshots || 0);
+        }
+
+        // Scope Management Functions
+        async function loadScope() {
+            try {
+                const response = await fetch('/api/scope');
+                const data = await response.json();
+                scopeData = data;
+                
+                // Update authorized domains
+                const authDiv = document.getElementById('authorized-domains');
+                if (authDiv && data.authorized_domains) {
+                    if (data.authorized_domains.length > 0) {
+                        authDiv.innerHTML = data.authorized_domains.map(domain => `
+                            <div class="domain-item">
+                                <span>${domain}</span>
+                                <button class="remove-btn" onclick="removeDomain('${domain}', 'authorized')">Remove</button>
+                            </div>`
+                        ).join('');
+                        updateElementText('authorized-count', data.authorized_domains.length);
+                    } else {
+                        authDiv.innerHTML = '<div style="color: #888;">No authorized domains configured</div>';
+                        updateElementText('authorized-count', 0);
+                    }
+                }
+                
+                // Update wildcard domains
+                const wildcardDiv = document.getElementById('wildcard-domains');
+                if (wildcardDiv && data.wildcard_domains) {
+                    if (data.wildcard_domains.length > 0) {
+                        wildcardDiv.innerHTML = data.wildcard_domains.map(domain => `
+                            <div class="domain-item">
+                                <span>${domain}</span>
+                                <button class="remove-btn" onclick="removeDomain('${domain}', 'wildcard')">Remove</button>
+                            </div>`
+                        ).join('');
+                        updateElementText('wildcard-count', data.wildcard_domains.length);
+                    } else {
+                        wildcardDiv.innerHTML = '<div style="color: #888;">No wildcard domains configured</div>';
+                        updateElementText('wildcard-count', 0);
+                    }
+                }
+                
+            } catch (error) {
+                console.error('Error loading scope:', error);
+            }
+        }
+
+        function showAddDomainForm() {
+            const form = document.getElementById('add-domain-form');
+            if (form) form.style.display = 'block';
+        }
+
+        function hideAddDomainForm() {
+            const form = document.getElementById('add-domain-form');
+            if (form) form.style.display = 'none';
+            
+            // Clear form
+            const domainInput = document.getElementById('new-domain');
+            if (domainInput) domainInput.value = '';
+            
+            const resultDiv = document.getElementById('add-domain-result');
+            if (resultDiv) resultDiv.innerHTML = '';
+        }
+
+        async function addDomain() {
+            const domainInput = document.getElementById('new-domain');
+            const typeSelect = document.getElementById('domain-type');
+            const resultDiv = document.getElementById('add-domain-result');
+            
+            if (!domainInput || !typeSelect || !resultDiv) return;
+            
+            const domain = domainInput.value.trim();
+            const type = typeSelect.value;
+            
+            if (!domain) {
+                resultDiv.innerHTML = '<div class="alert alert-error">Please enter a domain</div>';
+                return;
+            }
+            
+            try {
+                const updatedScope = { ...scopeData };
+                
+                if (type === 'authorized') {
+                    if (!updatedScope.authorized_domains) updatedScope.authorized_domains = [];
+                    if (!updatedScope.authorized_domains.includes(domain)) {
+                        updatedScope.authorized_domains.push(domain);
+                    }
+                } else if (type === 'wildcard') {
+                    if (!updatedScope.wildcard_domains) updatedScope.wildcard_domains = [];
+                    if (!updatedScope.wildcard_domains.includes(domain)) {
+                        updatedScope.wildcard_domains.push(domain);
+                    }
+                }
+                
+                const response = await fetch('/api/scope', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updatedScope)
+                });
+                
+                if (response.ok) {
+                    resultDiv.innerHTML = '<div class="alert alert-success">Domain added successfully</div>';
+                    hideAddDomainForm();
+                    loadScope(); // Refresh the scope
+                } else {
+                    resultDiv.innerHTML = '<div class="alert alert-error">Error adding domain</div>';
+                }
+                
+            } catch (error) {
+                console.error('Error adding domain:', error);
+                resultDiv.innerHTML = '<div class="alert alert-error">Error adding domain</div>';
+            }
+        }
+
+        async function removeDomain(domain, type) {
+            if (!confirm(`Are you sure you want to remove ${domain} from ${type} domains?`)) {
+                return;
+            }
+            
+            try {
+                const updatedScope = { ...scopeData };
+                
+                if (type === 'authorized' && updatedScope.authorized_domains) {
+                    updatedScope.authorized_domains = updatedScope.authorized_domains.filter(d => d !== domain);
+                } else if (type === 'wildcard' && updatedScope.wildcard_domains) {
+                    updatedScope.wildcard_domains = updatedScope.wildcard_domains.filter(d => d !== domain);
+                }
+                
+                const response = await fetch('/api/scope', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updatedScope)
+                });
+                
+                if (response.ok) {
+                    loadScope(); // Refresh the scope
+                } else {
+                    alert('Error removing domain');
+                }
+                
+            } catch (error) {
+                console.error('Error removing domain:', error);
+                alert('Error removing domain');
+            }
+        }
+
+        // Table Sorting
+        function handleSort() {
+            const column = this.getAttribute('data-sort');
+            
+            // Toggle direction if same column
+            if (currentSort.column === column) {
+                currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSort.column = column;
+                currentSort.direction = 'asc';
+            }
+            
+            // Update visual indicators
+            document.querySelectorAll('.sortable').forEach(header => {
+                header.classList.remove('sort-asc', 'sort-desc');
+            });
+            
+            this.classList.add(currentSort.direction === 'asc' ? 'sort-asc' : 'sort-desc');
+            
+            // Re-render table
+            updateAssetTable(assetsData);
+        }
+
+        function sortAssets(a, b, column, direction) {
+            let aVal = a[assetMapping[column]];
+            let bVal = b[assetMapping[column]];
+            
+            // Handle arrays (like tech)
+            if (Array.isArray(aVal)) aVal = aVal.join(', ');
+            if (Array.isArray(bVal)) bVal = bVal.join(', ');
+            
+            // Handle numbers
+            if (column === 'status_code' || column === 'content_length') {
+                aVal = parseInt(aVal) || 0;
+                bVal = parseInt(bVal) || 0;
+            }
+            
+            // Handle dates
+            if (column === 'timestamp') {
+                aVal = new Date(aVal || 0);
+                bVal = new Date(bVal || 0);
+            }
+            
+            // Handle strings
+            if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+            if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+            
+            let result = 0;
+            if (aVal < bVal) result = -1;
+            if (aVal > bVal) result = 1;
+            
+            return direction === 'desc' ? -result : result;
+        }
+
+        // Screenshot Modal Functions
+        function viewScreenshot(url) {
+            const modal = document.getElementById('screenshot-modal');
+            const modalTitle = document.getElementById('modal-title');
+            const screenshotImg = document.getElementById('screenshot-image');
+            const errorDiv = document.getElementById('screenshot-error');
+            
+            if (!modal || !modalTitle || !screenshotImg || !errorDiv) return;
+            
+            modalTitle.textContent = `Screenshot: ${truncate(url, 60)}`;
+            
+            // Hide error, show loading
+            errorDiv.style.display = 'none';
+            screenshotImg.style.display = 'block';
+            screenshotImg.src = '';
+            
+            // Try different screenshot URL formats
+            const encodedUrl = encodeURIComponent(url);
+            const screenshotUrl = `/api/screenshots/${encodedUrl}.png`;
+            
+            screenshotImg.onload = function() {
+                // Image loaded successfully
+                errorDiv.style.display = 'none';
+            };
+            
+            screenshotImg.onerror = function() {
+                // Image failed to load
+                screenshotImg.style.display = 'none';
+                errorDiv.style.display = 'block';
+            };
+            
+            screenshotImg.src = screenshotUrl;
+            modal.style.display = 'block';
+        }
+
+        function closeScreenshotModal() {
+            const modal = document.getElementById('screenshot-modal');
+            if (modal) modal.style.display = 'none';
+        }
+
+
+        // Close modal when clicking outside
+        window.addEventListener('click', function(event) {
+            const screenshotModal = document.getElementById('screenshot-modal');
+            const responseModal = document.getElementById('response-modal');
+            if (event.target === screenshotModal) {
+                closeScreenshotModal();
+            }
+            if (event.target === responseModal) {
+                closeResponseModal();
+            }
+        });
+
+        // Search and Filter Functions
+        function handleSearchKeypress(event) {
+            if (event.key === 'Enter') {
+                searchAssets();
+            }
+        }
+
+        async function searchAssets() {
+            await loadAssetData();
+        }
+
+        function clearSearch() {
+            const searchInput = document.getElementById('asset-search');
+            if (searchInput) {
+                searchInput.value = '';
+                loadAssetData();
+            }
+        }
+
+        function refreshAssets() {
+            loadAssetData();
+        }
+        
+        function showScannedOnly() {
+            const searchInput = document.getElementById('asset-search');
+            if (searchInput) {
+                searchInput.value = 'scanned:true';
+                loadAssetData();
+            }
+        }
+
+        // Screenshot Capture
+        async function captureScreenshots() {
+            try {
+                const response = await fetch('/api/capture_screenshot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ batch_capture: true })
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert('Screenshot capture initiated for ' + result.queued + ' assets');
+                    setTimeout(loadAssetData, 2000); // Refresh after 2 seconds
+                } else {
+                    alert('Error starting screenshot capture: ' + result.error);
+                }
+            } catch (error) {
+                alert('Error starting screenshot capture: ' + error.message);
+            }
+        }
+
+        // Export Functions
+        function exportData(type) {
+            let data, filename, headers;
+            
+            switch(type) {
+                case 'assets':
+                    data = assetsData;
+                    filename = `assets_${new Date().getTime()}.csv`;
+                    headers = ['Timestamp', 'Status', 'URL', 'Host', 'Title', 'Tech', 'Size', 'Method', 'Screenshot', 'New', 'Input'];
+                    break;
+                default:
+                    alert('Export not yet implemented for ' + type);
+                    return;
+            }
+            
+            const csv = generateCSV(data, headers);
+            downloadCSV(csv, filename);
+        }
+
+        function generateCSV(data, headers) {
+            const rows = data.map(asset => [
+                asset[assetMapping.timestamp] || '',
+                asset[assetMapping.status] || '',
+                asset[assetMapping.url] || '',
+                asset[assetMapping.host] || '',
+                asset[assetMapping.title] || '',
+                Array.isArray(asset[assetMapping.tech_stack]) ? asset[assetMapping.tech_stack].join('; ') : (asset[assetMapping.tech_stack] || ''),
+                asset[assetMapping.size] || '',
+                asset[assetMapping.method] || asset.tool || '',
+                asset[assetMapping.screenshot] ? 'YES' : 'NO',
+                asset.newly_discovered ? 'YES' : 'NO',
+                asset[assetMapping.source] || ''
+            ]);
+            
+            return [headers, ...rows].map(row => 
+                row.map(field => `"${String(field).replace(/"/g, '""')}"`).join(',')
+            ).join('\n');
+        }
+
+        function downloadCSV(csv, filename) {
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('hidden', '');
+            a.setAttribute('href', url);
+            a.setAttribute('download', filename);
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        // Placeholder functions for missing views (to be implemented)
+        async function loadVulnerabilityData() {
+    try {
+        const response = await fetch('/api/vulns');
+        const data = await response.json();
+
+        const container = document.getElementById('vulnerabilities-table');
+        if (!container) return;
+
+        if (data.error) {
+            container.innerHTML = '<div class="alert alert-error">Error loading vulnerability data: ' + data.error + '</div>';
+            return;
+        }
+
+        if (data.vulnerabilities && data.vulnerabilities.length > 0) {
+            // Format the vulnerability data into a table
+            let tableHTML = `
+                <table class="siem-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Type</th>
+                            <th>Target URL</th>
+                            <th>Severity</th>
+                            <th>Confidence</th>
+                            <th>Description</th>
+                            <th>Payload</th>
+                            <th>Evidence</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            data.vulnerabilities.forEach(vuln => {
+                // Use global config for vulnerability mappings
+                const vulnMapping = globalConfig.vulnerability_mappings || {};
+                const vulnDisplay = globalConfig.vulnerability_display || {};
+                
+                const safeDescription = escapeHtml(vuln[vulnMapping.description] || vuln.description || 'No description available');
+                const safeUrl = vuln[vulnMapping.asset_url] || vuln.asset_url || 'Unknown';
+                const safeType = vuln[vulnMapping.vuln_type] || vuln.type || 'Unknown';
+                const safeTimestamp = vuln[vulnMapping.discovered_at] || vuln.detected_at || 'Unknown';
+                const safePayload = escapeHtml(vuln[vulnMapping.payload] || vuln.payload || 'No payload captured');
+                const safeEvidence = escapeHtml(vuln[vulnMapping.evidence] || vuln.evidence || 'No evidence captured');
+                const confidence = vuln[vulnMapping.confidence] || vuln.confidence || 0.5;
+                const severity = vuln[vulnMapping.severity] || vuln.severity || 'MEDIUM';
+                const severityClass = severity.toLowerCase();
+                
+                // Get display config
+                const typeConfig = vulnDisplay.type_display?.[safeType] || {};
+                const severityColor = vulnDisplay.severity_colors?.[severity] || '#6b7280';
+                const severityIcon = vulnDisplay.severity_icons?.[severity] || '⚡';
+                const typeIcon = typeConfig.icon || '🔍';
+                const typeLabel = typeConfig.label || safeType;
+                
+                tableHTML += `
+                    <tr>
+                        <td>${formatTimestamp(safeTimestamp)}</td>
+                        <td>
+                            <span style="color: ${typeConfig.color || '#ef4444'};">
+                                ${typeIcon} ${typeLabel}
+                            </span>
+                        </td>
+                        <td>
+                            <a href="${escapeHtml(safeUrl)}" target="_blank" class="asset-url">
+                                ${truncate(safeUrl, 40)}
+                            </a>
+                        </td>
+                        <td>
+                            <span style="color: ${severityColor}; font-weight: bold;">
+                                ${severityIcon} ${severity}
+                            </span>
+                        </td>
+                        <td>
+                            <span style="color: ${confidence >= 0.8 ? '#10b981' : confidence >= 0.6 ? '#f59e0b' : '#ef4444'}; font-weight: bold;">
+                                ${Math.round(confidence * 100)}%
+                            </span>
+                        </td>
+                        <td>
+                            <span title="${escapeHtml(safeDescription)}" onclick="showVulnDetails('${escapeHtml(safeDescription)}', '${safeType} Description')" 
+                                  style="cursor: pointer; color: #60a5fa; text-decoration: underline;">
+                                ${truncate(safeDescription, 50)}
+                            </span>
+                        </td>
+                        <td>
+                            <span title="${escapeHtml(safePayload)}" onclick="showVulnDetails('${escapeHtml(safePayload)}', 'Exploit Payload')" 
+                                  style="cursor: pointer; color: #f97316; text-decoration: underline; font-family: monospace;">
+                                ${truncate(safePayload, 30)}
+                            </span>
+                        </td>
+                        <td>
+                            <span title="${escapeHtml(safeEvidence)}" onclick="showVulnDetails('${escapeHtml(safeEvidence)}', 'Evidence')" 
+                                  style="cursor: pointer; color: #fbbf24; text-decoration: underline;">
+                                ${truncate(safeEvidence, 40)}
+                            </span>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            tableHTML += `
+                    </tbody>
+                </table>
+            `;
+
+            container.innerHTML = tableHTML;
+        } else {
+            container.innerHTML = '<div class="alert alert-warning">No vulnerabilities found</div>';
+        }
+    } catch (error) {
+        console.error('Error loading vulnerability data:', error);
+        container.innerHTML = '<div class="alert alert-error">Network error loading vulnerability data</div>';
+    }
+}
+
+        async function loadMLXSSData() {
+    try {
+        const response = await fetch('/api/ml_xss_results');
+        const data = await response.json();
+
+        const container = document.getElementById('ml-results-table');
+        if (!container) return;
+
+        if (data.error) {
+            container.innerHTML = '<div class="alert alert-error">Error loading ML XSS data: ' + data.error + '</div>';
+            return;
+        }
+
+        if (data.results && data.results.length > 0) {
+            // Format the ML XSS data into a table
+            let tableHTML = `
+                <table class="siem-table">
+                    <thead>
+                        <tr>
+                            <th>URL</th>
+                            <th>Parameter</th>
+                            <th>Payload</th>
+                            <th>ML Score</th>
+                            <th>Confidence</th>
+                            <th>Timestamp</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            data.results.forEach(result => {
+                // Safely escape XSS payloads to prevent execution
+                const safePayload = escapeHtml(result.payload || '');
+                const safeUrl = escapeHtml(result.url || '');
+                const safeParameter = escapeHtml(result.parameter || '');
+                
+                tableHTML += `
+                    <tr>
+                        <td>${safeUrl}</td>
+                        <td>${safeParameter}</td>
+                        <td><code style="color: #ff6b6b; background: #2d2d2d; padding: 2px 4px; border-radius: 2px;">${safePayload}</code></td>
+                        <td>${result.ml_score}</td>
+                        <td>${result.confidence}</td>
+                        <td>${result.timestamp}</td>
+                    </tr>
+                `;
+            });
+
+            tableHTML += `
+                    </tbody>
+                </table>
+            `;
+
+            container.innerHTML = tableHTML;
+        } else {
+            container.innerHTML = '<div class="alert alert-warning">No ML XSS results found</div>';
+        }
+    } catch (error) {
+        console.error('Error loading ML XSS data:', error);
+        container.innerHTML = '<div class="alert alert-error">Network error loading ML XSS data</div>';
+    }
+}
+
+        async function load403Data() {
+    try {
+        const response = await fetch('/api/assets?q=status_code:403');
+        const data = await response.json();
+
+        const container = document.getElementById('bypass-results-table');
+        if (!container) return;
+
+        if (data.error) {
+            container.innerHTML = '<div class="alert alert-error">Error loading 403 bypass data: ' + data.error + '</div>';
+            return;
+        }
+
+        if (data.assets && data.assets.length > 0) {
+            // Format the 403 bypass data into a table
+            let tableHTML = `
+                <table class="siem-table">
+                    <thead>
+                        <tr>
+                            <th>URL</th>
+                            <th>Status Code</th>
+                            <th>Title</th>
+                            <th>Discovery Method</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            data.assets.forEach(asset => {
+                tableHTML += `
+                    <tr>
+                        <td>${asset[assetMapping.url]}</td>
+                        <td>${asset[assetMapping.status]}</td>
+                        <td>${asset[assetMapping.title]}</td>
+                        <td>${asset[assetMapping.method]}</td>
+                    </tr>
+                `;
+            });
+
+            tableHTML += `
+                    </tbody>
+                </table>
+            `;
+
+            container.innerHTML = tableHTML;
+        } else {
+            container.innerHTML = '<div class="alert alert-warning">No 403 bypass results found</div>';
+        }
+    } catch (error) {
+        console.error('Error loading 403 bypass data:', error);
+        container.innerHTML = '<div class="alert alert-error">Network error loading 403 bypass data</div>';
+    }
+}
+
+        async function loadSystemData() {
+    try {
+        const response = await fetch('/api/system_metrics');
+        const data = await response.json();
+
+        const container = document.getElementById('system-metrics-display');
+        if (!container) return;
+
+        if (data.error) {
+            container.innerHTML = '<div class="alert alert-error">Error loading system metrics: ' + data.error + '</div>';
+            return;
+        }
+
+        container.innerHTML = `
+            <p>CPU Usage: ${data.cpu_percent}%</p>
+            <p>Memory Usage: ${data.memory_percent}%</p>
+            <p>Disk Usage: ${data.disk_percent}%</p>
+            <p>Active Threads: ${data.active_threads}</p>
+            <p>Proxy Connections: ${data.proxy_connections}</p>
+        `;
+    } catch (error) {
+        console.error('Error loading system metrics:', error);
+        container.innerHTML = '<div class="alert alert-error">Network error loading system metrics</div>';
+    }
+}
+
+        // Additional functions
+        function searchVulnerabilities() { loadVulnerabilityData(); }
+        function refreshVulnerabilities() { loadVulnerabilityData(); }
+        function searchMLResults() { loadMLXSSData(); }
+        function refreshMLResults() { loadMLXSSData(); }
+        function start403Scan() { alert('403 scan functionality not yet implemented'); }
+        function load403Results() { load403Data(); }
+        function refreshSystemMetrics() { updateSystemMetrics(); loadSystemData(); }
+        function restartAllServices() {
+            if (confirm('Are you sure you want to restart all services?')) {
+                alert('Service restart functionality not yet implemented');
+            }
+        }
+
+        // Utility Functions
+        function updateElementText(id, text) {
+            const element = document.getElementById(id);
+            if (element) element.textContent = text;
+        }
+
+        function formatTimestamp(timestamp) {
+            if (!timestamp) return '-';
+            const date = new Date(timestamp);
+            return date.toLocaleString('en-US', {
+                month: '2-digit',
+                day: '2-digit', 
+                year: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            }).replace(',', '');
+        }
+
+        function getStatusClass(status) {
+            if (!status) return 'status-default';
+            if (status === 200) return 'status-200';
+            if ([301, 302, 307, 308].includes(status)) return 'status-301';
+            if (status === 403) return 'status-403';
+            if (status === 404) return 'status-404';
+            if ([500, 502, 503].includes(status)) return 'status-500';
+            return 'status-default';
+        }
+
+        function formatBytes(bytes) {
+            if (!bytes) return '0B';
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            if (bytes === 0) return '0B';
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + sizes[i];
+        }
+
+        function truncate(str, length) {
+            if (!str) return '';
+            return str.length > length ? str.substring(0, length) + '...' : str;
+        }
+
+
+        function escapeHtml(unsafe) {
+            if (!unsafe) return '';
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;")
+                .replace(/\//g, "&#x2F;");
+        }
+
+        function showError(containerId, message, colspan) {
+            const container = document.getElementById(containerId);
+            if (container) {
+                container.innerHTML = `
+                    <tr>
+                        <td colspan="${colspan}" style="padding: 20px; text-align: center; color: #ef4444;">
+                            ERROR: ${message}
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+
+        // ==================== LIVE NOTIFICATION SYSTEM ====================
+        let lastNotificationCheck = Date.now();
+        let shownNotifications = new Set();
+
+        function checkForNotifications() {
+            fetch('/api/notifications')
+                .then(response => response.json())
+                .then(notifications => {
+                    notifications.forEach(notification => {
+                        if (!shownNotifications.has(notification.id)) {
+                            showNotification(notification);
+                            shownNotifications.add(notification.id);
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching notifications:', error);
+                });
+        }
+
+        function showVulnDetails(content, title) {
+            // Create modal if it doesn't exist
+            if (!document.getElementById('vuln-details-modal')) {
+                const modalHTML = `
+                    <div id="vuln-details-modal" class="modal-overlay" style="display: none;">
+                        <div class="modal-content" style="max-width: 600px;">
+                            <div class="modal-header">
+                                <h3 id="vuln-details-title">Vulnerability Details</h3>
+                                <button class="modal-close" onclick="closeVulnDetailsModal()">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <pre id="vuln-details-content" style="white-space: pre-wrap; word-wrap: break-word; background: #f8f9fa; padding: 15px; border-radius: 4px; max-height: 400px; overflow-y: auto;"></pre>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.body.insertAdjacentHTML('beforeend', modalHTML);
+            }
+            
+            // Update modal content
+            document.getElementById('vuln-details-title').textContent = title || 'Details';
+            document.getElementById('vuln-details-content').textContent = content || 'No details available';
+            document.getElementById('vuln-details-modal').style.display = 'flex';
+        }
+        
+        function closeVulnDetailsModal() {
+            const modal = document.getElementById('vuln-details-modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        function showNotification(notification) {
+            const container = document.getElementById('notification-container');
+            
+            // Create notification element
+            const notificationElement = document.createElement('div');
+            notificationElement.className = `notification-popup ${notification.type || 'discovery'}`;
+            notificationElement.id = `notification-${notification.id}`;
+            
+            notificationElement.innerHTML = `
+                <button class="notification-close" onclick="closeNotification('${notification.id}')">&times;</button>
+                <div class="notification-header">${getNotificationIcon(notification.type)} ${notification.message}</div>
+                ${notification.details ? `<div class="notification-details">${notification.details}</div>` : ''}
+            `;
+            
+            // Add to container
+            container.appendChild(notificationElement);
+            
+            // Show with animation
+            setTimeout(() => {
+                notificationElement.classList.add('show');
+            }, 100);
+        }
+        
+        function closeNotification(notificationId) {
+            const notification = document.getElementById(`notification-${notificationId}`);
+            if (notification) {
+                notification.classList.remove('show');
+                setTimeout(() => {
+                    notification.remove();
+                }, 300);
+            }
+        }
+
+        function getNotificationIcon(type) {
+            switch(type) {
+                case 'discovery': return '🔍';
+                case 'vulnerability': return '🚨';
+                case 'error': return '❌';
+                case 'warning': return '⚠️';
+                default: return '📊';
+            }
+        }
+        
+        // Response modal functionality - make it globally accessible
+        window.showAssetResponse = function(element) {
+            const responseBody = element.getAttribute('data-response');
+            const url = element.getAttribute('data-url');
+            
+            // Create modal if it doesn't exist
+            let modal = document.getElementById('response-modal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'response-modal';
+                modal.className = 'modal';
+                modal.style.cssText = 'display: none; position: fixed; z-index: 9999; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.8);';
+                modal.innerHTML = `
+                    <div class="modal-content" style="position: relative; background: #2a2a2a; margin: 2% auto; padding: 0; border: 1px solid #555; border-radius: 8px; width: 90%; height: 90%; max-width: 1200px;">
+                        <div style="background: #1a1a1a; padding: 20px; border-radius: 8px 8px 0 0; border-bottom: 1px solid #555;">
+                            <span class="close" onclick="closeResponseModal()" style="color: #fff; float: right; font-size: 28px; font-weight: bold; cursor: pointer;">&times;</span>
+                            <h3 id="response-modal-title" style="color: #fff; margin: 0; font-family: Arial, sans-serif;">Response Body</h3>
+                        </div>
+                        <div style="background: #1a1a1a; padding: 20px; max-height: 80vh; overflow: auto;">
+                            <pre id="response-content" style="color: #00ff00; font-family: 'Courier New', monospace; font-size: 11px; white-space: pre-wrap; word-wrap: break-word; margin: 0; line-height: 1.4;"></pre>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            }
+
+            const modalTitle = document.getElementById('response-modal-title');
+            const responseContent = document.getElementById('response-content');
+            
+            modalTitle.textContent = `Response: ${truncate(url, 80)}`;
+            responseContent.textContent = responseBody || 'No response captured';
+            
+            modal.style.display = 'block';
+        };
+        
+        window.closeResponseModal = function() {
+            const modal = document.getElementById('response-modal');
+            if (modal) modal.style.display = 'none';
+        };
+
+        // Asset reconnaissance details modal
+        window.showAssetDetails = function(assetId) {
+            // Find asset in current asset data
+            const asset = currentAssetData.find(a => a[assetMapping.id] == assetId);
+            if (!asset) return;
+            
+            const url = asset[assetMapping.url];
+            const takeoverRisk = asset[assetMapping.takeover_risk] || 'SAFE';
+            const discoveredParams = JSON.parse(asset[assetMapping.discovered_params] || '[]');
+            const apiEndpoints = JSON.parse(asset[assetMapping.api_endpoints] || '[]');
+            const securityHeaders = JSON.parse(asset[assetMapping.security_headers] || '{}');
+            const techVersions = JSON.parse(asset[assetMapping.tech_versions] || '{}');
+            const dnsRecords = JSON.parse(asset[assetMapping.dns_records] || '{}');
+            const asnInfo = JSON.parse(asset[assetMapping.asn_info] || '{}');
+            
+            let modal = document.getElementById('asset-details-modal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'asset-details-modal';
+                modal.className = 'modal';
+                modal.style.cssText = 'display: none; position: fixed; z-index: 9999; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.8);';
+                modal.innerHTML = `
+                    <div class="modal-content" style="position: relative; background: #2a2a2a; margin: 2% auto; padding: 0; border: 1px solid #555; border-radius: 8px; width: 95%; height: 90%; max-width: 1400px;">
+                        <div style="background: #1a1a1a; padding: 20px; border-radius: 8px 8px 0 0; border-bottom: 1px solid #555;">
+                            <span class="close" onclick="closeAssetDetailsModal()" style="color: #fff; float: right; font-size: 28px; font-weight: bold; cursor: pointer;">&times;</span>
+                            <h3 id="asset-details-title" style="color: #fff; margin: 0; font-family: Arial, sans-serif;">🔍 Asset Reconnaissance Details</h3>
+                        </div>
+                        <div style="background: #1a1a1a; padding: 20px; max-height: 80vh; overflow: auto;">
+                            <div id="asset-details-content" style="color: #e0e0e0; font-family: 'Courier New', monospace; font-size: 12px;"></div>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            }
+
+            const modalTitle = document.getElementById('asset-details-title');
+            const detailsContent = document.getElementById('asset-details-content');
+            
+            modalTitle.innerHTML = `🔍 Reconnaissance: ${truncate(url, 60)}`;
+            
+            let content = `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">`;
+            
+            // Left column
+            content += `<div>`;
+            
+            // Subdomain Takeover Risk
+            const riskColor = takeoverRisk === 'HIGH' ? '#dc2626' : takeoverRisk === 'MEDIUM' ? '#ca8a04' : '#16a34a';
+            content += `
+                <div style="margin-bottom: 20px; padding: 15px; background: #333; border-radius: 6px; border-left: 4px solid ${riskColor};">
+                    <h4 style="color: #fff; margin-bottom: 10px;">🎯 Subdomain Takeover Risk</h4>
+                    <div style="color: ${riskColor}; font-weight: bold;">${takeoverRisk}</div>
+                </div>
+            `;
+            
+            // Discovered Parameters
+            content += `
+                <div style="margin-bottom: 20px; padding: 15px; background: #333; border-radius: 6px;">
+                    <h4 style="color: #fff; margin-bottom: 10px;">📋 Discovered Parameters (${discoveredParams.length})</h4>
+                    <div style="max-height: 200px; overflow-y: auto;">`;
+            if (discoveredParams.length > 0) {
+                discoveredParams.forEach(param => {
+                    content += `<div style="color: #4ade80; margin: 4px 0;">${param}</div>`;
+                });
+            } else {
+                content += `<div style="color: #666;">No parameters discovered</div>`;
+            }
+            content += `</div></div>`;
+            
+            // Technology Versions
+            content += `
+                <div style="margin-bottom: 20px; padding: 15px; background: #333; border-radius: 6px;">
+                    <h4 style="color: #fff; margin-bottom: 10px;">⚙️ Technology Versions</h4>
+                    <div style="max-height: 200px; overflow-y: auto;">`;
+            if (Object.keys(techVersions).length > 0) {
+                Object.entries(techVersions).forEach(([tech, version]) => {
+                    content += `<div style="color: #fbbf24; margin: 4px 0;"><strong>${tech}:</strong> ${version}</div>`;
+                });
+            } else {
+                content += `<div style="color: #666;">No version information available</div>`;
+            }
+            content += `</div></div>`;
+            
+            content += `</div>`; // Close left column
+            
+            // Right column
+            content += `<div>`;
+            
+            // API Endpoints
+            content += `
+                <div style="margin-bottom: 20px; padding: 15px; background: #333; border-radius: 6px;">
+                    <h4 style="color: #fff; margin-bottom: 10px;">🌐 Discovered APIs (${apiEndpoints.length})</h4>
+                    <div style="max-height: 200px; overflow-y: auto;">`;
+            if (apiEndpoints.length > 0) {
+                apiEndpoints.forEach(api => {
+                    content += `<div style="color: #0ea5e9; margin: 4px 0;">${api}</div>`;
+                });
+            } else {
+                content += `<div style="color: #666;">No API endpoints discovered</div>`;
+            }
+            content += `</div></div>`;
+            
+            // Security Headers
+            content += `
+                <div style="margin-bottom: 20px; padding: 15px; background: #333; border-radius: 6px;">
+                    <h4 style="color: #fff; margin-bottom: 10px;">🔒 Security Headers</h4>
+                    <div style="max-height: 200px; overflow-y: auto;">`;
+            if (Object.keys(securityHeaders).length > 0) {
+                Object.entries(securityHeaders).forEach(([header, value]) => {
+                    const isSecure = ['strict-transport-security', 'content-security-policy', 'x-frame-options'].includes(header.toLowerCase());
+                    const color = isSecure ? '#16a34a' : '#ca8a04';
+                    content += `<div style="color: ${color}; margin: 4px 0;"><strong>${header}:</strong> ${truncate(value, 50)}</div>`;
+                });
+            } else {
+                content += `<div style="color: #666;">No security headers analyzed</div>`;
+            }
+            content += `</div></div>`;
+            
+            // DNS Records
+            content += `
+                <div style="margin-bottom: 20px; padding: 15px; background: #333; border-radius: 6px;">
+                    <h4 style="color: #fff; margin-bottom: 10px;">🔍 DNS Records</h4>
+                    <div style="max-height: 200px; overflow-y: auto;">`;
+            if (Object.keys(dnsRecords).length > 0) {
+                Object.entries(dnsRecords).forEach(([type, records]) => {
+                    if (Array.isArray(records) && records.length > 0) {
+                        content += `<div style="color: #a855f7; margin: 8px 0;"><strong>${type}:</strong></div>`;
+                        records.forEach(record => {
+                            content += `<div style="color: #d1d5db; margin-left: 15px; margin: 2px 0;">${record}</div>`;
+                        });
+                    }
+                });
+            } else {
+                content += `<div style="color: #666;">No DNS records available</div>`;
+            }
+            content += `</div></div>`;
+            
+            // ASN Information (already defined above)
+            content += `
+                <div style="margin-bottom: 20px; padding: 15px; background: #333; border-radius: 6px;">
+                    <h4 style="color: #fff; margin-bottom: 10px;">🌐 ASN Information</h4>
+                    <div style="max-height: 200px; overflow-y: auto;">`;
+            if (Object.keys(asnInfo).length > 0) {
+                content += `<div style="color: #22c55e; margin: 4px 0;"><strong>IP:</strong> ${asnInfo.ip || 'Unknown'}</div>`;
+                content += `<div style="color: #3b82f6; margin: 4px 0;"><strong>ASN:</strong> AS${asnInfo.asn_number || 'Unknown'}</div>`;
+                content += `<div style="color: #f59e0b; margin: 4px 0;"><strong>Organization:</strong> ${asnInfo.asn_org || 'Unknown'}</div>`;
+                content += `<div style="color: #8b5cf6; margin: 4px 0;"><strong>Country:</strong> ${asnInfo.country || 'Unknown'}</div>`;
+                if (asnInfo.cloud_provider) {
+                    content += `<div style="color: #ec4899; margin: 4px 0;"><strong>Cloud Provider:</strong> ${asnInfo.cloud_provider}</div>`;
+                }
+                if (asnInfo.ports_open && asnInfo.ports_open.length > 0) {
+                    content += `<div style="color: #ef4444; margin: 4px 0;"><strong>Open Ports:</strong> ${asnInfo.ports_open.join(', ')}</div>`;
+                }
+            } else {
+                content += `<div style="color: #666;">ASN information not collected yet</div>`;
+            }
+            content += `</div></div>`;
+            
+            content += `</div>`; // Close right column
+            content += `</div>`; // Close grid
+            
+            detailsContent.innerHTML = content;
+            modal.style.display = 'block';
+        };
+        
+        window.closeAssetDetailsModal = function() {
+            const modal = document.getElementById('asset-details-modal');
+            if (modal) modal.style.display = 'none';
+        };
+    </script>
+</body>
+</html>
