@@ -60,6 +60,10 @@ class ModularVulnerabilityScanner:
         self.screenshot_manager = ScreenshotManager(self.asset_manager, CONFIG)
         self.waf_bypass = WAFBypass(self.asset_manager, CONFIG)
         self.reconnaissance = ReconnaissanceEngine(self.asset_manager, CONFIG)
+        # Share concurrency semaphore with modules
+        self.discovery_engine.semaphore = self.semaphore
+        self.vulnerability_scanner.semaphore = self.semaphore
+        self.reconnaissance.semaphore = self.semaphore
         
         # Performance settings
         self.cpu_target = CONFIG.get("cpu_target_utilization", 75)
@@ -74,6 +78,8 @@ class ModularVulnerabilityScanner:
     
     async def initialize_all_modules(self):
         """Initialize all scanning modules"""
+        # Start background CPU auto-tuning of concurrency
+        asyncio.create_task(self._cpu_autotune_loop())
         
         # Initialize modules in parallel
         init_tasks = [
@@ -87,7 +93,6 @@ class ModularVulnerabilityScanner:
             self.waf_bypass.initialize(),
             self.reconnaissance.initialize()
         # Start background CPU auto-tuning of concurrency
-        asyncio.create_task(self._cpu_autotune_loop())
         ]
         
         await asyncio.gather(*init_tasks, return_exceptions=True)
@@ -444,8 +449,7 @@ async def main():
             if "stable_id" not in finding:
                 finding["stable_id"] = self._stable_id(finding)
             finding.setdefault("ts", datetime.utcnow().isoformat() + "Z")
-            line = (json.dumps(finding, ensure_ascii=False) + "
-")
+            line = (json.dumps(finding, ensure_ascii=False) + "\n")
             # Lazy open to avoid keeping fd around
             with open(self.findings_path, "a", encoding="utf-8") as fp:
                 fp.write(line)
