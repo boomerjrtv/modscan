@@ -11,6 +11,7 @@ import time
 import psutil
 from pathlib import Path
 from datetime import datetime
+import json
 import hashlib
 
 # Import all modular components
