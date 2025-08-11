@@ -11,6 +11,7 @@ import time
 import psutil
 from pathlib import Path
 from datetime import datetime
+import hashlib
 
 # Import all modular components
 from modules.seclists_manager import SecListsManager
@@ -63,6 +64,10 @@ class ModularVulnerabilityScanner:
         self.cpu_target = CONFIG.get("cpu_target_utilization", 75)
         self.max_concurrent = min(4000, self.cpu_target * 30)
         self.session_limit = self.max_concurrent * 3
+        # Runtime controls and state
+        self.semaphore = asyncio.Semaphore(self.max_concurrent)
+        self.seen = set()  # de-duplication of scan keys
+        self.findings_path = BASE_DIR / "findings.jsonl"
         
         logger.info("🚀 Modular Scanner initialized - all modules using AssetManager field mappings")
     
@@ -80,6 +85,8 @@ class ModularVulnerabilityScanner:
             self.screenshot_manager.initialize(),
             self.waf_bypass.initialize(),
             self.reconnaissance.initialize()
+        # Start background CPU auto-tuning of concurrency
+        asyncio.create_task(self._cpu_autotune_loop())
         ]
         
         await asyncio.gather(*init_tasks, return_exceptions=True)
@@ -362,5 +369,86 @@ async def main():
     except Exception as e:
         logger.error(f"💥 Modular scanner error: {e}")
 
+    async def _cpu_autotune_loop(self):
+        """
+        Background task: keep CPU near target by adjusting concurrency.
+        - Samples CPU every 2s.
+        - Expands/shrinks the semaphore permits within bounds.
+        """
+        target = int(self.cpu_target)
+        min_conc = max(32, int(self.max_concurrent * 0.10))
+        max_conc = int(self.max_concurrent)
+        # Current permits tracked as a soft state (start at max)
+        current = max_conc
+        try:
+            while True:
+                cpu = int(psutil.cpu_percent(interval=1))
+                # If CPU is low, try to increase concurrency
+                if cpu < target - 5 and current < max_conc:
+                    delta = max(1, (target - cpu) // 2)
+                    new = min(max_conc, current + delta)
+                    # Grow: release additional permits
+                    for _ in range(new - current):
+                        self.semaphore.release()
+                    current = new
+                # If CPU is high, try to decrease concurrency
+                elif cpu > target + 5 and current > min_conc:
+                    delta = max(1, (cpu - target) // 2)
+                    new = max(min_conc, current - delta)
+                    # Shrink: acquire permits to reduce available slots
+                    # NOTE: acquire with timeout to avoid deadlock
+                    for _ in range(current - new):
+                        try:
+                            await asyncio.wait_for(self.semaphore.acquire(), timeout=0.1)
+                        except asyncio.TimeoutError:
+                            break
+                    current = new
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            return
+
+    def _should_scan(self, key: str) -> bool:
+        """
+        Idempotent de-dup of scan units. Returns True only on first sight.
+        Use a stable key such as f"{method} {url}" or asset_id.
+        """
+        if key in self.seen:
+            return False
+        self.seen.add(key)
+        return True
+
+    def _stable_id(self, finding: dict) -> str:
+        """
+        Deterministic SHA256 over type, target, location-ish fields.
+        """
+        # Avoid import cost elsewhere; hashlib is imported at module level.
+        fields = [
+            str(finding.get("type", "")),
+            str(finding.get("category", "")),
+            str(finding.get("severity", "")),
+            str(finding.get("target", "")),
+            str(finding.get("endpoint", "")),
+            str(finding.get("param", "")),
+            str(finding.get("evidence", ""))[:200],  # cap noise
+        ]
+        s = "|".join(fields).encode("utf-8", "ignore")
+        return hashlib.sha256(s).hexdigest()
+
+    def _write_finding(self, finding: dict):
+        """
+        Append a single finding to findings.jsonl with a stable_id field.
+        Safe to call from anywhere; creates file if missing.
+        """
+        try:
+            if "stable_id" not in finding:
+                finding["stable_id"] = self._stable_id(finding)
+            finding.setdefault("ts", datetime.utcnow().isoformat() + "Z")
+            line = (json.dumps(finding, ensure_ascii=False) + "
+")
+            # Lazy open to avoid keeping fd around
+            with open(self.findings_path, "a", encoding="utf-8") as fp:
+                fp.write(line)
+        except Exception as e:
+            logger.error("Failed to write finding: %s", e)
 if __name__ == "__main__":
     asyncio.run(main())
