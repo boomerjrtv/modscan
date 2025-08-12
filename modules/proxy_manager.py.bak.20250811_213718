@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""
+Proxy Manager Module - Intelligent proxy management with AssetManager
+"""
+
+import asyncio
+import aiohttp
+import logging
+import random
+import time
+from datetime import datetime
+from typing import List, Dict, Optional
+
+logger = logging.getLogger("ProxyManager")
+
+class ProxyManager:
+    """Advanced proxy management using AssetManager logging"""
+    
+    def __init__(self, asset_manager, config: Dict):
+        self.asset_manager = asset_manager  # Use YOUR AssetManager
+        self.config = config
+        
+        # Proxy configuration
+        self.proxy_list = config.get('proxy_list', [])
+        self.healthy_proxies = set(self.proxy_list)
+        self.proxy_stats = {
+            proxy: {
+                "requests": 0, 
+                "failures": 0, 
+                "last_used": None,
+                "last_health_check": 0,
+                "response_time": 0
+            } 
+            for proxy in self.proxy_list
+        }
+        self.last_global_health_check = 0
+        self.health_check_interval = 300  # 5 minutes
+        
+        logger.info(f"🔗 ProxyManager initialized with {len(self.proxy_list)} proxies")
+    
+    async def initialize(self):
+        """Initialize proxy manager"""
+        try:
+            # Initial health check
+            if self.proxy_list:
+                logger.info("🔍 Performing initial proxy health check...")
+                # Skip initial health check to start faster
+                # await self._perform_health_check_batch()
+            
+            # Log initialization using AssetManager
+            self.asset_manager.log_activity(
+                'PROXY_MANAGER_INIT',
+                f'ProxyManager initialized with {len(self.proxy_list)} proxies'
+            )
+            
+            logger.info("✅ ProxyManager initialization complete")
+            
+        except Exception as e:
+            logger.error(f"ProxyManager initialization failed: {e}")
+    
+    def get_random_proxy(self) -> Optional[str]:
+        """Get random healthy proxy with intelligent selection"""
+        
+        if not self.healthy_proxies:
+            # Reset to all proxies if none are healthy
+            if self.proxy_list:
+                self.healthy_proxies = set(self.proxy_list)
+                logger.info("⚡ Resetting proxy pool - all proxies marked as potentially healthy")
+        
+        if not self.healthy_proxies:
+            return None
+        
+        # Weighted selection based on success rate and response time
+        proxy_weights = []
+        
+        for proxy in self.healthy_proxies:
+            stats = self.proxy_stats[proxy]
+            
+            # Calculate success rate
+            requests = stats["requests"]
+            failures = stats["failures"]
+            success_rate = 1.0 - (failures / max(requests, 1))
+            
+            # Calculate response time weight (lower is better)
+            response_time = stats["response_time"]
+            time_weight = 1.0 / max(response_time, 0.1) if response_time > 0 else 1.0
+            
+            # Combined weight
+            weight = (success_rate * 0.7) + (time_weight * 0.3)
+            proxy_weights.append((proxy, weight))
+        
+        if not proxy_weights:
+            return random.choice(list(self.healthy_proxies))
+        
+        # Weighted random selection
+        proxies, weights = zip(*proxy_weights)
+        selected_proxy = random.choices(proxies, weights=weights)[0]
+        
+        # Update usage stats
+        self.proxy_stats[selected_proxy]["last_used"] = datetime.now()
+        
+        return selected_proxy
+    
+    def update_proxy_stats(self, proxy: str, success: bool, response_time: float = 0):
+        """Update proxy usage statistics"""
+        
+        if proxy not in self.proxy_stats:
+            return
+        
+        stats = self.proxy_stats[proxy]
+        stats["requests"] += 1
+        stats["last_used"] = datetime.now()
+        
+        if response_time > 0:
+            # Update running average of response time
+            if stats["response_time"] == 0:
+                stats["response_time"] = response_time
+            else:
+                stats["response_time"] = (stats["response_time"] * 0.8) + (response_time * 0.2)
+        
+        if not success:
+            stats["failures"] += 1
+            
+            # Remove proxy if failure rate is too high
+            failure_rate = stats["failures"] / stats["requests"]
+            if failure_rate > 0.6 and stats["requests"] > 5:
+                self.healthy_proxies.discard(proxy)
+                logger.warning(f"🚫 Proxy marked unhealthy: {proxy} (failure rate: {failure_rate:.2f})")
+                
+                # Log proxy failure using AssetManager
+                self.asset_manager.log_activity(
+                    'PROXY_FAILURE',
+                    f'Proxy {proxy} marked unhealthy - failure rate: {failure_rate:.2f}'
+                )
+    
+    async def update_proxy_health(self, session: aiohttp.ClientSession):
+        """Update proxy health status"""
+        
+        current_time = time.time()
+        
+        # Skip if recently checked
+        if current_time - self.last_global_health_check < self.health_check_interval:
+            return
+        
+        # Don't check health if we have no proxies
+        if not self.proxy_list:
+            return
+        
+        logger.info("🔍 Performing proxy health check...")
+        
+        # Test a subset of proxies to avoid overwhelming
+        proxies_to_test = list(self.proxy_list)[:20]  # Test max 20 proxies
+        healthy_count = 0
+        
+        health_tasks = []
+        for proxy in proxies_to_test:
+            health_tasks.append(self._test_proxy_health(proxy, session))
+        
+        try:
+            health_results = await asyncio.gather(*health_tasks, return_exceptions=True)
+            
+            for proxy, result in zip(proxies_to_test, health_results):
+                if isinstance(result, tuple) and result[0]:  # (is_healthy, response_time)
+                    self.healthy_proxies.add(proxy)
+                    healthy_count += 1
+                    # Update response time
+                    self.proxy_stats[proxy]["response_time"] = result[1]
+                else:
+                    self.healthy_proxies.discard(proxy)
+        
+        except Exception as e:
+            logger.error(f"Proxy health check failed: {e}")
+        
+        self.last_global_health_check = current_time
+        
+        logger.info(f"✅ Proxy health check: {healthy_count}/{len(proxies_to_test)} proxies healthy")
+        
+        # Log health check results using AssetManager
+        self.asset_manager.log_activity(
+            'PROXY_HEALTH_CHECK',
+            f'Health check completed: {healthy_count}/{len(proxies_to_test)} proxies healthy'
+        )
+    
+    async def _test_proxy_health(self, proxy: str, session: aiohttp.ClientSession) -> tuple:
+        """Test individual proxy health"""
+        try:
+            test_url = "http://httpbin.org/ip"
+            start_time = time.time()
+            
+            async with self.semaphore:
+                async with session.get(
+                test_url, 
+                proxy=proxy, 
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                response_time = time.time() - start_time
+                
+                if response.status == 200:
+                    data = await response.json()
+                    # Verify proxy is working by checking if IP changed
+                    return (True, response_time)
+                else:
+                    return (False, 0)
+                    
+        except Exception as e:
+            logger.debug(f"Proxy health test failed for {proxy}: {e}")
+            return (False, 0)
+    
+    def get_proxy_statistics(self) -> Dict:
+        """Get comprehensive proxy statistics"""
+        
+        total_proxies = len(self.proxy_list)
+        healthy_proxies = len(self.healthy_proxies)
+        
+        total_requests = sum(stats["requests"] for stats in self.proxy_stats.values())
+        total_failures = sum(stats["failures"] for stats in self.proxy_stats.values())
+        
+        success_rate = (total_requests - total_failures) / max(total_requests, 1)
+        
+        # Find best and worst performing proxies
+        best_proxy = None
+        worst_proxy = None
+        best_success_rate = 0
+        worst_success_rate = 1
+        
+        for proxy, stats in self.proxy_stats.items():
+            if stats["requests"] > 0:
+                proxy_success_rate = 1.0 - (stats["failures"] / stats["requests"])
+                if proxy_success_rate > best_success_rate:
+                    best_success_rate = proxy_success_rate
+                    best_proxy = proxy
+                if proxy_success_rate < worst_success_rate:
+                    worst_success_rate = proxy_success_rate
+                    worst_proxy = proxy
+        
+        return {
+            "total": total_proxies,
+            "healthy": healthy_proxies,
+            "unhealthy": total_proxies - healthy_proxies,
+            "total_requests": total_requests,
+            "total_failures": total_failures,
+            "success_rate": success_rate,
+            "best_proxy": best_proxy,
+            "best_success_rate": best_success_rate,
+            "worst_proxy": worst_proxy,
+            "worst_success_rate": worst_success_rate
+        }
+    
+    def force_proxy_refresh(self):
+        """Force refresh all proxies as healthy"""
+        self.healthy_proxies = set(self.proxy_list)
+        
+        # Reset failure counts
+        for proxy in self.proxy_stats:
+            self.proxy_stats[proxy]["failures"] = 0
+            self.proxy_stats[proxy]["requests"] = max(1, self.proxy_stats[proxy]["requests"])
+        
+        logger.info(f"🔄 Forced proxy refresh: {len(self.healthy_proxies)} proxies reset to healthy")
+        
+        # Log refresh using AssetManager
+        self.asset_manager.log_activity(
+            'PROXY_REFRESH',
+            f'Forced proxy refresh - {len(self.healthy_proxies)} proxies reset to healthy status'
+        )
+    
+    def remove_proxy(self, proxy: str):
+        """Remove a proxy from the pool"""
+        if proxy in self.proxy_list:
+            self.proxy_list.remove(proxy)
+            self.healthy_proxies.discard(proxy)
+            del self.proxy_stats[proxy]
+            
+            logger.info(f"🗑️ Removed proxy from pool: {proxy}")
+            
+            # Log removal using AssetManager
+            self.asset_manager.log_activity(
+                'PROXY_REMOVED',
+                f'Proxy removed from pool: {proxy}'
+            )
+    
+    def add_proxy(self, proxy: str):
+        """Add a new proxy to the pool"""
+        if proxy not in self.proxy_list:
+            self.proxy_list.append(proxy)
+            self.healthy_proxies.add(proxy)
+            self.proxy_stats[proxy] = {
+                "requests": 0,
+                "failures": 0,
+                "last_used": None,
+                "last_health_check": 0,
+                "response_time": 0
+            }
+            
+            logger.info(f"➕ Added new proxy to pool: {proxy}")
+            
+            # Log addition using AssetManager
+            self.asset_manager.log_activity(
+                'PROXY_ADDED',
+                f'New proxy added to pool: {proxy}'
+            )

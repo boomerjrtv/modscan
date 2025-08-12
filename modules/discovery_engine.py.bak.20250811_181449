@@ -18,37 +18,6 @@ from typing import List, Dict, Optional
 logger = logging.getLogger("DiscoveryEngine")
 
 class DiscoveryEngine:
-    # --- hardening helpers (idempotent) ---
-    def _dedupe_list(self, items):
-        out = []
-        seen = getattr(self, '_local_seen', set())
-        setattr(self, '_local_seen', seen)
-        gate = getattr(self, '_global_should_scan', None)
-        for it in items or []:
-            key = str(it)
-            try:
-                if callable(gate) and not gate(key):
-                    continue
-            except Exception:
-                pass
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(it)
-        return out
-
-    def _batch_size(self, default=200):
-        # Choose a safe bounded batch size; prefer config if present
-        bs = default
-        try:
-            cfg = getattr(self, 'config', None)
-            if isinstance(cfg, dict):
-                bs = int(cfg.get('bounded_batch', bs))
-        except Exception:
-            pass
-        # clamp sensibly
-        return max(50, min(800, int(bs)))
-
     """Advanced target discovery using AssetManager field mappings"""
     
     def __init__(self, asset_manager, config: Dict, proxy_manager=None):
@@ -456,7 +425,8 @@ def _profile_one(self, asset):
                     await asyncio.sleep(random.uniform(0.1, 0.5))  # Random delay 100-500ms
                 
                 # First request without following redirects to get initial status
-                async with self.semaphore, session.get(
+                async with self.semaphore:
+                    async with session.get(
                     url, 
                     proxy=proxy, 
                     timeout=15, 
@@ -480,7 +450,8 @@ def _profile_one(self, asset):
                                 return False  # Skip redundant targets
                             
                             try:
-                                async with self.semaphore, session.get(
+                                async with self.semaphore:
+                                    async with session.get(
                                     location if location.startswith('http') else f"{url.split('/', 3)[0]}//{url.split('//', 1)[1].split('/', 1)[0]}/{location.lstrip('/')}",
                                     proxy=proxy,
                                     timeout=10,
@@ -812,7 +783,8 @@ def _profile_one(self, asset):
             ct_url = f"https://crt.sh/?q=%.{domain}&output=json"
             
             async with aiohttp.ClientSession() as session:
-                async with self.semaphore, session.get(ct_url, timeout=15) as response:
+                async with self.semaphore:
+                    async with session.get(ct_url, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
                         discovered_subdomains = set()
@@ -965,7 +937,8 @@ def _profile_one(self, asset):
             async with aiohttp.ClientSession() as session:
                 for api_url in asn_apis:
                     try:
-                        async with self.semaphore, session.get(api_url, timeout=10) as response:
+                        async with self.semaphore:
+                            async with session.get(api_url, timeout=10) as response:
                             if response.status == 200:
                                 data = await response.json() if 'json' in api_url else await response.text()
                                 
@@ -1054,7 +1027,8 @@ def _profile_one(self, asset):
             async with aiohttp.ClientSession() as session:
                 headers = {'Accept': 'application/vnd.github.v3+json'}
                 
-                async with self.semaphore, session.get(github_search_url, headers=headers, timeout=15) as response:
+                async with self.semaphore:
+                    async with session.get(github_search_url, headers=headers, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
                         
