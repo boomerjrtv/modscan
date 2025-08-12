@@ -476,7 +476,7 @@ class WAFBypass:
                 async with self.semaphore:
                     async with session.get(test_url, timeout=10, ssl=False) as response:
                         if response.status != 403:
-                            result = {
+                        result = {
                             "technique": f"Path Variation: {path_variation}",
                             "successful": True,
                             "final_status_code": response.status,

@@ -5737,3 +5737,11 @@
 2025-08-11 16:32:06,753 - INFO - 192.168.1.19 - - [11/Aug/2025 16:32:06] "GET /api/notifications HTTP/1.1" 200 -
 2025-08-11 16:32:06,754 - INFO - 192.168.1.19 - - [11/Aug/2025 16:32:06] "GET /api/activity HTTP/1.1" 200 -
 2025-08-11 16:32:07,768 - INFO - 192.168.1.19 - - [11/Aug/2025 16:32:07] "GET /api/system_metrics HTTP/1.1" 200 -
+2025-08-11 21:57:30,291 - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8000
+ * Running on http://192.168.1.7:8000
+2025-08-11 21:57:30,292 - INFO - [33mPress CTRL+C to quit[0m
+2025-08-11 21:57:30,292 - INFO -  * Restarting with stat
+2025-08-11 21:57:30,422 - WARNING -  * Debugger is active!
+2025-08-11 21:57:30,422 - INFO -  * Debugger PIN: 724-180-149

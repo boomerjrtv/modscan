@@ -16,6 +16,37 @@ from urllib.parse import urlparse
 logger = logging.getLogger("ReconnaissanceEngine")
 
 class ReconnaissanceEngine:
+    # --- hardening helpers (idempotent) ---
+    def _dedupe_list(self, items):
+        out = []
+        seen = getattr(self, '_local_seen', set())
+        setattr(self, '_local_seen', seen)
+        gate = getattr(self, '_global_should_scan', None)
+        for it in items or []:
+            key = str(it)
+            try:
+                if callable(gate) and not gate(key):
+                    continue
+            except Exception:
+                pass
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(it)
+        return out
+
+    def _batch_size(self, default=200):
+        # Choose a safe bounded batch size; prefer config if present
+        bs = default
+        try:
+            cfg = getattr(self, 'config', None)
+            if isinstance(cfg, dict):
+                bs = int(cfg.get('bounded_batch', bs))
+        except Exception:
+            pass
+        # clamp sensibly
+        return max(50, min(800, int(bs)))
+
     async def _persist_discoveries_to_assets(self, discoveries: dict):
         """Insert discovered subdomains (Tier-4) as assets so they appear in dashboard and get scanned."""
         if not discoveries:
@@ -108,8 +139,9 @@ class ReconnaissanceEngine:
             start = time.time()
             ok = False; status=None; headers={}; body=""; rt_ms=None; title=None
             try:
-                async with session.get(u, timeout=10, allow_redirects=False) as r:
-                    status = r.status
+                async with self.semaphore:
+                    async with session.get(u, timeout=10, allow_redirects=False) as r:
+                        status = r.status
                     headers = dict(r.headers)
                     try:
                         body = await r.text(errors="ignore")
@@ -319,9 +351,10 @@ class ReconnaissanceEngine:
                 try:
                     headers = {'User-Agent': 'ReconnaissanceEngine/1.0'}
                     
-                    async with session.get(ct_url, headers=headers, timeout=15) as response:
-                        if response.status == 200:
-                            ct_data = await response.json()
+                    async with self.semaphore:
+                        async with session.get(ct_url, headers=headers, timeout=15) as response:
+                            if response.status == 200:
+                                ct_data = await response.json()
                             
                             # Parse crt.sh format
                             if 'crt.sh' in ct_url and isinstance(ct_data, list):
@@ -434,9 +467,10 @@ class ReconnaissanceEngine:
         try:
             wayback_url = f"https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&limit=50"
             
-            async with session.get(wayback_url, timeout=15) as response:
-                if response.status == 200:
-                    wayback_data = await response.json()
+            async with self.semaphore:
+                async with session.get(wayback_url, timeout=15) as response:
+                    if response.status == 200:
+                        wayback_data = await response.json()
                     
                     if isinstance(wayback_data, list) and len(wayback_data) > 1:
                         for entry in wayback_data[1:]:  # Skip header row
