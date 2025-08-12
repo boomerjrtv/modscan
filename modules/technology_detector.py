@@ -133,8 +133,9 @@ class TechnologyDetector:
                 # Get proxy
                 proxy = await self._get_proxy()
                 
-                async with session.get(url, proxy=proxy, timeout=15, ssl=False) as response:
-                    headers = dict(response.headers)
+                async with self.semaphore:
+                    async with session.get(url, proxy=proxy, timeout=15, ssl=False) as response:
+                        headers = dict(response.headers)
                     content = await response.text()
                     
                     # Perform comprehensive technology detection

@@ -1,0 +1,13 @@
+./SecLists/*
+./screenshots/*
+./models/*
+./logs/*
+./__pycache__/*
+*.pyc
+*.pyo
+*.log
+*._backup_*
+*.bak
+*.swp
+*.swo
+./lean_recon.db-wal

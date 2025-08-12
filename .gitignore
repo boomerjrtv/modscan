@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+
+# Virtual envs
+.venv/
+venv/
+
+# Local data / logs / screenshots
+logs/
+screenshots/
+*.log
+*.sqlite
+*.db
+*.db-*
+*.db-*
+lean_recon.db*
+*.jsonl
+
+# Large vendor/data
+SecLists/
+models/
+node_modules/
+
+# Backups/artifacts
+*._backup_*
+*.bak
+*.swp
+*.swo
+*.tgz
+*.zip

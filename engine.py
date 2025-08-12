@@ -47,6 +47,8 @@ class ModularVulnerabilityScanner:
     """Main scanner orchestrator - coordinates all modules through AssetManager"""
     
     def __init__(self):
+        # Track scanned assets to avoid duplicates
+        self._scanned_assets = set()
         # Initialize YOUR AssetManager first (centralized field mapping)
         self.asset_manager = AssetManager()
         
@@ -60,7 +62,12 @@ class ModularVulnerabilityScanner:
         self.screenshot_manager = ScreenshotManager(self.asset_manager, CONFIG)
         self.waf_bypass = WAFBypass(self.asset_manager, CONFIG)
         self.reconnaissance = ReconnaissanceEngine(self.asset_manager, CONFIG)
-        # Share concurrency semaphore with modules
+        
+        # Share global enqueue gate into modules if available
+        self.discovery_engine._global_should_scan = self._should_scan
+        self.vulnerability_scanner._global_should_scan = self._should_scan
+        self.reconnaissance._global_should_scan = self._should_scan
+# Share concurrency semaphore with modules
         self.discovery_engine.semaphore = self.semaphore
         self.vulnerability_scanner.semaphore = self.semaphore
         self.reconnaissance.semaphore = self.semaphore
@@ -100,6 +107,12 @@ class ModularVulnerabilityScanner:
         logger.info("✅ All modules initialized using AssetManager mappings")
     
     def monitor_and_adjust_performance(self) -> float:
+        cpu_usage = psutil.cpu_percent(interval=1)
+        if cpu_usage > self.cpu_target:
+            self.max_concurrent = max(100, int(self.max_concurrent * 0.9))
+        elif cpu_usage < self.cpu_target - 10:
+            self.max_concurrent = min(4000, int(self.max_concurrent * 1.1))
+        logger.info(f"[Perf] CPU: {cpu_usage}% | Max concurrent: {self.max_concurrent}")
         """Monitor CPU and adjust all modules dynamically"""
         try:
             current_cpu = psutil.cpu_percent(interval=0.2)
