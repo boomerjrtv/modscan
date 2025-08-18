@@ -34,10 +34,13 @@ class ScreenshotManager:
         logger.info("📸 ScreenshotManager initialized with AssetManager integration")
     
     async def initialize(self):
-        """Initialize screenshot manager"""
+        """Initialize screenshot manager with hang prevention"""
         try:
-            # Check if Chrome is available
-            chrome_available = await self._check_chrome_availability()
+            # Use asyncio.wait_for to prevent hangs
+            chrome_available = await asyncio.wait_for(
+                self._check_chrome_availability(), 
+                timeout=10.0  # 10 second total timeout for Chrome check
+            )
             
             if not chrome_available:
                 logger.warning("⚠️ Chrome not available - screenshots will be disabled")
@@ -50,8 +53,11 @@ class ScreenshotManager:
             
             logger.info("✅ ScreenshotManager initialization complete")
             
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Chrome check timed out - screenshots will be disabled")
         except Exception as e:
             logger.error(f"ScreenshotManager initialization failed: {e}")
+            # Continue anyway - don't let screenshot issues block the engine
     
     def adjust_performance(self, direction: str, max_concurrent: int):
         """Adjust screenshot performance based on CPU usage"""
@@ -73,16 +79,21 @@ class ScreenshotManager:
         
         for chrome_cmd in chrome_commands:
             try:
+                # More robust Chrome check with shorter timeout
                 result = subprocess.run(
                     [chrome_cmd, '--version'],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=2  # Reduced from 5 to 2 seconds
                 )
                 if result.returncode == 0:
                     logger.info(f"✅ Found Chrome: {chrome_cmd}")
                     return True
-            except Exception:
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+                logger.debug(f"Chrome check failed for {chrome_cmd}: {e}")
+                continue
+            except Exception as e:
+                logger.debug(f"Unexpected error checking {chrome_cmd}: {e}")
                 continue
         
         return False

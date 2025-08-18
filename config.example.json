@@ -1,0 +1,91 @@
+{
+  "blind_xss_domain": "kind-extremely-skylark.ngrok-free.app",
+  "gemini_api_key": "AIzaSyAzykGehQaKVEnoHj9f6hYN-EbLlCF0ZBk",
+  "google_cloud": {
+    "project_id": "gen-lang-client-0550990570",
+    "location": "us-central1",
+    "use_vertex_ai": true,
+    "service_account_path": "/home/michael/modscan-service-account.json"
+  },
+  "collaborator": {
+    "auth_token": "",
+    "base_domain": "",
+    "enabled": false,
+    "https": true
+  },
+  "cpu_target_utilization": 75,
+  "dashboard_host": "0.0.0.0",
+  "dashboard_port": 8000,
+  "database_path": "/home/michael/recon-platform/modscan/lean_recon.db",
+  "log_directory": "logs",
+  "log_file": "dashboard.log",
+  "max_crawl_depth": 3,
+  "proxy_list": [
+    "http://192.168.1.109:8888",
+    "http://192.168.1.110:8888",
+    "http://192.168.1.111:8888",
+    "http://192.168.1.112:8888",
+    "http://192.168.1.113:8888",
+    "http://192.168.1.114:8888",
+    "http://192.168.1.115:8888",
+    "http://192.168.1.116:8888",
+    "http://192.168.1.117:8888",
+    "http://192.168.1.118:8888",
+    "http://192.168.1.119:8888",
+    "http://192.168.1.120:8888",
+    "http://192.168.1.121:8888",
+    "http://192.168.1.122:8888",
+    "http://192.168.1.123:8888",
+    "http://192.168.1.124:3128",
+    "http://192.168.1.125:3128",
+    "http://192.168.1.126:3128",
+    "http://192.168.1.127:3128",
+    "http://192.168.1.128:3128",
+    "http://192.168.1.129:3128",
+    "http://192.168.1.130:3128",
+    "http://192.168.1.131:3128",
+    "http://192.168.1.132:3128",
+    "http://192.168.1.133:3128",
+    "http://192.168.1.134:3128",
+    "http://192.168.1.135:3128",
+    "http://192.168.1.136:3128",
+    "http://192.168.1.137:3128",
+    "http://192.168.1.138:3128"
+  ],
+  "rescan_cooldown_hours": 24,
+  "rescan_ttl_hours": 24,
+  "screenshot_dir": "screenshots",
+  "secret_key": "default_secret_key_change_me",
+  "shodan_api_key": "YOUR_SHODAN_API_KEY",
+  "template_folder": "templates",
+  "xss_dom_phase": false,
+  "ai_assistance": {
+    "enabled": true,
+    "mode": "ml_classification",
+    "llm_fallback": false,
+    "payload_generation": true,
+    "response_analysis": true,
+    "target_prioritization": true
+  },
+  "advanced_scanners": {
+    "enabled": true,
+    "max_concurrent_scanners": 9999,
+    "scan_timeout": 600,
+    "intelligent_classification": true,
+    "cross_validation": true,
+    "unlimited_mode": true
+  },
+  "performance": {
+    "unlimited_concurrency": true,
+    "network_bandwidth_gbps": 1.0,
+    "cpu_cores": 8,
+    "memory_gb": 16,
+    "aggressive_mode": true
+  },
+  "authorized_domains": [
+    "192.168.1.42"
+  ],
+  "wildcard_domains": [
+    "192.168.1.42"
+  ]
+}

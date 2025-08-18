@@ -11,11 +11,20 @@ import json
 import re
 import base64
 import hashlib
+import time
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 import google.generativeai as genai
 from pathlib import Path
+
+# Try to import Playwright for browser automation
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    logging.warning("Playwright not available for browser verification")
 
 logger = logging.getLogger("MLVulnEngine")
 
@@ -72,13 +81,12 @@ class MLVulnerabilityEngine:
             },
             'xss': {
                 'patterns': [
-                    r"<script[^>]*>.*?</script>",
-                    r"javascript:",
-                    r"on\w+\s*=",
-                    r"expression\s*\(",
-                    r"<iframe[^>]*>",
-                    r"<object[^>]*>",
-                    r"<embed[^>]*>"
+                    # Only match our specific injected payloads, not legitimate HTML
+                    r"<script[^>]*>alert\(['\"](XSS|test)['\"]?\)</script>",
+                    r"<img[^>]*src\s*=\s*['\"]?x['\"]?[^>]*onerror\s*=\s*['\"]?alert\(",
+                    r"<svg[^>]*onload\s*=\s*['\"]?alert\(",
+                    r"javascript:alert\(['\"](XSS|test)['\"]?\)",
+                    # Remove the generic on\w+\s*= pattern that causes false positives
                 ],
                 'payloads': [
                     "<script>alert('XSS')</script>",
@@ -258,6 +266,10 @@ class MLVulnerabilityEngine:
             async with session.get(test_url, timeout=10) as response:
                 response_text = await response.text()
                 
+                # Special handling for XSS verification
+                if vuln_type == 'xss':
+                    return await self._verify_xss_payload(url, test_url, payload, response_text, session)
+                
                 # Check for vulnerability indicators
                 config = self.vulnerability_patterns[vuln_type]
                 for pattern in config['patterns']:
@@ -279,6 +291,155 @@ class MLVulnerabilityEngine:
             logger.debug(f"Payload test error: {e}")
         
         return None
+    
+    async def _verify_xss_payload(self, original_url: str, test_url: str, payload: str, response_text: str, session: aiohttp.ClientSession) -> Optional[MLVulnerabilityFinding]:
+        """Properly verify XSS payload execution"""
+        
+        # First, check if our exact payload appears in the response (reflected XSS)
+        if payload not in response_text:
+            logger.debug(f"XSS payload not reflected in response for {test_url}")
+            return None
+        
+        # Check if payload appears in executable context (not just as text)
+        config = self.vulnerability_patterns['xss']
+        for pattern in config['patterns']:
+            if re.search(pattern, response_text, re.IGNORECASE):
+                # Verify the payload is actually in an executable context
+                if self._is_payload_executable(payload, response_text):
+                    
+                    # Try browser automation verification if available
+                    browser_verified = False
+                    browser_evidence = {}
+                    if PLAYWRIGHT_AVAILABLE:
+                        browser_verified, browser_evidence = await self._verify_xss_with_browser(test_url, payload)
+                    
+                    confidence = 0.9 if browser_verified else 0.7  # Higher confidence for browser verification
+                    
+                    # Build detailed evidence with browser automation results
+                    evidence_parts = [f"XSS payload reflected in executable context: {payload}"]
+                    
+                    if browser_verified:
+                        evidence_parts.append("✅ Browser execution confirmed:")
+                        if browser_evidence.get('execution_time'):
+                            evidence_parts.append(f"  - Alert triggered in {browser_evidence['execution_time']:.2f}s")
+                        if browser_evidence.get('payload_in_source'):
+                            evidence_parts.append(f"  - Payload in DOM:\n{browser_evidence['payload_in_source']}")
+                        if browser_evidence.get('console_errors'):
+                            evidence_parts.append(f"  - Console errors: {len(browser_evidence['console_errors'])}")
+                    else:
+                        evidence_parts.append("⚠️  Static analysis only - browser verification failed")
+                        if browser_evidence.get('dom_contains_payload'):
+                            evidence_parts.append("  - Payload found in DOM but no alert detected")
+                        if browser_evidence.get('error'):
+                            evidence_parts.append(f"  - Browser error: {browser_evidence['error']}")
+                    
+                    return MLVulnerabilityFinding(
+                        url=original_url,
+                        vuln_type='xss',
+                        severity=self._determine_severity('xss', confidence),
+                        confidence=confidence,
+                        payload=payload,
+                        evidence="\n".join(evidence_parts),
+                        discovered_at=datetime.now(),
+                        ml_score=confidence
+                    )
+        
+        # If payload is reflected but not in executable context, it's likely a false positive
+        logger.debug(f"XSS payload reflected but not in executable context for {test_url}")
+        return None
+    
+    def _is_payload_executable(self, payload: str, response_text: str) -> bool:
+        """Check if XSS payload is in an executable context"""
+        
+        # Look for the payload inside script tags, event handlers, etc.
+        executable_contexts = [
+            rf"<script[^>]*>.*?{re.escape(payload)}.*?</script>",
+            rf"<[^>]*on\w+\s*=\s*['\"][^'\"]*{re.escape(payload)}[^'\"]*['\"]",
+            rf"<[^>]*src\s*=\s*['\"]javascript:[^'\"]*{re.escape(payload)}",
+            rf"<[^>]*href\s*=\s*['\"]javascript:[^'\"]*{re.escape(payload)}",
+        ]
+        
+        for context_pattern in executable_contexts:
+            if re.search(context_pattern, response_text, re.IGNORECASE | re.DOTALL):
+                return True
+        
+        return False
+
+    async def _verify_xss_with_browser(self, test_url: str, payload: str) -> tuple[bool, dict]:
+        """Use browser automation to verify XSS payload actually executes"""
+        evidence = {
+            'dialog_detected': False,
+            'console_errors': [],
+            'dom_contains_payload': False,
+            'payload_in_source': '',
+            'execution_time': None
+        }
+        
+        try:
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                context = await browser.new_context()
+                page = await context.new_page()
+                
+                # Capture console messages
+                console_messages = []
+                page.on("console", lambda msg: console_messages.append({
+                    'type': msg.type,
+                    'text': msg.text
+                }))
+                
+                # Set up dialog handler to detect alerts
+                dialog_detected = False
+                start_time = time.time()
+                
+                async def handle_dialog(dialog):
+                    nonlocal dialog_detected
+                    dialog_detected = True
+                    evidence['execution_time'] = time.time() - start_time
+                    await dialog.accept()
+                
+                page.on("dialog", handle_dialog)
+                
+                # Navigate to the test URL with payload
+                try:
+                    await page.goto(test_url, timeout=15000)
+                    await page.wait_for_timeout(2000)  # Wait for any delayed execution
+                    
+                    # Check if payload is in DOM
+                    page_content = await page.content()
+                    evidence['dom_contains_payload'] = payload in page_content
+                    
+                    # Extract relevant source containing payload
+                    if evidence['dom_contains_payload']:
+                        lines = page_content.split('\n')
+                        for i, line in enumerate(lines):
+                            if payload in line:
+                                # Get context around the payload
+                                start_idx = max(0, i-2)
+                                end_idx = min(len(lines), i+3)
+                                evidence['payload_in_source'] = '\n'.join(lines[start_idx:end_idx])
+                                break
+                    
+                except Exception as e:
+                    logger.debug(f"Browser navigation error for {test_url}: {e}")
+                
+                # Capture console errors
+                evidence['console_errors'] = [msg for msg in console_messages if msg['type'] == 'error']
+                evidence['dialog_detected'] = dialog_detected
+                
+                await browser.close()
+                
+                if dialog_detected:
+                    logger.info(f"✅ XSS verified through browser automation: {test_url}")
+                    return True, evidence
+                else:
+                    logger.debug(f"❌ XSS not verified in browser: {test_url}")
+                    return False, evidence
+                    
+        except Exception as e:
+            logger.debug(f"Browser verification failed: {e}")
+            evidence['error'] = str(e)
+            return False, evidence
 
     def _calculate_pattern_confidence(self, pattern: str, response_text: str, tech_stack: str) -> float:
         """Calculate confidence score for pattern match"""

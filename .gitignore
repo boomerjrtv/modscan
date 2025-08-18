@@ -52,3 +52,24 @@ SecLists/
 SecLists/
 .venv
 *.pyc
+
+# local logs & artifacts
+*.log
+/tmp/*.png
+run.log
+engine_live.log
+minimal_discovery.log
+
+# local config
+config.json
+
+# local logs & artifacts
+*.log
+*.sqlite
+*.db
+/tmp/*.png
+run.log
+engine_live.log
+minimal_discovery.log
+full_engine_log.txt
+working_discovery.py

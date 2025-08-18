@@ -1791,6 +1791,7 @@
                 
                 const query = searchQuery || document.getElementById('asset-search')?.value || 'scanned:true';
                 const from = (page - 1) * pageSize;
+                console.log('📊 LoadAssetData called with page:', page, 'searchQuery:', searchQuery, 'final query:', query);
                 const response = await fetch(`/api/assets?q=${encodeURIComponent(query)}&from=${from}&size=${pageSize}`);
                 const data = await response.json();
                 
@@ -2239,6 +2240,7 @@
         async function searchAssets() {
             const searchInput = document.getElementById('asset-search');
             const query = searchInput ? searchInput.value : '';
+            console.log('🔍 SearchAssets called with query:', query);
             await loadAssetData(1, query);
         }
 
@@ -2858,6 +2860,7 @@
                             <th>Description</th>
                             <th>Payload</th>
                             <th>Evidence</th>
+                            <th>Screenshots</th>
                             <th>How it works</th>
                         </tr>
                     </thead>
@@ -2926,6 +2929,12 @@
                                   style="cursor: pointer; color: #fbbf24; text-decoration: underline;">
                                 ${truncate(safeEvidence, 40)}
                             </span>
+                        </td>
+                        <td>
+                            <button class="siem-btn secondary" onclick="showVulnScreenshots(${vuln.id || 'null'})" 
+                                    style="font-size: 10px; padding: 4px 8px; background: #10b981; border: none; color: white; border-radius: 3px; cursor: pointer;">
+                                🖼️ View POC
+                            </button>
                         </td>
                         <td>
                             <button class="siem-btn primary" onclick="showHowItWorks('${safeType}')" 
@@ -3306,6 +3315,106 @@
         
         function closeVulnDetailsModal() {
             const modal = document.getElementById('vuln-details-modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        async function showVulnScreenshots(vulnId) {
+            if (!vulnId) {
+                alert('No vulnerability ID provided');
+                return;
+            }
+
+            try {
+                // Fetch vulnerability details with screenshots
+                const response = await fetch(`/api/vulnerability/${vulnId}/details`);
+                const vulnData = await response.json();
+
+                if (vulnData.error) {
+                    alert('Error loading vulnerability details: ' + vulnData.error);
+                    return;
+                }
+
+                // Create screenshots modal if it doesn't exist
+                if (!document.getElementById('screenshots-modal')) {
+                    const modalHTML = `
+                        <div id="screenshots-modal" class="modal-overlay" style="display: none; z-index: 1001;">
+                            <div class="modal-content" style="max-width: 90vw; max-height: 90vh; overflow-y: auto;">
+                                <div class="modal-header">
+                                    <h3 id="screenshots-title">Exploit Screenshots & POC</h3>
+                                    <button class="modal-close" onclick="closeScreenshotsModal()">&times;</button>
+                                </div>
+                                <div class="modal-body" id="screenshots-content">
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    document.body.insertAdjacentHTML('beforeend', modalHTML);
+                }
+
+                // Show vulnerability info and screenshots
+                let screenshotsHTML = `
+                    <div style="margin-bottom: 20px; padding: 15px; background: rgba(30, 41, 59, 0.8); border-radius: 8px;">
+                        <h4>🎯 Target: <span style="color: #60a5fa;">${escapeHtml(vulnData.asset_url || 'Unknown')}</span></h4>
+                        <p><strong>Type:</strong> <span style="color: #f97316;">${escapeHtml(vulnData.type || 'Unknown')}</span></p>
+                        <p><strong>Severity:</strong> <span style="color: #ef4444;">${escapeHtml(vulnData.severity || 'MEDIUM')}</span></p>
+                        <p><strong>Payload:</strong> <code style="background: rgba(0,0,0,0.3); padding: 4px; border-radius: 4px;">${escapeHtml(vulnData.payload || 'No payload')}</code></p>
+                    </div>
+                `;
+
+                // Add screenshots if available
+                if (vulnData.exploit_screenshots && vulnData.exploit_screenshots.length > 0) {
+                    screenshotsHTML += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px;">';
+                    
+                    vulnData.exploit_screenshots.forEach((screenshot, index) => {
+                        const screenshotUrl = `/api/screenshots/${screenshot}`;
+                        screenshotsHTML += `
+                            <div style="border: 1px solid #334155; border-radius: 8px; overflow: hidden; background: rgba(30, 41, 59, 0.8);">
+                                <div style="padding: 10px; background: rgba(15, 23, 42, 0.8); border-bottom: 1px solid #334155;">
+                                    <strong style="color: #10b981;">POC Screenshot ${index + 1}</strong>
+                                    <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">${screenshot}</div>
+                                </div>
+                                <img src="${screenshotUrl}" 
+                                     alt="Exploit Screenshot ${index + 1}" 
+                                     style="width: 100%; height: auto; cursor: pointer;"
+                                     onclick="window.open('${screenshotUrl}', '_blank')"
+                                     onerror="this.parentElement.innerHTML='<div style=\\"padding: 20px; text-align: center; color: #ef4444;\\">❌ Screenshot not available</div>'"
+                                />
+                            </div>
+                        `;
+                    });
+                    
+                    screenshotsHTML += '</div>';
+                } else if (vulnData.screenshot_path) {
+                    // Fall back to single screenshot from asset
+                    const screenshotUrl = `/api/screenshots/${vulnData.screenshot_path.split('/').pop()}`;
+                    screenshotsHTML += `
+                        <div style="text-align: center;">
+                            <h4 style="color: #10b981; margin-bottom: 15px;">📸 Asset Screenshot</h4>
+                            <img src="${screenshotUrl}" 
+                                 alt="Asset Screenshot" 
+                                 style="max-width: 100%; height: auto; border: 2px solid #334155; border-radius: 8px; cursor: pointer;"
+                                 onclick="window.open('${screenshotUrl}', '_blank')"
+                                 onerror="this.outerHTML='<div style=\\"padding: 20px; text-align: center; color: #ef4444;\\">❌ Screenshot not available</div>'"
+                            />
+                        </div>
+                    `;
+                } else {
+                    screenshotsHTML += '<div style="padding: 20px; text-align: center; color: #94a3b8;">📷 No visual proof-of-concept available for this vulnerability</div>';
+                }
+
+                document.getElementById('screenshots-content').innerHTML = screenshotsHTML;
+                document.getElementById('screenshots-modal').style.display = 'block';
+
+            } catch (error) {
+                console.error('Error loading vulnerability screenshots:', error);
+                alert('Failed to load vulnerability screenshots: ' + error.message);
+            }
+        }
+
+        function closeScreenshotsModal() {
+            const modal = document.getElementById('screenshots-modal');
             if (modal) {
                 modal.style.display = 'none';
             }

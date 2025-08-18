@@ -807,6 +807,67 @@ def serve_screenshot(filename):
         from flask import abort
         abort(404)
 
+@app.route('/api/vulnerability/<int:vuln_id>/details', methods=['GET'])
+def get_vulnerability_details(vuln_id):
+    """Get detailed vulnerability information with screenshots and exploit proofs."""
+    try:
+        manager = AssetManager()
+        
+        with manager._get_db() as db:
+            # Get vulnerability with associated asset information
+            cursor = db.execute("""
+                SELECT v.*, a.url as asset_url, a.host as asset_host, 
+                       a.screenshot_path, a.response_body, a.status_code,
+                       a.title, a.tech_stack as technologies
+                FROM vulnerabilities v 
+                LEFT JOIN assets a ON v.asset_id = a.id 
+                WHERE v.id = ?
+            """, (vuln_id,))
+            
+            vuln = cursor.fetchone()
+            if not vuln:
+                return jsonify({"error": "Vulnerability not found"}), 404
+            
+            vuln_dict = dict(vuln)
+            
+            # Only show asset-specific screenshot, not random exploit screenshots
+            vuln_dict['exploit_screenshots'] = []
+            
+            return jsonify(vuln_dict)
+    except Exception as e:
+        app.logger.error(f"Error getting vulnerability details: {e}")
+        return jsonify({"error": "Failed to load vulnerability details"}), 500
+
+@app.route('/api/exploit-screenshots', methods=['GET'])
+def list_exploit_screenshots():
+    """List all exploit proof screenshots available."""
+    try:
+        screenshot_dir = app.config.get('screenshot_dir', 'screenshots')
+        exploit_screenshots = []
+        
+        if os.path.exists(screenshot_dir):
+            for filename in os.listdir(screenshot_dir):
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    filepath = os.path.join(screenshot_dir, filename)
+                    stat = os.stat(filepath)
+                    exploit_screenshots.append({
+                        'filename': filename,
+                        'size': stat.st_size,
+                        'modified': stat.st_mtime,
+                        'url': f'/api/screenshots/{filename}'
+                    })
+        
+        # Sort by modification time, newest first
+        exploit_screenshots.sort(key=lambda x: x['modified'], reverse=True)
+        
+        return jsonify({
+            'screenshots': exploit_screenshots,
+            'total': len(exploit_screenshots)
+        })
+    except Exception as e:
+        app.logger.error(f"Error listing exploit screenshots: {e}")
+        return jsonify({"error": "Failed to list screenshots"}), 500
+
 # --- Frontend Route ---
 @app.route('/')
 def index():
