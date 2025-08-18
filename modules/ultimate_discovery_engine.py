@@ -18,6 +18,9 @@ from urllib.parse import urljoin
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
 
+from modules.enhanced_wordlist_generator import EnhancedWordlistGenerator
+from modules.seclists_manager import SecListsManager
+
 # === MODSCAN TTL GUARD (auto-injected) ===
 try:
     import os, time, json
@@ -74,6 +77,7 @@ class UltimateDiscoveryEngine:
         self.asset_manager = asset_manager
         self.config = config
         self.discovery_cache = set()
+        self.seclists_manager: Optional[SecListsManager] = None
         
         # Tool paths
         self.gau_path = config.get("tools", {}).get("gau_path", "gau")
@@ -506,10 +510,6 @@ class UltimateDiscoveryEngine:
         try:
             logger.info(f"📁 INTELLIGENT DIRECTORY DISCOVERY: {domain}")
             
-            # Analyze existing URLs to understand the target
-            tech_stack = self._analyze_tech_stack(existing_urls)
-            url_patterns = self._analyze_url_patterns(existing_urls)
-            
             # Get live base URLs to test against
             base_urls = self._get_live_base_urls(existing_urls, domain)
             
@@ -517,27 +517,29 @@ class UltimateDiscoveryEngine:
                 logger.debug("No live base URLs found for directory discovery")
                 return urls
             
-            # AI-assisted SecLists selection based on technology and patterns  
-            wordlists = await self._ai_select_intelligent_wordlists(tech_stack, url_patterns, domain)
-            
-            logger.info(f"🧠 Selected {len(wordlists)} intelligent wordlists for {tech_stack}")
-            
-            # PARALLEL SCANNING: Break up wordlists and run multiple scanners simultaneously
+            # Build candidate wordlist by merging SecLists and JS-derived words
+            discovered_js_files = [url for url in existing_urls if url.lower().endswith('.js')]
             parallel_tasks = []
             for base_url in base_urls[:5]:  # Limit to 5 base URLs
-                for wordlist_name, paths in wordlists.items():
-                    logger.info(f"🔍 Setting up parallel scanning for {wordlist_name} on {base_url} ({len(paths)} paths)")
-                    
-                    # Break large wordlists into chunks for parallel processing
-                    chunk_size = 500  # 500 paths per parallel scanner
-                    path_chunks = [paths[i:i + chunk_size] for i in range(0, len(paths), chunk_size)]
-                    
-                    logger.info(f"🚀 PARALLEL: Breaking {wordlist_name} into {len(path_chunks)} chunks of {chunk_size} paths each")
-                    
-                    # Create parallel tasks for each chunk
-                    for chunk_num, path_chunk in enumerate(path_chunks[:10]):  # Limit to 10 chunks per wordlist (5000 paths max)
-                        task = self._parallel_test_paths_chunk(base_url, path_chunk, f"{wordlist_name}_chunk_{chunk_num}")
-                        parallel_tasks.append(task)
+                candidate_paths = await self._build_candidate_wordlist(base_url, discovered_js_files)
+                if not candidate_paths:
+                    continue
+
+                logger.info(
+                    f"🔍 Prepared {len(candidate_paths)} candidate paths for {base_url}"
+                )
+
+                # Break large candidate list into chunks for parallel processing
+                chunk_size = 500
+                path_chunks = [candidate_paths[i:i + chunk_size] for i in range(0, len(candidate_paths), chunk_size)]
+
+                logger.info(
+                    f"🚀 PARALLEL: Breaking candidate list into {len(path_chunks)} chunks of {chunk_size} paths each"
+                )
+
+                for chunk_num, path_chunk in enumerate(path_chunks[:10]):  # Limit to 10 chunks (5000 paths max)
+                    task = self._parallel_test_paths_chunk(base_url, path_chunk, f"dir_chunk_{chunk_num}")
+                    parallel_tasks.append(task)
             
             # Execute all parallel scanning tasks simultaneously
             if parallel_tasks:
@@ -965,9 +967,34 @@ Example: {{"paths": ["/admin", "/api", "/login", "/config"]}}
         simple_wordlists = {}
         for category, data in all_lists.items():
             simple_wordlists[category] = data['paths']
-            
+
         return simple_wordlists
-    
+
+    async def _build_candidate_wordlist(self, base_url: str, discovered_js_files: List[str]) -> List[str]:
+        """Merge SecLists directories with JS-derived words for a target"""
+
+        if not self.seclists_manager:
+            try:
+                self.seclists_manager = SecListsManager(self.asset_manager, self.config)
+                await self.seclists_manager.initialize()
+            except Exception as e:
+                logger.warning(f"SecListsManager initialization failed: {e}")
+                self.seclists_manager = None
+
+        seclists_words: List[str] = []
+        if self.seclists_manager and getattr(self.seclists_manager, "wordlists", None):
+            seclists_words = self.seclists_manager.wordlists.get("directories", [])
+
+        generator = EnhancedWordlistGenerator()
+        js_words = await generator.generate_wordlist_from_target(base_url, discovered_js_files)
+
+        combined = list(dict.fromkeys(seclists_words + js_words))
+        max_words = self.config.get("max_words_per_dir", 2000)
+        if len(combined) > max_words:
+            combined = combined[:max_words]
+
+        return combined
+
     async def _parallel_test_paths_chunk(self, base_url: str, path_chunk: List[str], chunk_name: str) -> List[str]:
         """Test a chunk of paths in parallel for massive speed"""
         discovered_urls = []
