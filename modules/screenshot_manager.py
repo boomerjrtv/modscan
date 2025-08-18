@@ -26,11 +26,12 @@ class ScreenshotManager:
         # Screenshot settings
         self.screenshot_dir = Path(config.get('screenshot_dir', 'screenshots'))
         self.screenshot_dir.mkdir(exist_ok=True)
-        
+
         # AGGRESSIVE Browser settings for speed
         self.browser_timeout = 8  # Fast timeout - don't wait for slow sites
         self.window_size = "1366,768"
-        
+        self.enabled = True
+
         logger.info("📸 ScreenshotManager initialized with AssetManager integration")
     
     async def initialize(self):
@@ -38,12 +39,13 @@ class ScreenshotManager:
         try:
             # Use asyncio.wait_for to prevent hangs
             chrome_available = await asyncio.wait_for(
-                self._check_chrome_availability(), 
-                timeout=10.0  # 10 second total timeout for Chrome check
+                self._check_chrome_availability(),
+                timeout=8.0
             )
-            
+
             if not chrome_available:
                 logger.warning("⚠️ Chrome not available - screenshots will be disabled")
+                self.enabled = False
             
             # Log initialization using AssetManager
             self.asset_manager.log_activity(
@@ -55,8 +57,10 @@ class ScreenshotManager:
             
         except asyncio.TimeoutError:
             logger.warning("⚠️ Chrome check timed out - screenshots will be disabled")
+            self.enabled = False
         except Exception as e:
             logger.error(f"ScreenshotManager initialization failed: {e}")
+            self.enabled = False
             # Continue anyway - don't let screenshot issues block the engine
     
     def adjust_performance(self, direction: str, max_concurrent: int):
@@ -101,9 +105,12 @@ class ScreenshotManager:
     async def process_pending_screenshots(self, session, limit: int = 30) -> int:
         """Process assets needing screenshots"""
         
+        if not self.enabled:
+            return 0
+
         # Get assets needing screenshots using AssetManager
         pending_assets = self.asset_manager.get_assets_needing_screenshots(limit)
-        
+
         if not pending_assets:
             return 0
         
