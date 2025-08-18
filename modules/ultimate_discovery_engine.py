@@ -524,18 +524,18 @@ class UltimateDiscoveryEngine:
             
             # PARALLEL SCANNING: Break up wordlists and run multiple scanners simultaneously
             parallel_tasks = []
-            for base_url in base_urls[:5]:  # Limit to 5 base URLs
+            for base_url in base_urls[:15]:  # Increased to 15 base URLs for more parallelism
                 for wordlist_name, paths in wordlists.items():
                     logger.info(f"🔍 Setting up parallel scanning for {wordlist_name} on {base_url} ({len(paths)} paths)")
                     
                     # Break large wordlists into chunks for parallel processing
-                    chunk_size = 500  # 500 paths per parallel scanner
+                    chunk_size = 200  # Smaller chunks = more parallelism
                     path_chunks = [paths[i:i + chunk_size] for i in range(0, len(paths), chunk_size)]
                     
                     logger.info(f"🚀 PARALLEL: Breaking {wordlist_name} into {len(path_chunks)} chunks of {chunk_size} paths each")
                     
-                    # Create parallel tasks for each chunk
-                    for chunk_num, path_chunk in enumerate(path_chunks[:10]):  # Limit to 10 chunks per wordlist (5000 paths max)
+                    # Create parallel tasks for each chunk  
+                    for chunk_num, path_chunk in enumerate(path_chunks[:30]):  # Increased to 30 chunks per wordlist (6000 paths max)
                         task = self._parallel_test_paths_chunk(base_url, path_chunk, f"{wordlist_name}_chunk_{chunk_num}")
                         parallel_tasks.append(task)
             
@@ -558,6 +558,11 @@ class UltimateDiscoveryEngine:
                 logger.info(f"🎯 PARALLEL DISCOVERY COMPLETE: Found {total_discovered} new URLs from {len(parallel_tasks)} parallel tasks")
             
             logger.info(f"📁 INTELLIGENT DIRECTORY COMPLETE: {len(urls)} new directories found")
+            
+            # CRITICAL: Add ffuf recursive discovery for proper directory enumeration
+            ffuf_urls = await self._run_ffuf_recursive_discovery(base_urls, wordlists)
+            urls.update(ffuf_urls)
+            logger.info(f"🔁 Ffuf Recursive: {len(ffuf_urls)} additional URLs discovered")
             
         except Exception as e:
             logger.error(f"Intelligent directory discovery failed: {e}")
@@ -604,7 +609,7 @@ class UltimateDiscoveryEngine:
         return patterns
     
     def _get_live_base_urls(self, existing_urls: Set[str], domain: str) -> List[str]:
-        """Get confirmed live base URLs for directory testing"""
+        """Get confirmed live base URLs for directory testing INCLUDING discovered directories for recursive scanning"""
         base_urls = set()
         
         # Add domain variants
@@ -612,14 +617,137 @@ class UltimateDiscoveryEngine:
         base_urls.add(f"http://{domain}")
         base_urls.add(f"https://www.{domain}")
         
-        # Extract base URLs from existing URLs that returned 200/403
+        # RECURSIVE DISCOVERY: Extract directory paths from existing URLs for recursive testing
         for url in existing_urls:
             parsed = urlparse(url)
             if parsed.netloc:
+                # Add domain-level base URL
                 base_url = f"{parsed.scheme}://{parsed.netloc}"
                 base_urls.add(base_url)
                 
-        return list(base_urls)[:10]  # Limit to 10 base URLs
+                # CRITICAL: Add directory paths for recursive discovery
+                path_parts = [p for p in parsed.path.split('/') if p]
+                current_path = ""
+                for i, part in enumerate(path_parts):
+                    current_path += "/" + part
+                    directory_url = f"{parsed.scheme}://{parsed.netloc}{current_path}"
+                    
+                    # Add directory paths (not final files)
+                    # If this is the last part and it's a file, add the parent directory instead
+                    if i == len(path_parts) - 1 and part.endswith(('.php', '.html', '.asp', '.jsp', '.py', '.js', '.css', '.json', '.xml')):
+                        # This is a file - add its parent directory 
+                        parent_path = current_path.rsplit('/', 1)[0] if '/' in current_path else ""
+                        if parent_path:
+                            parent_url = f"{parsed.scheme}://{parsed.netloc}{parent_path}"
+                            base_urls.add(parent_url)
+                            logger.debug(f"🔁 RECURSIVE: Added parent directory {parent_url} from file {directory_url}")
+                    else:
+                        # This is a directory
+                        base_urls.add(directory_url)
+                        logger.debug(f"🔁 RECURSIVE: Added directory base URL {directory_url}")
+                
+        return list(base_urls)[:20]  # Increased to 20 to accommodate recursive directories
+
+    async def _run_ffuf_recursive_discovery(self, base_urls: List[str], wordlists: Dict[str, List[str]]) -> Set[str]:
+        """Run ffuf with recursion for proper directory enumeration"""
+        urls = set()
+        
+        try:
+            import tempfile
+            import subprocess
+            import os
+            
+            # Create temporary wordlist file combining all intelligent wordlists
+            all_paths = set()
+            for wordlist_name, paths in wordlists.items():
+                all_paths.update(paths)
+            
+            if not all_paths:
+                logger.debug("No wordlists available for ffuf recursion")
+                return urls
+            
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as temp_wordlist:
+                for path in sorted(all_paths):
+                    # Ensure paths start with /
+                    if not path.startswith('/'):
+                        path = '/' + path
+                    temp_wordlist.write(path + '\n')
+                temp_wordlist_path = temp_wordlist.name
+            
+            try:
+                # Run ffuf with recursion for each base URL
+                for base_url in base_urls[:5]:  # Limit to 5 base URLs to avoid too much noise
+                    logger.info(f"🔁 Running ffuf recursive discovery on {base_url}")
+                    
+                    # ffuf command with recursion
+                    cmd = [
+                        "/home/michael/go/bin/ffuf",
+                        "-u", f"{base_url}/FUZZ",
+                        "-w", temp_wordlist_path,
+                        "-recursion",
+                        "-recursion-depth", "3",  # Max 3 levels deep
+                        "-recursion-strategy", "greedy",  # Recurse on all matches
+                        "-mc", "200,204,301,302,307,403,401",  # Include useful status codes
+                        "-t", "100",  # 100 threads for speed
+                        "-timeout", "10",
+                        "-silent",  # Reduce noise
+                        "-o", "/tmp/ffuf_output.json",
+                        "-of", "json"
+                    ]
+                    
+                    logger.debug(f"Running ffuf command: {' '.join(cmd)}")
+                    
+                    # Run ffuf with timeout
+                    try:
+                        result = subprocess.run(
+                            cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=300,  # 5 minute timeout
+                            cwd="/tmp"
+                        )
+                        
+                        if result.returncode == 0:
+                            # Parse ffuf JSON output
+                            try:
+                                if os.path.exists("/tmp/ffuf_output.json"):
+                                    with open("/tmp/ffuf_output.json", 'r') as f:
+                                        import json
+                                        ffuf_data = json.load(f)
+                                        
+                                    if 'results' in ffuf_data:
+                                        for result_entry in ffuf_data['results']:
+                                            discovered_url = result_entry.get('url', '')
+                                            status = result_entry.get('status', 0)
+                                            
+                                            if discovered_url and status in [200, 301, 302, 403, 401]:
+                                                urls.add(discovered_url)
+                                                logger.debug(f"🔁 ffuf discovered: {discovered_url} ({status})")
+                                    
+                                    # Clean up output file
+                                    os.remove("/tmp/ffuf_output.json")
+                                    
+                            except (json.JSONDecodeError, FileNotFoundError) as e:
+                                logger.debug(f"ffuf JSON parsing error: {e}")
+                        else:
+                            logger.debug(f"ffuf failed with return code {result.returncode}: {result.stderr}")
+                            
+                    except subprocess.TimeoutExpired:
+                        logger.warning(f"ffuf timeout on {base_url}")
+                    except Exception as e:
+                        logger.debug(f"ffuf execution error: {e}")
+                        
+            finally:
+                # Clean up temporary wordlist
+                try:
+                    os.unlink(temp_wordlist_path)
+                except:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f"ffuf recursive discovery failed: {e}")
+            
+        return urls
     
     def _select_intelligent_wordlists(self, tech_stack: List[str], url_patterns: Dict) -> Dict[str, List[str]]:
         """Select intelligent SecLists wordlists based on technology and patterns"""
@@ -1007,7 +1135,7 @@ Example: {{"paths": ["/admin", "/api", "/login", "/config"]}}
             
             async with session:
                 # Create semaphore for controlled concurrency within chunk
-                semaphore = asyncio.Semaphore(50)  # 50 concurrent requests per chunk
+                semaphore = asyncio.Semaphore(100)  # 100 concurrent requests per chunk
                 
                 # Test all URLs in this chunk simultaneously
                 tasks = [self._test_single_url_parallel(session, url, semaphore) for url in test_urls]

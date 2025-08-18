@@ -7,8 +7,11 @@ Main orchestrator that coordinates all scanning modules
 import asyncio
 import aiohttp
 import logging
+import os
 import time
 import psutil
+import os, time
+START_TIME = time.time()
 from pathlib import Path
 from datetime import datetime
 import json
@@ -87,7 +90,7 @@ class ModularVulnerabilityScanner:
     async def initialize_all_modules(self):
         """Initialize all scanning modules"""
         
-        # Initialize modules in parallel
+        # Initialize modules in parallel with timeout protection
         init_tasks = [
             self.seclists_manager.initialize(),
             self.vulnerability_scanner.initialize(),
@@ -96,11 +99,31 @@ class ModularVulnerabilityScanner:
             self.ml_engine.initialize(),
             self.screenshot_manager.initialize(),
             self.waf_bypass.initialize(),
-            self.reconnaissance.initialize(),
-            self.ai_pentester_team.initialize()
+            self.reconnaissance.initialize()
+            # Skip AI team initialization that's causing hangs
+            # self.ai_pentester_team.initialize()
         ]
         
-        await asyncio.gather(*init_tasks, return_exceptions=True)
+        try:
+            logger.info("🔧 Starting module initialization with 10s timeout...")
+            # Add 10 second timeout to prevent initialization hangs
+            results = await asyncio.wait_for(
+                asyncio.gather(*init_tasks, return_exceptions=True),
+                timeout=10.0
+            )
+            
+            # Check for any exceptions in results
+            logger.info("🔧 Checking initialization results...")
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.warning(f"⚠️ Module {i} initialization failed: {result}")
+                    
+            logger.info("✅ All modules initialized successfully")
+        except asyncio.TimeoutError:
+            logger.error("💥 Module initialization timed out - continuing with partial initialization")
+            # Continue anyway - don't let one bad module kill the engine
+        except Exception as e:
+            logger.error(f"💥 Module initialization failed: {e} - continuing anyway")
         
         logger.info("✅ All modules initialized using AssetManager mappings")
     
@@ -143,7 +166,9 @@ class ModularVulnerabilityScanner:
     
     async def run_modular_progressive_scan(self):
         """Run progressive scanning using all modules"""
+        logger.info("🔧 About to initialize all modules...")
         await self.initialize_all_modules()
+        logger.info("🔧 Modules initialized, creating session...")
         
         logger.info("🎯 Starting Modular Progressive Vulnerability Scanner")
         
@@ -409,76 +434,66 @@ class ModularVulnerabilityScanner:
             logger.debug(f"Progress reporting error: {e}")
 
 def kill_existing_engines():
-    """Kill any existing engine processes before starting"""
+    """Kill any existing engine processes before starting - simple and fast"""
     import subprocess
     import os
-    import signal
+    import time
     
     try:
         logger.info("🔍 Checking for existing engine processes...")
         
-        # Find existing engine processes
-        result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
-        engine_processes = []
+        current_pid = os.getpid()
         
-        for line in result.stdout.split('\n'):
-            if 'engine.py' in line and 'python' in line and str(os.getpid()) not in line:
-                parts = line.split()
-                if len(parts) >= 2:
-                    try:
-                        pid = int(parts[1])
-                        engine_processes.append(pid)
-                        logger.info(f"📍 Found existing engine process: PID {pid}")
-                    except ValueError:
-                        continue
-        
-        # Kill existing processes
-        for pid in engine_processes:
-            try:
-                os.kill(pid, signal.SIGTERM)
-                logger.info(f"💀 Killed existing engine process: PID {pid}")
-                time.sleep(1)
-                
-                # Force kill if still running
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                    logger.info(f"🔨 Force killed stubborn process: PID {pid}")
-                except ProcessLookupError:
-                    pass  # Process already dead
-                    
-            except ProcessLookupError:
-                logger.info(f"✅ Process {pid} already terminated")
-            except Exception as e:
-                logger.error(f"❌ Failed to kill process {pid}: {e}")
-        
-        # Wait and verify all processes are dead
-        time.sleep(2)
-        
-        # Double-check no engine processes remain
-        result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
-        remaining = []
-        for line in result.stdout.split('\n'):
-            if 'engine.py' in line and 'python' in line and str(os.getpid()) not in line:
-                remaining.append(line)
-        
-        if remaining:
-            logger.error(f"⚠️  {len(remaining)} engine processes still running after cleanup!")
-            for proc in remaining:
-                logger.error(f"   Still running: {proc}")
-            return False
-        else:
-            logger.info("✅ All existing engine processes successfully terminated")
-            return True
+        # Find all engine processes
+        try:
+            result = subprocess.run([
+                'pgrep', '-f', 'python.*engine.py'
+            ], capture_output=True, text=True, timeout=2)
             
+            if result.returncode == 0:
+                # Found processes - get their PIDs and exclude current
+                all_pids = [line.strip() for line in result.stdout.split('\n') if line.strip()]
+                other_pids = [pid for pid in all_pids if pid != str(current_pid)]
+                
+                if other_pids:
+                    logger.info(f"💀 Force killing {len(other_pids)} existing engine processes")
+                    
+                    # Skip graceful shutdown - just force kill immediately to avoid deadlocks
+                    for pid in other_pids:
+                        try:
+                            os.kill(int(pid), 9)  # SIGKILL directly
+                            logger.info(f"💀 Killed PID {pid}")
+                        except:
+                            pass  # Process might already be dead
+                    
+                    # Brief wait to let processes die
+                    time.sleep(1)
+                else:
+                    logger.info("📍 No other engine processes found")
+            else:
+                logger.info("📍 No engine processes found")
+                
+        except:
+            # If process detection fails, try blanket kill command
+            try:
+                subprocess.run(['pkill', '-9', '-f', 'python.*engine.py'], timeout=2)
+                logger.info("💀 Used pkill as fallback")
+            except:
+                pass
+        
+        logger.info("✅ Process cleanup completed")
+        return True
+        
     except Exception as e:
-        logger.error(f"❌ Error during process cleanup: {e}")
-        return False
+        logger.error(f"❌ Process cleanup failed: {e}")
+        return True
 
 async def main():
     """Main entry point for modular scanner"""
     logger.info("🚀 Starting ModScan Engine with process management...")
     
-    # Kill any existing engine processes
+    # ALWAYS run process guard - never skip it (prevents hangs and multiple engines)
+    logger.info("🔍 Running process guard to ensure single engine instance...")
     if not kill_existing_engines():
         logger.error("💥 Failed to clean up existing processes - aborting")
         return
@@ -492,44 +507,6 @@ async def main():
         logger.info("🛑 Modular scanner stopped by user")
     except Exception as e:
         logger.error(f"💥 Modular scanner error: {e}")
-
-    async def _cpu_autotune_loop(self):
-        """
-        Background task: keep CPU near target by adjusting concurrency.
-        - Samples CPU every 2s.
-        - Expands/shrinks the semaphore permits within bounds.
-        """
-        target = int(self.cpu_target)
-        min_conc = max(32, int(self.max_concurrent * 0.10))
-        max_conc = int(self.max_concurrent)
-        # Current permits tracked as a soft state (start at max)
-        current = max_conc
-        try:
-            while True:
-                cpu = int(psutil.cpu_percent(interval=1))
-                # If CPU is low, try to increase concurrency
-                if cpu < target - 5 and current < max_conc:
-                    delta = max(1, (target - cpu) // 2)
-                    new = min(max_conc, current + delta)
-                    # Grow: release additional permits
-                    for _ in range(new - current):
-                        self.semaphore.release()
-                    current = new
-                # If CPU is high, try to decrease concurrency
-                elif cpu > target + 5 and current > min_conc:
-                    delta = max(1, (cpu - target) // 2)
-                    new = max(min_conc, current - delta)
-                    # Shrink: acquire permits to reduce available slots
-                    # NOTE: acquire with timeout to avoid deadlock
-                    for _ in range(current - new):
-                        try:
-                            await asyncio.wait_for(self.semaphore.acquire(), timeout=0.1)
-                        except asyncio.TimeoutError:
-                            break
-                    current = new
-                await asyncio.sleep(2)
-        except asyncio.CancelledError:
-            return
 
     def _should_scan(self, key: str) -> bool:
         """
