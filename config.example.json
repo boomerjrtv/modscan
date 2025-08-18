@@ -1,11 +1,11 @@
 {
-  "blind_xss_domain": "kind-extremely-skylark.ngrok-free.app",
-  "gemini_api_key": "AIzaSyAzykGehQaKVEnoHj9f6hYN-EbLlCF0ZBk",
+  "blind_xss_domain": "${BLIND_XSS_DOMAIN}",
+  "gemini_api_key": "${GEMINI_API_KEY}",
   "google_cloud": {
     "project_id": "gen-lang-client-0550990570",
     "location": "us-central1",
     "use_vertex_ai": true,
-    "service_account_path": "/home/michael/modscan-service-account.json"
+    "service_account_path": "${GOOGLE_APPLICATION_CREDENTIALS}"
   },
   "collaborator": {
     "auth_token": "",
