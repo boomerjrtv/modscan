@@ -87,8 +87,8 @@ class ModularVulnerabilityScanner:
         
         logger.info("🚀 Modular Scanner initialized - all modules using AssetManager field mappings")
     
-    async def initialize_all_modules(self):
-        """Initialize all scanning modules"""
+    async def _initialize_all_modules_old(self):
+        """Legacy initialization (kept for reference)"""
         
         # Initialize modules in parallel with timeout protection
         init_tasks = [
@@ -126,7 +126,46 @@ class ModularVulnerabilityScanner:
             logger.error(f"💥 Module initialization failed: {e} - continuing anyway")
         
         logger.info("✅ All modules initialized using AssetManager mappings")
-    
+
+    async def _with_timeout(self, coro, timeout: float = 8.0):
+        """Run coroutine with timeout, returning (ok, error)."""
+        try:
+            await asyncio.wait_for(coro, timeout=timeout)
+            return True, None
+        except Exception as e:
+            return False, e
+
+    async def initialize_all_modules(self):
+        """Initialize all modules concurrently; continue on failures."""
+
+        modules = [
+            ("SecListsManager", self.seclists_manager.initialize()),
+            ("VulnerabilityScanner", self.vulnerability_scanner.initialize()),
+            ("TechnologyDetector", self.technology_detector.initialize()),
+            ("ProxyManager", self.proxy_manager.initialize()),
+            ("MLEngine", self.ml_engine.initialize()),
+            ("ScreenshotManager", self.screenshot_manager.initialize()),
+            ("WAFBypass", self.waf_bypass.initialize()),
+            ("ReconnaissanceEngine", self.reconnaissance.initialize()),
+            ("MultiAIPentesterTeam", self.ai_pentester_team.initialize()),
+        ]
+
+        tasks = [self._with_timeout(coro, 8.0) for _, coro in modules]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+
+        failed = []
+        for (name, _), (ok, err) in zip(modules, results):
+            if ok:
+                logger.info(f"✅ {name} initialization complete")
+            else:
+                failed.append(name)
+                logger.warning(f"⚠️ {name} initialization failed: {err}")
+
+        if failed:
+            logger.warning(f"⚠️ Modules initialized with warnings: {', '.join(failed)}")
+        else:
+            logger.info("✅ All modules initialized")
+
     def monitor_and_adjust_performance(self) -> float:
         cpu_usage = psutil.cpu_percent(interval=1)
         if cpu_usage > self.cpu_target:
@@ -434,56 +473,30 @@ class ModularVulnerabilityScanner:
             logger.debug(f"Progress reporting error: {e}")
 
 def kill_existing_engines():
-    """Kill any existing engine processes before starting - simple and fast"""
-    import subprocess
-    import os
-    import time
-    
+    """Kill any other running engine.py processes"""
     try:
         logger.info("🔍 Checking for existing engine processes...")
-        
         current_pid = os.getpid()
-        
-        # Find all engine processes
-        try:
-            result = subprocess.run([
-                'pgrep', '-f', 'python.*engine.py'
-            ], capture_output=True, text=True, timeout=2)
-            
-            if result.returncode == 0:
-                # Found processes - get their PIDs and exclude current
-                all_pids = [line.strip() for line in result.stdout.split('\n') if line.strip()]
-                other_pids = [pid for pid in all_pids if pid != str(current_pid)]
-                
-                if other_pids:
-                    logger.info(f"💀 Force killing {len(other_pids)} existing engine processes")
-                    
-                    # Skip graceful shutdown - just force kill immediately to avoid deadlocks
-                    for pid in other_pids:
-                        try:
-                            os.kill(int(pid), 9)  # SIGKILL directly
-                            logger.info(f"💀 Killed PID {pid}")
-                        except:
-                            pass  # Process might already be dead
-                    
-                    # Brief wait to let processes die
-                    time.sleep(1)
-                else:
-                    logger.info("📍 No other engine processes found")
-            else:
-                logger.info("📍 No engine processes found")
-                
-        except:
-            # If process detection fails, try blanket kill command
+        killed = 0
+        for proc in psutil.process_iter(["pid", "cmdline"]):
             try:
-                subprocess.run(['pkill', '-9', '-f', 'python.*engine.py'], timeout=2)
-                logger.info("💀 Used pkill as fallback")
-            except:
-                pass
-        
+                if proc.info["pid"] == current_pid:
+                    continue
+                cmdline = " ".join(proc.info.get("cmdline") or [])
+                if "engine.py" in cmdline and "python" in cmdline:
+                    proc.kill()
+                    killed += 1
+                    logger.info(f"💀 Killed PID {proc.info['pid']}")
+            except Exception:
+                continue
+
+        if killed:
+            logger.info(f"💀 Force killed {killed} existing engine processes")
+        else:
+            logger.info("📍 No other engine processes found")
+
         logger.info("✅ Process cleanup completed")
         return True
-        
     except Exception as e:
         logger.error(f"❌ Process cleanup failed: {e}")
         return True
@@ -492,11 +505,13 @@ async def main():
     """Main entry point for modular scanner"""
     logger.info("🚀 Starting ModScan Engine with process management...")
     
-    # ALWAYS run process guard - never skip it (prevents hangs and multiple engines)
-    logger.info("🔍 Running process guard to ensure single engine instance...")
-    if not kill_existing_engines():
-        logger.error("💥 Failed to clean up existing processes - aborting")
-        return
+    if os.environ.get("MODSCAN_SKIP_PROCESS_GUARD") == "1":
+        logger.info("⏭️ Process guard skipped via environment variable")
+    else:
+        logger.info("🔍 Running process guard to ensure single engine instance...")
+        if not kill_existing_engines():
+            logger.error("💥 Failed to clean up existing processes - aborting")
+            return
     
     logger.info("🎯 Starting new engine instance...")
     scanner = ModularVulnerabilityScanner()
