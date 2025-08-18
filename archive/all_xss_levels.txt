@@ -1,6 +1,0 @@
-https://xss-game.appspot.com/level1/frame
-https://xss-game.appspot.com/level2/frame  
-https://xss-game.appspot.com/level3/frame
-https://xss-game.appspot.com/level4/frame
-https://xss-game.appspot.com/level5/frame
-https://xss-game.appspot.com/level6/frame
