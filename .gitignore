@@ -51,3 +51,4 @@ archive/
 SecLists/
 SecLists/
 .venv
+*.pyc
