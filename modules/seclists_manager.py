@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """
 SecLists Manager Module - Comprehensive wordlist integration like lean_scanner
@@ -426,3 +427,4 @@ class SecListsManager:
             score += 0.2
         
         return min(score, 1.0)  # Cap at 1.0
+SECLISTS_BASE = os.environ.get('SECLISTS_DIR', os.path.expanduser('~/SecLists'))
