@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Asset Display</title>
+</head>
+<body>
+    <h1>Asset Display Debug</h1>
+    <div id="output"></div>
+    
+    <script>
+    async function testAssetMapping() {
+        try {
+            // Fetch asset mapping
+            const mappingResponse = await fetch('/api/asset_mapping');
+            const globalConfig = await mappingResponse.json();
+            const assetMapping = globalConfig.field_mappings;
+            
+            console.log('Asset mapping:', assetMapping);
+            
+            // Fetch first asset
+            const assetsResponse = await fetch('/api/assets?limit=1');
+            const assetsData = await assetsResponse.json();
+            const asset = assetsData.assets[0];
+            
+            console.log('Raw asset data:', asset);
+            
+            // Test screenshot logic
+            const screenshotPath = asset[assetMapping.screenshot];
+            console.log('Screenshot path:', screenshotPath);
+            
+            const hasScreenshot = screenshotPath && 
+                                screenshotPath !== 'NONE' && 
+                                screenshotPath !== '' &&
+                                !String(screenshotPath).includes('placeholder') &&
+                                String(screenshotPath).endsWith('.png');
+            
+            console.log('Screenshot conditions:', {
+                exists: !!screenshotPath,
+                notNone: screenshotPath !== 'NONE',
+                notEmpty: screenshotPath !== '',
+                noPlaceholder: !String(screenshotPath || '').includes('placeholder'),
+                endsWithPng: String(screenshotPath || '').endsWith('.png'),
+                final: hasScreenshot
+            });
+            
+            // Test response logic
+            const responseBody = asset[assetMapping.response];
+            console.log('Response body:', responseBody);
+            
+            document.getElementById('output').innerHTML = `
+                <h2>Debug Results:</h2>
+                <p><strong>Screenshot path:</strong> ${screenshotPath}</p>
+                <p><strong>Has screenshot:</strong> ${hasScreenshot}</p>
+                <p><strong>Response body:</strong> ${responseBody ? 'Has data' : 'Empty'}</p>
+                <p><strong>Response length:</strong> ${(responseBody || '').length} chars</p>
+            `;
+            
+        } catch (error) {
+            console.error('Error:', error);
+            document.getElementById('output').innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+        }
+    }
+    
+    testAssetMapping();
+    </script>
+</body>
+</html>

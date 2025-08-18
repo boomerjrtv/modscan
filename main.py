@@ -1,74 +1,96 @@
+#!/usr/bin/env python3
+"""
+🚀 MODSCAN MAIN LAUNCHER
+Starts both dashboard and engine together
+"""
+
 import subprocess
-import os
-import signal
 import sys
+print("!!!!!!!!!! MAIN.PY HAS BEEN RELOADED !!!!!!!!!!!")
 import time
+import signal
+import os
+from pathlib import Path
 
-# The directory where the scripts are located
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-
-DASHBOARD_CMD = [sys.executable, os.path.join(APP_DIR, "dashboard.py")]
-ENGINE_CMD = [sys.executable, os.path.join(APP_DIR, "engine.py")]
-
-def find_pids(cmd):
-    """Find PIDs of running processes matching the command."""
-    pids = []
+def cleanup_existing_processes():
+    """Kill any existing dashboard or engine processes"""
     try:
-        # Use pgrep to find the processes
-        pgrep_cmd = ["pgrep", "-f", ' '.join(cmd)]
-        output = subprocess.check_output(pgrep_cmd).decode().strip()
-        if output:
-            pids = [int(pid) for pid in output.splitlines()]
-    except subprocess.CalledProcessError:
-        # pgrep returns non-zero exit status if no process is found
-        pass
-    except FileNotFoundError:
-        print("Warning: pgrep not found. Process management might not be reliable.")
-    return pids
+        # Kill existing dashboard processes
+        subprocess.run(['pkill', '-f', 'dashboard.py'], stderr=subprocess.DEVNULL)
+        # Kill existing engine processes  
+        subprocess.run(['pkill', '-f', 'engine.py'], stderr=subprocess.DEVNULL)
+        time.sleep(2)
+        print("✅ Cleaned up existing processes")
+    except Exception as e:
+        print(f"⚠️  Process cleanup warning: {e}")
 
-def stop():
-    """Stops the dashboard and engine services."""
-    print("Stopping services...")
-    for cmd in [DASHBOARD_CMD, ENGINE_CMD]:
-        pids = find_pids(cmd)
-        for pid in pids:
-            try:
-                os.kill(pid, signal.SIGKILL)
-                print(f"Killed process {pid} for {' '.join(cmd)}")
-            except ProcessLookupError:
-                pass # Process already gone
-            except Exception as e:
-                print(f"Error killing process {pid}: {e}")
-    print("Services stopped.")
+def start_dashboard():
+    """Start the dashboard service"""
+    print("🚀 Starting Dashboard on http://localhost:8000...")
+    dashboard_proc = subprocess.Popen([
+        sys.executable, 'dashboard.py'
+    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    time.sleep(3)  # Give dashboard time to start
+    print("✅ Dashboard started")
+    return dashboard_proc
 
-def start():
-    """Starts the dashboard and engine services."""
-    print("Starting services...")
-    print("Starting dashboard...")
-    subprocess.Popen(DASHBOARD_CMD)
-    time.sleep(2) # Give the dashboard a moment to start
-    print("Starting engine...")
-    subprocess.Popen(ENGINE_CMD)
-    print("Services started.")
-    print(f"Dashboard should be available at http://localhost:8000")
+def start_engine():
+    """Start the scanning engine"""
+    print("🚀 Starting Scanning Engine...")
+    engine_proc = subprocess.Popen([
+        sys.executable, 'engine.py'
+    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    time.sleep(5)  # Give engine time to initialize
+    print("✅ Engine started")
+    return engine_proc
 
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    print("\n🛑 Shutting down ModScan...")
+    cleanup_existing_processes()
+    sys.exit(0)
 
-def restart():
-    """Restarts the services."""
-    stop()
-    time.sleep(1)
-    start()
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in ["start", "stop", "restart"]:
-        print("Usage: python3 main.py {start|stop|restart}")
+def main():
+    print("🎯 MODSCAN - Advanced Bug Bounty Platform")
+    print("=" * 50)
+    
+    # Set up signal handler for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    try:
+        # Clean up any existing processes
+        cleanup_existing_processes()
+        
+        # Start services
+        dashboard_proc = start_dashboard()
+        engine_proc = start_engine()
+        
+        print("\n✅ MODSCAN FULLY OPERATIONAL!")
+        print("🌐 Dashboard: http://localhost:8000")
+        print("🔍 Engine: Running in background")
+        print("🚀 Advanced Scanners: XBOW-crushing capabilities active")
+        print("\nPress Ctrl+C to stop all services...")
+        
+        # Keep the main process alive and monitor subprocesses
+        while True:
+            time.sleep(5)
+            
+            # Check if dashboard is still running
+            if dashboard_proc.poll() is not None:
+                print("⚠️  Dashboard stopped, restarting...")
+                dashboard_proc = start_dashboard()
+            
+            # Check if engine is still running
+            if engine_proc.poll() is not None:
+                print("⚠️  Engine stopped, restarting...")
+                engine_proc = start_engine()
+                
+    except KeyboardInterrupt:
+        signal_handler(signal.SIGINT, None)
+    except Exception as e:
+        print(f"💥 Error: {e}")
+        cleanup_existing_processes()
         sys.exit(1)
 
-    action = sys.argv[1]
-
-    if action == "start":
-        start()
-    elif action == "stop":
-        stop()
-    elif action == "restart":
-        restart()
+if __name__ == "__main__":
+    main()

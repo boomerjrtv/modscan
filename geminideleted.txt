@@ -1,0 +1,33 @@
+List of files deleted by Gemini CLI agent:
+
+- asset_manager.py.auto_fix_bak
+- asset_manager.py.bak.1755375934
+- asset_manager.py.bak.1755376357
+- asset_manager.py.bak.1755376512
+- asset_manager.py.bak.autoclean.1755376740
+- asset_manager.py.bak.fixpreamble.1755376566
+- test_comprehensive_tbhm.py
+- test_dvwa_attack.py
+- test_dvwa_discovery.py
+- test_dvwa_login.py
+- test_dvwa_scanner.py
+- test_enhanced_vulns.py
+- debug_dashboard.py
+- debug_form_parsing.py
+- debug_vuln_frontend.js
+- DISABLED_manual_vuln_injection.py
+- vuln_test.html
+- .DS_Store
+- fast_vuln_discovery.py
+- target_vuln_discovery.py
+- run_nuclei_comprehensive.py
+- run_real_discovery.py
+- ultimate_scanner_monitor.py
+- rebuild_screenshot_mappings.py
+- cleanup_false_positives.py
+- force_dashboard_refresh.py
+- how2log
+- CLAUDE.md
+- RECON_DECISION_TREE.md
+- SYSTEM_ARCHITECTURE_TREE.md
+- start_engine.py

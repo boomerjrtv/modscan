@@ -17,13 +17,22 @@ logger = logging.getLogger("ReconnaissanceEngine")
 
 class ReconnaissanceEngine:
     # --- hardening helpers (idempotent) ---
+    
     def _dedupe_list(self, items):
         out = []
         seen = getattr(self, '_local_seen', set())
         setattr(self, '_local_seen', seen)
         gate = getattr(self, '_global_should_scan', None)
-        for it in items or []:
-            key = str(it)
+        normalizer = getattr(self, '_global_normalize', None)
+        for it in (items or []):
+            key_raw = str(it)
+            if callable(normalizer):
+                try:
+                    key = normalizer(key_raw)
+                except Exception:
+                    key = key_raw
+            else:
+                key = key_raw
             try:
                 if callable(gate) and not gate(key):
                     continue
@@ -32,9 +41,8 @@ class ReconnaissanceEngine:
             if key in seen:
                 continue
             seen.add(key)
-            out.append(it)
+            out.append(key)
         return out
-
     def _batch_size(self, default=200):
         # Choose a safe bounded batch size; prefer config if present
         bs = default
@@ -47,41 +55,101 @@ class ReconnaissanceEngine:
         # clamp sensibly
         return max(50, min(800, int(bs)))
 
-    async def _persist_discoveries_to_assets(self, discoveries: dict):
+    async def _persist_discoveries_to_assets(self, discoveries: dict, session: aiohttp.ClientSession):
         """Insert discovered subdomains (Tier-4) as assets so they appear in dashboard and get scanned."""
         if not discoveries:
             return 0
         subs = set(discoveries.get("subdomains") or [])
         inserted = 0
-        for host in subs:
-            # Build a canonical https URL; trailing slash, no query.
+
+        async def worker(host):
+            nonlocal inserted
             url = f"https://{host.strip().lstrip('.')}/"
+            import time
+            from datetime import datetime
+            import json
+            start = time.time()
+            ok = False; status=None; headers={}; body=""; rt_ms=None; title=None
+            content_length = 0; tech_stack = []; redirect_url = None
+            
+            proxy = await self._get_proxy()
             try:
-                query, values = self.asset_manager.build_asset_insert_query(
-                    url=url,
-                    host=host,
-                    status_code=None,
-                    title=None,
-                    content_length=None,
-                    response_time=None,
-                    discovery_method="tier4_advanced",
-                    last_scanned=None
-                )
-                import sqlite3
-                with self.asset_manager._get_db() as db:
-                    db.execute(query, values)
-                    db.commit()
-                    inserted += 1
-            except Exception as e:
-                # Most failures here will be UNIQUE collisions; ignore quietly.
-                import logging; logging.getLogger(__name__).debug(f"persist skip {url}: {e}")
+                async with self.semaphore:
+                    methods_to_try = ['GET', 'HEAD']
+                    
+                    for method in methods_to_try:
+                        try:
+                            if method == 'GET':
+                                async with session.get(url, timeout=15, allow_redirects=True, proxy=proxy) as r:
+                                    status = r.status
+                                    headers = dict(r.headers)
+                                    # Read body first, then calculate content length
+                                    body_bytes = await r.read()
+                                    content_length = len(body_bytes)
+
+                                    try:
+                                        body = body_bytes.decode('utf-8', errors="ignore")
+                                    except Exception:
+                                        body = ""
+                                    
+                                    m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I|re.S)
+                                    title = re.sub(r"\s+", " ",m.group(1)).strip()[:255] if m else None
+                                    
+                                    tech_stack = self._detect_technologies_quick(headers, body)
+                                    
+                                    if str(r.url) != url:
+                                        redirect_url = str(r.url)
+                                    
+                                    ok = True
+                                    break
+                                    
+                            elif method == 'HEAD' and not ok:
+                                async with session.head(url, timeout=10, allow_redirects=True, proxy=proxy) as r:
+                                    status = r.status
+                                    headers = dict(r.headers)
+                                    content_length = int(headers.get('content-length', 0))
+                                    ok = True
+                                    break
+                                    
+                        except Exception as method_error:
+                            continue
+                            
+            except Exception as _e:
+                ok = False
+            finally:
+                rt_ms = int((time.time() - start) * 1000)
+
+            # Only add assets that have confirmed HTTP responses with valid status codes
+            if ok and status is not None and isinstance(status, int) and 100 <= status <= 599:
+                try:
+                    query, values = self.asset_manager.build_asset_insert_query(
+                        url=url,
+                        host=host,
+                        status_code=status,
+                        title=title,
+                        tech_stack=', '.join(tech_stack),
+                        content_length=content_length,
+                        response_time=rt_ms,
+                        discovery_method="tier4_advanced",
+                        last_scanned=datetime.now().isoformat()
+                    )
+                    import sqlite3
+                    with self.asset_manager._get_db() as db:
+                        db.execute(query, values)
+                        db.commit()
+                        inserted += 1
+                except Exception as e:
+                    logger.debug(f"persist skip {url}: {e}")
+
+        await asyncio.gather(*(worker(host) for host in subs))
         return inserted
 
     """Advanced reconnaissance engine using AssetManager field mappings"""
     
-    def __init__(self, asset_manager, config: Dict):
+    def __init__(self, asset_manager, config: Dict, proxy_manager=None):
         self.asset_manager = asset_manager  # Use YOUR AssetManager
         self.config = config
+        self.proxy_manager = proxy_manager
         self.max_concurrent = 25
         
         # Reconnaissance techniques
@@ -135,46 +203,100 @@ class ReconnaissanceEngine:
         sem = asyncio.Semaphore(20)
 
         async def worker(u):
+            """ENHANCED httpx-style verification with comprehensive probing"""
             import time, json
             start = time.time()
             ok = False; status=None; headers={}; body=""; rt_ms=None; title=None
+            content_length = 0; tech_stack = []; redirect_url = None
+            
+            proxy = await self._get_proxy()
             try:
                 async with self.semaphore:
-                    async with session.get(u, timeout=10, allow_redirects=False) as r:
-                        status = r.status
-                    headers = dict(r.headers)
-                    try:
-                        body = await r.text(errors="ignore")
-                    except Exception:
-                        body = (await r.read()).decode("utf-8","ignore")
-                    # title
-                    m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I|re.S)
-                    title = re.sub(r"\s+"," ",m.group(1)).strip()[:255] if m else None
-                    ok = True
+                    # Multiple request methods for comprehensive coverage
+                    methods_to_try = ['GET', 'HEAD']
+                    
+                    for method in methods_to_try:
+                        try:
+                            if method == 'GET':
+                                async with session.get(u, timeout=15, allow_redirects=True, proxy=proxy) as r:
+                                    status = r.status
+                                    headers = dict(r.headers)
+                                    # Read body first, then calculate content length
+                                    body_bytes = await r.read()
+                                    content_length = len(body_bytes)
+                                    
+                                    try:
+                                        body = body_bytes.decode('utf-8', errors="ignore")
+                                    except Exception:
+                                        body = ""
+                                    
+                                    # Enhanced title extraction
+                                    m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I|re.S)
+                                    title = re.sub(r"\s+", " ",m.group(1)).strip()[:255] if m else None
+                                    
+                                    # Technology detection from headers and body
+                                    tech_stack = self._detect_technologies_quick(headers, body)
+                                    
+                                    # Follow redirects info
+                                    if str(r.url) != u:
+                                        redirect_url = str(r.url)
+                                    
+                                    ok = True
+                                    break  # Success, no need to try other methods
+                                    
+                            elif method == 'HEAD' and not ok:
+                                # HEAD request for basic info if GET failed
+                                async with session.head(u, timeout=10, allow_redirects=True, proxy=proxy) as r:
+                                    status = r.status
+                                    headers = dict(r.headers)
+                                    content_length = int(headers.get('content-length', 0))
+                                    ok = True
+                                    break
+                                    
+                        except Exception as method_error:
+                            continue  # Try next method
+                            
             except Exception as _e:
                 ok = False
             finally:
                 rt_ms = int((time.time() - start) * 1000)
 
             # Use AssetManager field mappings for all columns
-            cols = [f"{fields['last_scanned']}=?"]
-            vals = [__import__("datetime").datetime.now().isoformat()]
+            cols = [f"{fields['last_scanned']}=?", "basic_scan_complete=?", "scanning_stage=?"]
+            vals = [__import__("datetime").datetime.now().isoformat(), 0, "new"]
+            
+            if ok and status:
+                cols.extend([f"{fields['status_code']}=?", f"{fields['response_time']}=?", "basic_scan_complete=?", "scanning_stage=?"])
+                vals.extend([status, rt_ms, 1, "basic_complete"])
+                
+                if title:
+                    cols.append(f"{fields['title']}=?")
+                    vals.append(title)
+                    
+                if content_length:
+                    cols.append(f"{fields['content_length']}=?") 
+                    vals.append(content_length)
+                    
+                if tech_stack:
+                    cols.append(f"technologies_detected=?")
+                    vals.append(json.dumps(tech_stack))
+                    
+                if redirect_url:
+                    cols.append(f"redirect_url=?")
+                    vals.append(redirect_url)
 
-            if ok:
-                cols += [
+                cols.extend([
                     f"{fields['status_code']}=?",
                     f"{fields['title']}=?",
                     f"{fields['response_body']}=?",
                     f"{fields['content_length']}=?",
                     f"{fields['response_time']}=?",
                     "headers_collected=?",
-                    "basic_scan_complete=1",
-                    "scanning_stage='basic_complete'",
                     f"{fields['intelligence_score']}=" + ("0.9" if (status==200) else "0.5" if 300<=status<400 else "0.4")
-                ]
-                vals += [status, title, (body or "")[:100000], len(body or ""), rt_ms, __import__("json").dumps(headers or {})]
+                ])
+                vals.extend([status, title, (body or "")[:100000], len(body or ""), rt_ms, __import__("json").dumps(headers or {})])
             else:
-                cols += [ "basic_scan_complete=0", "scanning_stage=COALESCE(scanning_stage,'new')" ]
+                cols.append( "scanning_stage=COALESCE(scanning_stage,'new')" )
 
             # Use AssetManager field mappings in WHERE clause
             sql = f"UPDATE assets SET {', '.join(cols)} WHERE {fields['url']}=?"
@@ -271,7 +393,7 @@ class ReconnaissanceEngine:
         _d = recon_results.get('discoveries') if isinstance(recon_results, dict) else None
         if _d:
             try:
-                new_rows = await self._persist_discoveries_to_assets(_d)
+                new_rows = await self._persist_discoveries_to_assets(_d, session)
                 logger.info(f"🧩 Persisted {new_rows} Tier-4 discoveries into assets")
             except Exception as e:
                 logger.warning(f"persist Tier-4 discoveries failed: {e}")
@@ -351,8 +473,9 @@ class ReconnaissanceEngine:
                 try:
                     headers = {'User-Agent': 'ReconnaissanceEngine/1.0'}
                     
+                    proxy = await self._get_proxy()
                     async with self.semaphore:
-                        async with session.get(ct_url, headers=headers, timeout=15) as response:
+                        async with session.get(ct_url, headers=headers, timeout=15, proxy=proxy) as response:
                             if response.status == 200:
                                 ct_data = await response.json()
                             
@@ -391,7 +514,7 @@ class ReconnaissanceEngine:
             results["certificates"] = list(set(results["certificates"]))
             
         except Exception as e:
-            logger.debug(f"Certificate Transparency recon failed for {domain}: {e}")
+            logger.error(f"Certificate Transparency recon failed for {domain}: {e}")
         
         return results
     
@@ -423,7 +546,7 @@ class ReconnaissanceEngine:
                     continue
         
         except Exception as e:
-            logger.debug(f"DNS reconnaissance failed for {domain}: {e}")
+            logger.error(f"DNS reconnaissance failed for {domain}: {e}")
         
         return results
     
@@ -432,8 +555,8 @@ class ReconnaissanceEngine:
         open_ports = []
         
         try:
-            # Common web ports
-            common_ports = [21, 22, 25, 53, 80, 110, 143, 443, 993, 995, 8080, 8443]
+            # Expanded common ports (using SecLists data)
+            common_ports = [21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995, 1433, 1521, 3306, 3389, 5432, 5985, 5986, 8080, 8443, 8888, 9090]
             
             # Get IP address
             try:
@@ -441,8 +564,8 @@ class ReconnaissanceEngine:
             except socket.gaierror:
                 return open_ports
             
-            # Quick port checks (limited for performance)
-            for port in common_ports[:8]:  # Only check top 8 ports
+            # Enhanced port checks with more coverage
+            for port in common_ports[:15]:  # Check top 15 ports instead of 8
                 try:
                     future = asyncio.open_connection(ip, port)
                     reader, writer = await asyncio.wait_for(future, timeout=2)
@@ -456,38 +579,205 @@ class ReconnaissanceEngine:
                     continue
         
         except Exception as e:
-            logger.debug(f"Port scan failed for {domain}: {e}")
+            logger.error(f"Port scan failed for {domain}: {e}")
         
         return open_ports
     
     async def _wayback_machine_recon(self, domain: str, session: aiohttp.ClientSession) -> List[str]:
-        """Wayback Machine historical URL analysis"""
+        """COMPREHENSIVE Historical URL analysis - waymore/gau equivalent"""
         historical_urls = []
         
-        try:
-            wayback_url = f"https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&limit=50"
+        # Multiple archive sources for comprehensive coverage
+        sources = [
+            # Wayback Machine - comprehensive
+            f"https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&limit=1000&filter=statuscode:200",
+            f"https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&limit=1000&filter=statuscode:200",
             
-            async with self.semaphore:
-                async with session.get(wayback_url, timeout=15) as response:
-                    if response.status == 200:
-                        wayback_data = await response.json()
-                    
-                    if isinstance(wayback_data, list) and len(wayback_data) > 1:
-                        for entry in wayback_data[1:]:  # Skip header row
-                            if len(entry) > 2:
-                                url = entry[2]  # URL is in 3rd column
-                                
-                                if url.startswith('http') and domain in url:
-                                    # Extract interesting paths
-                                    if any(interesting in url.lower() for interesting in 
-                                          ['admin', 'api', 'login', 'config', 'backup']):
+            # Common Crawl - more recent data
+            f"https://index.commoncrawl.org/CC-MAIN-2024-10-index?url={domain}/*&output=json&limit=500",
+            
+            # AlienVault OTX (if available)
+            f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/url_list?limit=500"
+        ]
+        
+        for source_url in sources:
+            try:
+                proxy = await self._get_proxy()
+                async with self.semaphore:
+                    timeout = aiohttp.ClientTimeout(total=20)
+                    async with session.get(source_url, timeout=timeout, proxy=proxy) as response:
+                        if response.status == 200:
+                            if 'archive.org' in source_url:
+                                # Wayback Machine format
+                                data = await response.json()
+                                if isinstance(data, list) and len(data) > 1:
+                                    for entry in data[1:]:  # Skip header
+                                        if len(entry) > 2:
+                                            url = entry[2]  # URL column
+                                            if self._is_interesting_url(url, domain):
+                                                historical_urls.append(url)
+                                                
+                            elif 'commoncrawl.org' in source_url:
+                                # Common Crawl format
+                                lines = (await response.text()).strip().split('\n')
+                                for line in lines:
+                                    try:
+                                        entry = json.loads(line)
+                                        url = entry.get('url', '')
+                                        if self._is_interesting_url(url, domain):
+                                            historical_urls.append(url)
+                                    except:
+                                        continue
+                                        
+                            elif 'alienvault.com' in source_url:
+                                # OTX format
+                                data = await response.json()
+                                for entry in data.get('url_list', []):
+                                    url = entry.get('url', '')
+                                    if self._is_interesting_url(url, domain):
                                         historical_urls.append(url)
+                        
+            except Exception as e:
+                logger.error(f"Historical recon failed for {source_url}: {e}")
+                continue
         
-        except Exception as e:
-            logger.debug(f"Wayback Machine recon failed for {domain}: {e}")
+        # Advanced filtering and scoring
+        scored_urls = []
+        for url in set(historical_urls):
+            score = self._score_historical_url(url)
+            if score > 0.3:  # Only include interesting URLs
+                scored_urls.append((url, score))
         
-        return list(set(historical_urls))[:20]  # Deduplicate and limit
+        # Sort by score and return top URLs
+        scored_urls.sort(key=lambda x: x[1], reverse=True)
+        final_urls = [url for url, score in scored_urls[:200]]  # Top 200 most interesting
+        
+        logger.info(f"🕰️ Historical recon found {len(final_urls)} interesting URLs for {domain}")
+        return final_urls
     
+    def _is_interesting_url(self, url: str, domain: str) -> bool:
+        """Determine if URL is worth testing - CONFIGURABLE filtering (default: capture everything)"""
+        if not url or not url.startswith('http') or domain not in url:
+            return False
+            
+        # Get filtering mode from config (default: minimal filtering)
+        filtering_mode = self.config.get('url_filtering_mode', 'minimal')  # minimal, aggressive, or disabled
+        
+        if filtering_mode == 'disabled':
+            return True  # Capture everything
+            
+        url_lower = url.lower()
+        
+        # MINIMAL filtering - only skip obvious static assets that can't have vulns
+        if filtering_mode == 'minimal':
+            # Only skip binary files that definitely can't contain vulnerabilities
+            binary_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.ico', '.woff', '.ttf', '.pdf', '.zip', '.exe', '.dmg']
+            if any(url_lower.endswith(ext) for ext in binary_extensions):
+                return False
+            return True  # Include everything else including CSS/JS which can have secrets
+            
+        # AGGRESSIVE filtering - original logic (may miss valuable URLs)
+        elif filtering_mode == 'aggressive':
+            # Skip more file types (potentially missing CSS/JS with secrets)
+            skip_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.css', '.ico', '.woff', '.ttf', '.svg']
+            if any(url_lower.endswith(ext) for ext in skip_extensions):
+                return False
+                
+            # High-value indicators
+            interesting_keywords = [
+                'admin', 'api', 'login', 'config', 'backup', 'upload', 'dashboard',
+                'panel', 'manage', 'auth', 'token', 'key', 'secret', 'test', 'dev',
+                'staging', 'debug', 'internal', 'private', 'hidden', '.env', 'swagger',
+                'graphql', 'rest', 'endpoint', 'service', 'micro', 'app', 'mobile'
+            ]
+            
+            # Parameters indicate dynamic content
+            has_params = '?' in url and '=' in url
+            has_interesting_keywords = any(keyword in url_lower for keyword in interesting_keywords)
+            has_interesting_path = len([p for p in url.split('/') if p]) > 3  # Deep paths
+            
+            return has_params or has_interesting_keywords or has_interesting_path
+            
+        return True  # Default: include everything
+    
+    def _score_historical_url(self, url: str) -> float:
+        """Score URL by potential interest level"""
+        score = 0.5  # Base score
+        url_lower = url.lower()
+        
+        # High-value keywords
+        if any(keyword in url_lower for keyword in ['admin', 'api', 'login', 'config']):
+            score += 0.4
+        if any(keyword in url_lower for keyword in ['backup', 'upload', 'dashboard', 'panel']):
+            score += 0.3
+        if any(keyword in url_lower for keyword in ['auth', 'token', 'key', 'secret']):
+            score += 0.5
+        if any(keyword in url_lower for keyword in ['.env', 'swagger', 'graphql']):
+            score += 0.6
+            
+        # Parameters boost
+        if '?' in url and '=' in url:
+            param_count = url.count('=')
+            score += min(param_count * 0.1, 0.3)
+            
+        # Path depth
+        path_depth = len([p for p in url.split('/') if p])
+        if path_depth > 4:
+            score += 0.2
+            
+        return min(score, 1.0)
+    
+    def _detect_technologies_quick(self, headers: dict, body: str) -> List[str]:
+        """Quick technology detection from headers and body - httpx style"""
+        technologies = []
+        
+        # Header-based detection
+        server = headers.get('server', '').lower()
+        if 'nginx' in server:
+            technologies.append('Nginx')
+        if 'apache' in server:
+            technologies.append('Apache')
+        if 'cloudflare' in server:
+            technologies.append('Cloudflare')
+            
+        # Framework headers
+        if 'x-powered-by' in headers:
+            powered_by = headers['x-powered-by'].lower()
+            if 'php' in powered_by:
+                technologies.append('PHP')
+            if 'asp.net' in powered_by:
+                technologies.append('ASP.NET')
+                
+        # Security headers
+        if 'strict-transport-security' in headers:
+            technologies.append('HSTS')
+        if 'x-frame-options' in headers:
+            technologies.append('X-Frame-Options')
+            
+        # Body-based detection (quick check)
+        if body:
+            body_lower = body.lower()
+            if 'wp-content' in body_lower or 'wordpress' in body_lower:
+                technologies.append('WordPress')
+            if 'drupal' in body_lower:
+                technologies.append('Drupal')
+            if 'joomla' in body_lower:
+                technologies.append('Joomla')
+            if 'react' in body_lower or 'reactjs' in body_lower:
+                technologies.append('React')
+            if 'angular' in body_lower:
+                technologies.append('Angular')
+            if 'vue' in body_lower or 'vuejs' in body_lower:
+                technologies.append('Vue.js')
+                
+        return list(set(technologies))
+    
+    async def _get_proxy(self) -> Optional[str]:
+        """Get proxy from shared proxy manager with proper rate limiting"""
+        if self.proxy_manager:
+            return self.proxy_manager.get_random_proxy()
+        return None
+
     def get_reconnaissance_statistics(self) -> Dict:
         """Get reconnaissance engine statistics"""
         return {

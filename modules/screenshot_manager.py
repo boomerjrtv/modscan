@@ -21,14 +21,14 @@ class ScreenshotManager:
     def __init__(self, asset_manager, config: Dict):
         self.asset_manager = asset_manager  # Use YOUR AssetManager
         self.config = config
-        self.max_concurrent = 10  # Conservative for screenshots
+        self.max_concurrent = 100  # AGGRESSIVE: 100 concurrent screenshots with 1Gb bandwidth
         
         # Screenshot settings
         self.screenshot_dir = Path(config.get('screenshot_dir', 'screenshots'))
         self.screenshot_dir.mkdir(exist_ok=True)
         
-        # Browser settings
-        self.browser_timeout = 15
+        # AGGRESSIVE Browser settings for speed
+        self.browser_timeout = 8  # Fast timeout - don't wait for slow sites
         self.window_size = "1366,768"
         
         logger.info("📸 ScreenshotManager initialized with AssetManager integration")
