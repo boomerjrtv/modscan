@@ -1,0 +1,6 @@
+# Sites with potential parameters for testing  
+https://httpbin.org/forms/post
+https://httpbin.org/get
+https://httpbin.org/anything
+https://jsonplaceholder.typicode.com/posts
+https://postman-echo.com/get

@@ -1,93 +1,24 @@
-# Project Context
+# Gemini CLI Policy on File Deletion
 
-**Important:** For this session, the primary working directory for the user's program and new scripts/modules is `~/recon-platform/modscan/`. All modifications and new file creations should primarily occur within this directory unless explicitly stated otherwise. The `~/recon-platform/` directory can be observed for context.
+This document outlines the strict policy for file deletion when interacting with the Gemini CLI agent. This policy is designed to ensure data integrity, prevent accidental loss of work, and maintain user trust.
 
----
+## Core Principles:
 
-# Claude.md
+1.  **No Unilateral Deletion:** The Gemini CLI agent will **never** delete any files without explicit, unambiguous user confirmation.
+2.  **Explicit Confirmation Required:** For any proposed file deletion, the agent **must** present the user with a clear list of files to be deleted and await a direct "yes" or "confirm" from the user.
+3.  **Automatic Backup:** Prior to any confirmed deletion, the Gemini CLI agent will automatically create a dated backup of the file(s) intended for deletion.
+    *   **Backup Naming Convention:** Backup files will be named using the original filename followed by a timestamp in `YYYYMMDD_HHMMSS` format and a `.bak` extension (e.g., `original_file.py.20250817_143000.bak`).
+    *   **Backup Location:** Backup files will be stored in a designated `gemini_backups/` directory within the project root. If this directory does not exist, the agent will create it.
+4.  **Deletion Log:** All deleted files, along with their original path and the timestamp of deletion, will be logged in a file named `geminideleted.txt` located in the project root.
 
-This document outlines the integration and usage of Claude within the Recon Platform.
+## Procedure for File Deletion:
 
-## Overview
+1.  **User Request/Agent Proposal:** The process begins either with a direct user request to delete files or an agent proposal for cleanup.
+2.  **List of Files:** The agent will present a clear, itemized list of all files proposed for deletion.
+3.  **Confirmation Prompt:** The agent will explicitly ask the user for confirmation, stating the implications of deletion.
+4.  **Backup Creation:** Upon user confirmation, the agent will first create dated backups of all files on the deletion list in the `gemini_backups/` directory.
+5.  **File Deletion:** After successful backup, the agent will proceed with the deletion of the original files.
+6.  **Log Entry:** An entry will be added to `geminideleted.txt` for each deleted file.
+7.  **Confirmation of Action:** The agent will inform the user that the deletion process is complete and that backups have been created.
 
-Claude is an AI assistant developed by Anthropic. Its integration into the Recon Platform aims to enhance various aspects of intelligence gathering, analysis, and automated response.
-
-## Key Features and Use Cases
-
-1.  **Automated Report Generation:** Claude can assist in generating comprehensive reconnaissance reports by synthesizing data from various sources within the platform.
-2.  **Threat Intelligence Analysis:** Leverage Claude's natural language processing capabilities to analyze threat intelligence feeds, identify patterns, and summarize critical information.
-3.  **Vulnerability Prioritization:** Assist in prioritizing identified vulnerabilities by providing context and potential impact analysis based on its extensive knowledge base.
-4.  **Code Analysis and Review:** For development-related tasks, Claude can help in reviewing code snippets, identifying potential security flaws, or suggesting improvements.
-5.  **Natural Language Querying:** Users can interact with the Recon Platform using natural language queries, with Claude interpreting and executing relevant actions or retrieving information.
-6.  **Incident Response Playbook Generation:** Aid in creating dynamic incident response playbooks based on real-time threat data and established security protocols.
-
-## Integration Details
-
-The integration with Claude is primarily facilitated through its API. Key aspects include:
-
-*   **API Key Management:** Securely store and manage Claude API keys within the platform's configuration.
-*   **Rate Limiting and Usage Monitoring:** Implement mechanisms to respect API rate limits and monitor usage to stay within allocated quotas.
-*   **Error Handling:** Robust error handling for API calls to ensure graceful degradation and informative feedback to users.
-*   **Data Privacy:** Ensure that data sent to Claude for processing adheres to privacy policies and compliance requirements. Sensitive information should be handled with extreme care, potentially requiring anonymization or redaction before being sent to the API.
-
-## Configuration
-
-To configure Claude integration, modify the `config/claude.json` file (or similar configuration file) with your API key and any specific parameters.
-
-```json
-{
-  "claude_api_key": "YOUR_CLAUDE_API_KEY",
-  "model_version": "claude-v1.3",
-  "max_tokens": 2000,
-  "temperature": 0.7
-}
-```
-
-## Usage Examples
-
-### Example 1: Summarizing a Reconnaissance Report
-
-```python
-from claude_api import ClaudeAPI
-
-def summarize_report(report_text):
-    claude = ClaudeAPI(api_key="YOUR_CLAUDE_API_KEY")
-    prompt = f"Summarize the following reconnaissance report, highlighting key findings and critical vulnerabilities:\n\n{report_text}"
-    response = claude.generate_text(prompt, max_tokens=500)
-    return response.text
-
-# Example usage:
-# report_content = read_file("recon_report.txt")
-# summary = summarize_report(report_content)
-# print(summary)
-```
-
-### Example 2: Analyzing a Security Alert
-
-```python
-from claude_api import ClaudeAPI
-
-def analyze_security_alert(alert_details):
-    claude = ClaudeAPI(api_key="YOUR_CLAUDE_API_KEY")
-    prompt = f"Analyze the following security alert. Identify the potential threat, its severity, and suggest immediate mitigation steps:\n\n{alert_details}"
-    response = claude.generate_text(prompt, max_tokens=300)
-    return response.text
-
-# Example usage:
-# alert_data = {"source": "IDS", "event": "SQL Injection Attempt", "ip": "192.168.1.100"}
-# analysis = analyze_security_alert(str(alert_data))
-# print(analysis)
-```
-
-## Best Practices
-
-*   **Contextual Prompts:** Provide Claude with as much relevant context as possible in your prompts to get the most accurate and useful responses.
-*   **Iterative Refinement:** If the initial response isn't satisfactory, refine your prompt and try again.
-*   **Security Considerations:** Be mindful of the data you send to Claude. Avoid sending highly sensitive or confidential information unless absolutely necessary and properly secured.
-*   **Monitoring and Logging:** Implement robust logging for all interactions with Claude to aid in debugging, auditing, and performance monitoring.
-
-## Future Enhancements
-
-*   **Real-time Integration:** Explore real-time data streaming to Claude for immediate analysis and response.
-*   **Custom Model Training:** Investigate possibilities for fine-tuning Claude models on specific security datasets for enhanced domain-specific intelligence.
-*   **Automated Action Triggers:** Develop mechanisms to trigger automated actions within the platform based on Claude's analysis (e.g., blocking an IP, isolating a compromised host)
+This policy is a commitment to safeguarding your work and ensuring a transparent and trustworthy interaction with the Gemini CLI agent.

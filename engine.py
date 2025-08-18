@@ -25,6 +25,9 @@ from modules.screenshot_manager import ScreenshotManager
 from modules.waf_bypass import WAFBypass
 from modules.reconnaissance import ReconnaissanceEngine
 
+# Import Multi-AI Pentester Team (XBOW-inspired)
+from modules.multi_ai_pentester_team import MultiAIPentesterTeam
+
 # Import YOUR AssetManager for centralized field mapping
 from asset_manager import AssetManager
 
@@ -65,6 +68,9 @@ class ModularVulnerabilityScanner:
         self.waf_bypass = WAFBypass(self.asset_manager, CONFIG)
         self.reconnaissance = ReconnaissanceEngine(self.asset_manager, CONFIG)
         
+        # Initialize Multi-AI Pentester Team (XBOW-inspired)
+        self.ai_pentester_team = MultiAIPentesterTeam(self.asset_manager, CONFIG)
+        
         # Runtime controls and state will be set up after initialization
         
         # Performance settings
@@ -90,7 +96,8 @@ class ModularVulnerabilityScanner:
             self.ml_engine.initialize(),
             self.screenshot_manager.initialize(),
             self.waf_bypass.initialize(),
-            self.reconnaissance.initialize()
+            self.reconnaissance.initialize(),
+            self.ai_pentester_team.initialize()
         ]
         
         await asyncio.gather(*init_tasks, return_exceptions=True)
@@ -172,7 +179,8 @@ class ModularVulnerabilityScanner:
                         self._tier1_modular_discovery(session),
                         self._tier2_modular_profiling(session),
                         self._tier3_modular_vulnerability_scanning(session),
-                        self._tier4_modular_advanced_recon(session)
+                        self._tier4_multi_ai_pentesting(session),
+                        self._tier5_modular_advanced_recon(session)
                     ]
                     
                     await asyncio.gather(*tier_tasks, return_exceptions=True)
@@ -326,7 +334,49 @@ class ModularVulnerabilityScanner:
         except Exception as e:
             logger.error(f"Tier 3 modular vulnerability scanning error: {e}")
     
-    async def _tier4_modular_advanced_recon(self, session: aiohttp.ClientSession):
+    async def _tier4_multi_ai_pentesting(self, session: aiohttp.ClientSession):
+        """Tier 4: Multi-AI Pentester Team (XBOW-inspired parallel testing)"""
+        try:
+            # Get assets ready for AI pentesting
+            ready_assets = self.asset_manager.get_assets_ready_for_deep_scan(50)
+            
+            if not ready_assets:
+                return
+            
+            # Extract URLs for testing
+            urls = [asset['url'] for asset in ready_assets if asset.get('url')]
+            
+            if not urls:
+                return
+            
+            logger.info(f"🤖 TIER 4: Multi-AI Pentester Team testing {len(urls)} assets")
+            logger.info("🎯 AI Specialists: SQLi Hunter, XSS Hunter, AuthZ Hunter, InfoDisc Hunter")
+            
+            # Run parallel AI pentesting
+            findings = await self.ai_pentester_team.parallel_pentest(urls, max_concurrent=20)
+            
+            if findings:
+                # Get team performance summary
+                summary = await self.ai_pentester_team.get_team_summary()
+                
+                logger.warning(f"🚨 TIER 4: Multi-AI Team found {len(findings)} vulnerabilities!")
+                logger.info(f"📊 Team Performance: {summary['findings_by_severity']}")
+                
+                for agent, count in summary['findings_by_agent'].items():
+                    logger.info(f"   {agent}: {count} findings")
+                
+                # Log using AssetManager
+                self.asset_manager.log_activity(
+                    'MULTI_AI_PENTEST_COMPLETE',
+                    f"Multi-AI pentester team found {len(findings)} vulnerabilities across {len(urls)} assets"
+                )
+            else:
+                logger.info(f"✅ TIER 4: Multi-AI Team tested {len(urls)} assets, no vulnerabilities found")
+            
+        except Exception as e:
+            logger.error(f"Tier 4 multi-AI pentesting error: {e}")
+    
+    async def _tier5_modular_advanced_recon(self, session: aiohttp.ClientSession):
         """Tier 4: Advanced reconnaissance using ReconnaissanceEngine"""
         try:
             # Advanced recon using ReconnaissanceEngine module
