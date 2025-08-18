@@ -50,3 +50,4 @@ archive/
 # big wordlists or downloaded sets (keep your curated SecLists outside the repo if huge)
 SecLists/
 SecLists/
+.venv
