@@ -34,3 +34,18 @@ node_modules/
 *.swo
 *.tgz
 *.zip
+
+# --- local noise / large stuff ---
+logs/
+*.log
+*.log.*
+engine_*.log
+*.sqlite
+*.db
+screenshots/
+archive/
+*.bak
+*.tmp
+.DS_Store
+# big wordlists or downloaded sets (keep your curated SecLists outside the repo if huge)
+SecLists/
