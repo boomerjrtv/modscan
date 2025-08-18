@@ -1,3 +1,8 @@
+from pathlib import Path
+import random
+import time
+import requests
+import json
 #!/usr/bin/env python3
 """
 Technology Detector Module - Advanced technology detection with AssetManager
@@ -14,6 +19,176 @@ from typing import List, Dict, Optional
 logger = logging.getLogger("TechnologyDetector")
 
 class TechnologyDetector:
+    # --- WAF-aware HTTP helper ---
+
+    def _safe_get(self, url: str, timeout: int = 15, attempts: int = 6, allow_headless: bool = True):
+
+        """Browser-like GET with proxy rotation + headless fallback.
+
+        Uses proxy_list from config.json. Returns a (status_code, final_url, headers_dict, text, via).
+
+        """
+
+        # Load proxies from config.json once
+
+        try:
+
+            cfg = json.loads(Path("config.json").read_text())
+
+            proxies = cfg.get("proxy_list", [])
+
+        except Exception:
+
+            proxies = []
+
+        # Common block markers
+
+        block_pats = [r"Sorry,\s+you have been blocked", r"/cdn-cgi/trace", r"/cdn-cgi/challenge", r"Access Denied", r"PerimeterX", r"Attention Required! \| Cloudflare"]
+
+        def looks_blocked(resp, text):
+
+            if resp is not None and resp.status_code in (403, 429, 503):
+
+                return True
+
+            if resp is not None:
+
+                svr = (resp.headers.get("server") or "").lower()
+
+                if "cloudflare" in svr or "akamai" in svr:
+
+                    return True
+
+            if resp is not None and ("cf-ray" in resp.headers or "cf-cache-status" in resp.headers):
+
+                return True
+
+            text = (text or "")[:10000]
+
+            for p in block_pats:
+
+                if re.search(p, text, re.I):
+
+                    return True
+
+            return False
+
+        def pick_proxy(i):
+
+            if not proxies:
+
+                return {}, None
+
+            p = proxies[i % len(proxies)]
+
+            pmap = {"http": p, "https": p}
+
+            return pmap, p
+
+        def random_headers():
+
+            uas = [
+
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+
+            ]
+
+            return {
+
+                "User-Agent": random.choice(uas),
+
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+
+                "Accept-Language": "en-US,en;q=0.9",
+
+                "Accept-Encoding": "gzip, deflate, br",
+
+                "Cache-Control": "no-cache",
+
+                "Pragma": "no-cache",
+
+                "Connection": "keep-alive",
+
+            }
+
+        sess = requests.Session()
+
+        sess.headers.update(random_headers())
+
+        last_exc = None
+
+        for i in range(attempts):
+
+            pmap, pname = pick_proxy(i)
+
+            try:
+
+                resp = sess.get(url, timeout=timeout, proxies=pmap, allow_redirects=True)
+
+                txt = resp.text or ""
+
+                if not looks_blocked(resp, txt) and resp.status_code < 500:
+
+                    return resp.status_code, resp.url, dict(resp.headers), txt, f"requests:{pname or direct}"
+
+            except Exception as e:
+
+                last_exc = e
+
+            time.sleep(0.6 + random.random())
+
+        # headless fallback
+
+        if allow_headless:
+
+            try:
+
+                from selenium import webdriver
+
+                from selenium.webdriver.chrome.options import Options
+
+                opts = Options()
+
+                opts.add_argument("--headless=new")
+
+                opts.add_argument("--disable-gpu")
+
+                opts.add_argument("--no-sandbox")
+
+                opts.add_argument("--disable-dev-shm-usage")
+
+                # Use the next proxy for headless if available
+
+                if proxies:
+
+                    opts.add_argument(f"--proxy-server={proxies[0]}")
+
+                driver = webdriver.Chrome(options=opts)
+
+                driver.set_page_load_timeout(25)
+
+                driver.get(url)
+
+                time.sleep(2.5)
+
+                html = driver.page_source or ""
+
+                driver.quit()
+
+                if html:
+
+                    return 200, url, {}, html, "headless"
+
+            except Exception:
+
+                pass
+
+        raise RuntimeError(f"WAF blocked and headless failed for {url}; last={last_exc}")
+
     """Advanced technology detection using AssetManager field mappings"""
     
     def __init__(self, asset_manager, config: Dict):
@@ -133,9 +308,8 @@ class TechnologyDetector:
                 # Get proxy
                 proxy = await self._get_proxy()
                 
-                async with self.semaphore:
-                    async with session.get(url, proxy=proxy, timeout=15, ssl=False) as response:
-                        headers = dict(response.headers)
+                async with session.get(url, proxy=proxy, timeout=15, ssl=False) as response:
+                    headers = dict(response.headers)
                     content = await response.text()
                     
                     # Perform comprehensive technology detection

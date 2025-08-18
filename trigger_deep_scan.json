@@ -1,0 +1,13 @@
+{
+    "trigger_time": "2025-08-14T17:08:00",
+    "reason": "vulnerability_scanning_stalled", 
+    "priority_targets": ["192.168.1.42"],
+    "scan_config": {
+        "mode": "aggressive_vulnerability_scan",
+        "skip_basic_profiling": true,
+        "force_screenshot": true,
+        "enable_all_scanners": true,
+        "vulnerability_types": ["XSS", "SQLi", "LFI", "RFI", "File Upload", "Command Injection"],
+        "payload_intensity": "high"
+    }
+}

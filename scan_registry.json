@@ -1,0 +1,16 @@
+{
+  "hosts": {
+    "temu.com": {
+      "last_scan_ts": 1755462927
+    },
+    "centene.com": {
+      "last_scan_ts": 1755462927
+    },
+    "mintmobile.com": {
+      "last_scan_ts": 1755462927
+    },
+    "192.168.1.42": {
+      "last_scan_ts": 1755462447
+    }
+  }
+}
