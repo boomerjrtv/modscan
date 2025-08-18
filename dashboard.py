@@ -2,6 +2,7 @@ import sqlite3
 import os
 import json
 import sys
+import time
 from pathlib import Path
 from flask import Flask, jsonify, render_template, g, request, make_response
 try:
@@ -1005,6 +1006,140 @@ def modscan_findings():
         
     except Exception as e:
         app.logger.error(f"Error in modscan_findings: {e}")
+        return jsonify({"error": str(e)})
+
+# ===== Terminal Log Viewer API =====
+
+@app.route('/api/logs/files', methods=['GET'])
+def get_log_files():
+    """Get list of available log files"""
+    try:
+        log_files = []
+        base_dir = Path(__file__).parent
+        
+        # Main log files
+        main_logs = ['engine.log', 'dashboard.log', 'main.log']
+        for log_file in main_logs:
+            log_path = base_dir / log_file
+            if log_path.exists():
+                log_files.append({
+                    'name': log_file,
+                    'path': str(log_path),
+                    'size': log_path.stat().st_size,
+                    'modified': log_path.stat().st_mtime
+                })
+        
+        # Logs directory
+        logs_dir = base_dir / 'logs'
+        if logs_dir.exists():
+            for log_file in logs_dir.glob('*.log'):
+                log_files.append({
+                    'name': f"logs/{log_file.name}",
+                    'path': str(log_file),
+                    'size': log_file.stat().st_size,
+                    'modified': log_file.stat().st_mtime
+                })
+        
+        # Sort by modification time, newest first
+        log_files.sort(key=lambda x: x['modified'], reverse=True)
+        
+        return jsonify({"log_files": log_files})
+        
+    except Exception as e:
+        app.logger.error(f"Error getting log files: {e}")
+        return jsonify({"error": str(e), "log_files": []})
+
+@app.route('/api/logs/content', methods=['GET'])
+def get_log_content():
+    """Get log file content with tail functionality"""
+    try:
+        log_file = request.args.get('file', 'engine.log')
+        lines = int(request.args.get('lines', 100))
+        follow = request.args.get('follow', 'false').lower() == 'true'
+        
+        # Security: only allow reading log files
+        allowed_logs = ['engine.log', 'dashboard.log', 'main.log']
+        base_dir = Path(__file__).parent
+        
+        if log_file.startswith('logs/'):
+            log_path = base_dir / log_file
+        else:
+            if log_file not in allowed_logs:
+                return jsonify({"error": "Access denied to this log file"})
+            log_path = base_dir / log_file
+        
+        if not log_path.exists():
+            return jsonify({"content": f"Log file {log_file} not found", "lines": 0})
+        
+        # Read last N lines of the file
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            all_lines = f.readlines()
+            
+        # Get last N lines
+        if lines > 0:
+            content_lines = all_lines[-lines:]
+        else:
+            content_lines = all_lines
+            
+        content = ''.join(content_lines)
+        
+        return jsonify({
+            "content": content,
+            "lines": len(content_lines),
+            "total_lines": len(all_lines),
+            "file": log_file,
+            "size": log_path.stat().st_size
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error reading log content: {e}")
+        return jsonify({"error": str(e), "content": ""})
+
+@app.route('/api/logs/stream', methods=['GET'])
+def stream_log():
+    """Stream log file updates in real-time"""
+    try:
+        log_file = request.args.get('file', 'engine.log')
+        
+        # Security check
+        allowed_logs = ['engine.log', 'dashboard.log', 'main.log']
+        base_dir = Path(__file__).parent
+        
+        if log_file.startswith('logs/'):
+            log_path = base_dir / log_file
+        else:
+            if log_file not in allowed_logs:
+                return jsonify({"error": "Access denied"})
+            log_path = base_dir / log_file
+        
+        if not log_path.exists():
+            return jsonify({"error": f"Log file {log_file} not found"})
+        
+        def generate():
+            try:
+                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    # Go to end of file
+                    f.seek(0, 2)
+                    
+                    while True:
+                        line = f.readline()
+                        if line:
+                            yield f"data: {json.dumps({'line': line.rstrip(), 'timestamp': time.time()})}\n\n"
+                        else:
+                            time.sleep(0.5)  # Wait for new content
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        
+        response = make_response(generate())
+        response.headers['Content-Type'] = 'text/event-stream'
+        response.headers['Cache-Control'] = 'no-cache'
+        response.headers['Connection'] = 'keep-alive'
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        
+        return response
+        
+    except Exception as e:
+        app.logger.error(f"Error streaming log: {e}")
         return jsonify({"error": str(e)})
 
 if __name__ == '__main__':
