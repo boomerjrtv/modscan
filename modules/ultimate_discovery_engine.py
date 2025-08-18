@@ -13,7 +13,7 @@ import tempfile
 import os
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Tuple
 from urllib.parse import urljoin
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
@@ -69,12 +69,27 @@ except Exception as _e:
 
 logger = logging.getLogger("UltimateDiscovery")
 
+# Global visited set keyed by (HTTP method, normalized URL)
+visited: Set[Tuple[str, str]] = set()
+
+# Static file extensions to skip during brute forcing
+STATIC_EXTENSIONS = [
+    ".png", ".jpg", ".gif", ".ico", ".pdf", ".zip", ".tar.gz",
+    ".gz", ".woff2", ".css", ".js"
+]
+
 class UltimateDiscoveryEngine:
     def __init__(self, asset_manager, config):
         self.asset_manager = asset_manager
         self.config = config
         self.discovery_cache = set()
-        
+
+        # Recursion/visited management
+        self.max_depth = self.config.get("max_depth", 3)
+        self.js_mining_enabled = self.config.get("js_mining_enabled", False)
+        self.bruteforce_queue: List[str] = []
+        self.queued_dirs: Set[str] = set()
+
         # Tool paths
         self.gau_path = config.get("tools", {}).get("gau_path", "gau")
         self.waybackurls_path = config.get("tools", {}).get("waybackurls_path", "waybackurls")
@@ -82,10 +97,64 @@ class UltimateDiscoveryEngine:
         self.subfinder_path = config.get("tools", {}).get("subfinder_path", "subfinder")
         self.rustscan_path = config.get("tools", {}).get("rustscan_path", "rustscan")
         self.nmap_path = config.get("tools", {}).get("nmap_path", "nmap")
-        
+
         # ML patterns for intelligent discovery
         self.ml_patterns = self._load_ml_patterns()
-        
+
+    def _normalize_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        path = re.sub(r"/+", "/", parsed.path)
+        normalized = parsed._replace(path=path.rstrip("/") or "/", query="", fragment="").geturl()
+        return normalized
+
+    def _get_path_depth(self, url: str) -> int:
+        parsed = urlparse(url)
+        return len([p for p in parsed.path.split('/') if p])
+
+    def _get_parent_directory(self, url: str) -> str:
+        parsed = urlparse(url)
+        parts = [p for p in parsed.path.split('/') if p]
+        if not parts:
+            normalized = self._normalize_url(parsed._replace(path='/').geturl())
+            return normalized if normalized.endswith('/') else normalized + '/'
+        parent_path = '/' + '/'.join(parts[:-1]) + '/'
+        normalized = self._normalize_url(parsed._replace(path=parent_path).geturl())
+        return normalized if normalized.endswith('/') else normalized + '/'
+
+    def _is_static_file(self, path: str) -> bool:
+        lower = path.lower()
+        for ext in STATIC_EXTENSIONS:
+            if lower.endswith(ext):
+                if ext == '.js' and self.js_mining_enabled:
+                    return False
+                return True
+        return False
+
+    def _handle_discovered_url(self, method: str, url: str) -> None:
+        """Track visited URLs and enqueue parent directories"""
+        norm_url = self._normalize_url(url)
+        key = (method.upper(), norm_url)
+        if key in visited:
+            return
+        visited.add(key)
+
+        # Skip static files
+        if self._is_static_file(urlparse(norm_url).path):
+            logger.debug(f"Skipping static file {norm_url}")
+            return
+
+        depth = self._get_path_depth(norm_url)
+        if depth > 1:
+            parent = self._get_parent_directory(norm_url)
+            parent_depth = self._get_path_depth(parent)
+            if parent_depth <= self.max_depth and parent not in self.queued_dirs:
+                self.queued_dirs.add(parent)
+                self.bruteforce_queue.append(parent)
+                logger.info(f"Enqueued {parent} for brute forcing")
+            else:
+                logger.debug(
+                    f"Skipping enqueue for {parent}: already queued or depth {parent_depth} > {self.max_depth}"
+                )
     def _load_ml_patterns(self) -> Dict:
         """Load ML-trained patterns for intelligent discovery"""
         return {
@@ -980,7 +1049,19 @@ Example: {{"paths": ["/admin", "/api", "/login", "/config"]}}
             for path in path_chunk:
                 if not path.startswith('/'):
                     path = '/' + path
+
+                if self._is_static_file(path):
+                    logger.debug(f"Skipping static extension {path}")
+                    continue
+
                 full_url = base_url.rstrip('/') + path
+                depth = self._get_path_depth(full_url)
+                if depth > self.max_depth:
+                    logger.debug(
+                        f"Skipping {full_url}: depth {depth} exceeds max_depth {self.max_depth}"
+                    )
+                    continue
+                logger.info(f"Queueing {full_url}")
                 test_urls.append(full_url)
             
             # Use proxy manager for external targets, direct connection for local targets
@@ -1016,8 +1097,10 @@ Example: {{"paths": ["/admin", "/api", "/login", "/config"]}}
                 # Collect successful discoveries
                 for i, result in enumerate(results):
                     if result is True:  # URL responded positively
-                        discovered_urls.append(test_urls[i])
-                        logger.debug(f"✅ {chunk_name}: Found {test_urls[i]}")
+                        url = test_urls[i]
+                        discovered_urls.append(url)
+                        logger.debug(f"✅ {chunk_name}: Found {url}")
+                        self._handle_discovered_url('GET', url)
                     elif isinstance(result, Exception):
                         logger.debug(f"❌ {chunk_name}: Error testing {test_urls[i]}: {result}")
             
@@ -1087,5 +1170,9 @@ Example: {{"paths": ["/admin", "/api", "/login", "/config"]}}
             
         except Exception as e:
             logger.debug(f"HTTPx path testing failed: {e}")
-            
+
         return discovered
+
+
+# Backwards compatibility for modules.discovery_engine shim
+DiscoveryEngine = UltimateDiscoveryEngine
