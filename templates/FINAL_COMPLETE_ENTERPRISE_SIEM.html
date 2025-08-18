@@ -945,6 +945,7 @@
         <button class="siem-nav-item" onclick="showView('vulnerabilities')">Vulnerabilities</button>
         <button class="siem-nav-item" onclick="showView('ml-xss')">ML XSS Results</button>
         <button class="siem-nav-item" onclick="showView('bypasses')">403 Bypasses</button>
+        <button class="siem-nav-item" onclick="showView('logs')">Terminal Logs</button>
     </nav>
 
     <div class="siem-main">
@@ -1291,6 +1292,27 @@
                 </div>
             </div>
 
+            <!-- Terminal Logs View -->
+            <div id="logs-view" style="display: none;">
+                <div class="siem-search-bar">
+                    <select id="log-file-selector" onchange="switchLogFile()">
+                        <option value="engine.log">Engine Log</option>
+                        <option value="dashboard.log">Dashboard Log</option>
+                        <option value="main.log">Main Log</option>
+                    </select>
+                    <button class="siem-btn primary" onclick="refreshLogs()">Refresh</button>
+                    <button class="siem-btn" onclick="toggleAutoRefresh()" id="auto-refresh-btn">Auto-Refresh: OFF</button>
+                    <input type="number" id="log-lines" value="100" min="10" max="1000" style="width: 80px; margin-left: 10px;">
+                    <label for="log-lines">lines</label>
+                </div>
+                
+                <div class="content-container">
+                    <div id="terminal-container" style="background: #000; color: #00ff00; font-family: 'Courier New', monospace; font-size: 12px; padding: 10px; height: 70vh; overflow-y: auto; border: 1px solid #333;">
+                        <div id="terminal-content">Loading logs...</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- System Monitor View -->
             <div id="system-view" style="display: none;">
                 <div class="siem-search-bar">
@@ -1534,6 +1556,9 @@
                     break;
                 case 'bypasses':
                     load403Data();
+                    break;
+                case 'logs':
+                    loadTerminalLogs();
                     break;
                 case 'system':
                     loadSystemData();
@@ -3096,6 +3121,70 @@
         function restartAllServices() {
             if (confirm('Are you sure you want to restart all services?')) {
                 alert('Service restart functionality not yet implemented');
+            }
+        }
+
+        // ===== Terminal Logs Functions =====
+        let autoRefreshLogs = false;
+        let logRefreshInterval = null;
+        
+        async function loadTerminalLogs() {
+            const logFile = document.getElementById('log-file-selector').value;
+            const lines = document.getElementById('log-lines').value;
+            
+            try {
+                const response = await fetch(`/api/logs/content?file=${logFile}&lines=${lines}`);
+                const data = await response.json();
+                
+                const terminalContent = document.getElementById('terminal-content');
+                if (data.content) {
+                    // Format log content with terminal-style colors
+                    let formattedContent = data.content
+                        .replace(/ERROR/g, '<span style="color: #ff4444;">ERROR</span>')
+                        .replace(/WARNING|WARN/g, '<span style="color: #ffaa00;">WARNING</span>')
+                        .replace(/INFO/g, '<span style="color: #00aa44;">INFO</span>')
+                        .replace(/DEBUG/g, '<span style="color: #4488ff;">DEBUG</span>')
+                        .replace(/CRITICAL/g, '<span style="color: #ff0000; font-weight: bold;">CRITICAL</span>')
+                        .replace(/SUCCESS/g, '<span style="color: #00ff00; font-weight: bold;">SUCCESS</span>');
+                    
+                    terminalContent.innerHTML = `<pre>${formattedContent}</pre>`;
+                } else {
+                    terminalContent.innerHTML = `<div style="color: #ff4444;">Error: ${data.error || 'Could not load log file'}</div>`;
+                }
+                
+                // Auto-scroll to bottom
+                const terminal = document.getElementById('terminal-container');
+                terminal.scrollTop = terminal.scrollHeight;
+                
+            } catch (error) {
+                document.getElementById('terminal-content').innerHTML = 
+                    `<div style="color: #ff4444;">Error loading logs: ${error.message}</div>`;
+            }
+        }
+        
+        function switchLogFile() {
+            loadTerminalLogs();
+        }
+        
+        function refreshLogs() {
+            loadTerminalLogs();
+        }
+        
+        function toggleAutoRefresh() {
+            autoRefreshLogs = !autoRefreshLogs;
+            const btn = document.getElementById('auto-refresh-btn');
+            
+            if (autoRefreshLogs) {
+                btn.textContent = 'Auto-Refresh: ON';
+                btn.style.background = '#00aa44';
+                logRefreshInterval = setInterval(loadTerminalLogs, 2000); // Refresh every 2 seconds
+            } else {
+                btn.textContent = 'Auto-Refresh: OFF';
+                btn.style.background = '';
+                if (logRefreshInterval) {
+                    clearInterval(logRefreshInterval);
+                    logRefreshInterval = null;
+                }
             }
         }
 
