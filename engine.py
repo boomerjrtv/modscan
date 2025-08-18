@@ -17,7 +17,7 @@ import hashlib
 # Import all modular components
 from modules.seclists_manager import SecListsManager
 from modules.vulnerability_scanner import VulnerabilityScanner
-from modules.discovery_engine import DiscoveryEngine
+from modules.ultimate_discovery_engine import UltimateDiscoveryEngine
 from modules.technology_detector import TechnologyDetector
 from modules.proxy_manager import ProxyManager
 from modules.ml_engine import MLEngine
@@ -49,6 +49,8 @@ class ModularVulnerabilityScanner:
     def __init__(self):
         # Track scanned assets to avoid duplicates
         self._scanned_assets = set()
+        # Track completed domains to prevent infinite loops
+        self.completed_domains = set()
         # Initialize YOUR AssetManager first (centralized field mapping)
         self.asset_manager = AssetManager()
         
@@ -56,21 +58,14 @@ class ModularVulnerabilityScanner:
         self.seclists_manager = SecListsManager(self.asset_manager, CONFIG)
         self.vulnerability_scanner = VulnerabilityScanner(self.asset_manager, CONFIG)
         self.proxy_manager = ProxyManager(self.asset_manager, CONFIG)  # Initialize proxy manager first
-        self.discovery_engine = DiscoveryEngine(self.asset_manager, CONFIG, self.proxy_manager)  # Pass shared proxy manager
+        self.discovery_engine = UltimateDiscoveryEngine(self.asset_manager, CONFIG)
         self.technology_detector = TechnologyDetector(self.asset_manager, CONFIG)
         self.ml_engine = MLEngine(self.asset_manager, CONFIG)
         self.screenshot_manager = ScreenshotManager(self.asset_manager, CONFIG)
         self.waf_bypass = WAFBypass(self.asset_manager, CONFIG)
         self.reconnaissance = ReconnaissanceEngine(self.asset_manager, CONFIG)
         
-        # Share global enqueue gate into modules if available
-        self.discovery_engine._global_should_scan = self._should_scan
-        self.vulnerability_scanner._global_should_scan = self._should_scan
-        self.reconnaissance._global_should_scan = self._should_scan
-# Share concurrency semaphore with modules
-        self.discovery_engine.semaphore = self.semaphore
-        self.vulnerability_scanner.semaphore = self.semaphore
-        self.reconnaissance.semaphore = self.semaphore
+        # Runtime controls and state will be set up after initialization
         
         # Performance settings
         self.cpu_target = CONFIG.get("cpu_target_utilization", 75)
@@ -85,21 +80,17 @@ class ModularVulnerabilityScanner:
     
     async def initialize_all_modules(self):
         """Initialize all scanning modules"""
-        # Start background CPU auto-tuning of concurrency
-        asyncio.create_task(self._cpu_autotune_loop())
         
         # Initialize modules in parallel
         init_tasks = [
             self.seclists_manager.initialize(),
             self.vulnerability_scanner.initialize(),
-            self.discovery_engine.start(),
             self.technology_detector.initialize(),
             self.proxy_manager.initialize(),
             self.ml_engine.initialize(),
             self.screenshot_manager.initialize(),
             self.waf_bypass.initialize(),
             self.reconnaissance.initialize()
-        # Start background CPU auto-tuning of concurrency
         ]
         
         await asyncio.gather(*init_tasks, return_exceptions=True)
@@ -199,25 +190,89 @@ class ModularVulnerabilityScanner:
                     await asyncio.sleep(10)
     
     async def _tier1_modular_discovery(self, session: aiohttp.ClientSession):
-        """Tier 1: Discovery using DiscoveryEngine module"""
+        """Tier 1: Ultimate Discovery using UltimateDiscoveryEngine module"""
         try:
-            # Get new targets using DiscoveryEngine module
-            new_targets = await self.discovery_engine.generate_intelligent_targets()
+            # Get scope domains for discovery
+            with self.asset_manager._get_db() as db:
+                cursor = db.execute("SELECT domain FROM scope WHERE active = 1")
+                domains = [row[0] for row in cursor.fetchall()]
             
-            if not new_targets:
+            if not domains:
+                logger.warning("⚠️  No scope domains found")
                 return
             
-            logger.info(f"🔍 TIER 1: Modular discovery of {len(new_targets)} targets")
+            logger.info(f"🔍 TIER 1: Ultimate discovery of {len(domains)} domains")
             
-            # Process discovery using DiscoveryEngine
-            discovered_count = await self.discovery_engine.process_discovery_batch(
-                new_targets, session, semaphore_limit=300
-            )
+            total_discovered = 0
+            # Process each domain with comprehensive discovery
+            for domain in domains[:3]:  # Process 3 domains per cycle
+                clean_domain = domain.replace('*.', '').replace('http://', '').replace('https://', '')
+                
+                # Check if domain already completed to prevent infinite loops
+                if clean_domain in self.completed_domains:
+                    logger.info(f"⏭️ Skip Tier-1: {clean_domain} already completed in this session")
+                    continue
+                
+                logger.info(f"🎯 Running comprehensive discovery on: {clean_domain}")
+                
+                # Use Ultimate Discovery Engine with timeout detection and hang alerts
+                discovered_urls = []
+                discovery_start_time = time.time()
+                discovery_timeout = 300  # 5 minutes timeout for discovery
+                
+                try:
+                    # Start discovery task with timeout protection
+                    discovery_task = asyncio.create_task(
+                        self.discovery_engine.comprehensive_discovery(clean_domain)
+                    )
+                    
+                    # Monitor for hangs and alert if taking too long
+                    monitor_task = asyncio.create_task(
+                        self._monitor_discovery_progress(clean_domain, discovery_start_time, discovery_timeout)
+                    )
+                    
+                    # Wait for discovery or timeout
+                    discovered_urls = await asyncio.wait_for(discovery_task, timeout=discovery_timeout)
+                    monitor_task.cancel()
+                    
+                    discovery_duration = time.time() - discovery_start_time
+                    logger.info(f"⚡ Discovery completed in {discovery_duration:.1f}s for {clean_domain}")
+                    
+                except asyncio.TimeoutError:
+                    discovery_duration = time.time() - discovery_start_time
+                    logger.error(f"⏰ HANG ALERT: Discovery timeout after {discovery_duration:.1f}s for {clean_domain}")
+                    logger.warning(f"🚨 HUNG OPERATION DETECTED: {clean_domain} discovery exceeded {discovery_timeout}s timeout")
+                    discovered_urls = []
+                except Exception as e:
+                    discovery_duration = time.time() - discovery_start_time
+                    logger.error(f"🚨 Discovery error after {discovery_duration:.1f}s for {clean_domain}: {e}")
+                    discovered_urls = []
+                
+                if discovered_urls:
+                    logger.info(f"✅ Found {len(discovered_urls)} URLs for {clean_domain}")
+                    total_discovered += len(discovered_urls)
+                    
+                    # Store discovered URLs in database
+                    for url in discovered_urls:
+                        try:
+                            asset_data = {
+                                'url': url,
+                                'host': clean_domain,
+                                'discovery_method': 'ultimate_discovery',
+                                'discovered_at': datetime.now().isoformat()
+                            }
+                            self.asset_manager.add_asset(url, clean_domain, "ultimate_discovery")
+                        except Exception as e:
+                            logger.debug(f"Error storing asset {url}: {e}")
+                
+                # Mark domain as completed to prevent infinite loops (regardless of results)
+                self.completed_domains.add(clean_domain)
+                logger.info(f"✅ COMPLETED: {clean_domain} discovery finished - marked as complete")
             
-            logger.info(f"✅ TIER 1: Discovered {discovered_count} new assets using DiscoveryEngine")
+            logger.info(f"✅ TIER 1: Discovered {total_discovered} total URLs using UltimateDiscoveryEngine")
             
         except Exception as e:
-            logger.error(f"Tier 1 modular discovery error: {e}")
+            logger.error(f"Tier 1 ultimate discovery error: {e}")
     
     async def _tier2_modular_profiling(self, session: aiohttp.ClientSession):
         """Tier 2: Profiling using TechnologyDetector and ScreenshotManager"""
@@ -468,5 +523,39 @@ async def main():
                 fp.write(line)
         except Exception as e:
             logger.error("Failed to write finding: %s", e)
+    
+    async def _monitor_discovery_progress(self, domain: str, start_time: float, timeout: int):
+        """Monitor discovery progress and alert about potential hangs"""
+        try:
+            # Alert every 60 seconds if discovery is taking too long
+            alert_count = 0
+            
+            while True:
+                await asyncio.sleep(60)  # Check every 60 seconds
+                alert_count += 1
+                
+                current_duration = time.time() - start_time
+                
+                # Alert if taking longer than normal (60s is normal)
+                if current_duration >= 60:
+                    logger.warning(f"🐌 SLOW DISCOVERY ALERT #{alert_count}: {domain} taking {current_duration:.1f}s (normal: <60s)")
+                    
+                    if alert_count == 1:
+                        logger.info(f"💡 Tip: {domain} discovery may be slow - checking network/target availability")
+                    elif alert_count == 2:
+                        logger.warning(f"⚠️  {domain} discovery appears stuck - this may indicate a hang")
+                    elif alert_count >= 3:
+                        logger.error(f"🚨 CRITICAL: {domain} discovery likely hung - consider manual intervention")
+                
+                # Stop monitoring if we've exceeded the timeout
+                if current_duration >= timeout:
+                    break
+                    
+        except asyncio.CancelledError:
+            # Normal cancellation when discovery completes
+            pass
+        except Exception as e:
+            logger.debug(f"Discovery monitoring error for {domain}: {e}")
+
 if __name__ == "__main__":
     asyncio.run(main())
