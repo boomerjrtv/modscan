@@ -6,7 +6,7 @@
         "last_updated": "2025-08-07"
     },
     "field_mappings": {
-        "timestamp": "last_scanned",
+        "timestamp": "discovered_at",
         "status": "status_code", 
         "url": "url",
         "time": "response_time",

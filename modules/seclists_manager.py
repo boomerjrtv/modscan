@@ -244,6 +244,44 @@ class SecListsManager:
         logger.info(f"🎯 Selected {len(selected_words)} intelligent {wordlist_type} for {domain} (from {len(selected_wordlists)} SecLists)")
         return selected_words
     
+    def get_payloads(self, payload_type: str, limit: int = 100) -> List[str]:
+        """Get payloads from SecLists for vulnerability testing"""
+        payloads = self.wordlists.get(payload_type, [])
+        
+        if not payloads:
+            # Try alternate names or scan dynamically
+            alt_names = {
+                'sqli_payloads': ['sql_injection', 'sqli', 'sql'],
+                'xss_payloads': ['xss', 'cross_site_scripting'],
+                'lfi_payloads': ['lfi', 'local_file_inclusion'],
+                'parameters': ['parameter_names', 'web_parameters']
+            }
+            
+            for alt_name in alt_names.get(payload_type, []):
+                payloads = self.wordlists.get(alt_name, [])
+                if payloads:
+                    break
+        
+        # Return limited, shuffled payloads for better coverage
+        if payloads:
+            import random
+            random.shuffle(payloads)
+            return payloads[:limit]
+        
+        return []
+    
+    def get_context_aware_payloads(self, vuln_type: str, context: str, limit: int = 50) -> List[str]:
+        """Get context-aware payloads for specific vulnerability types"""
+        base_payloads = self.get_payloads(f'{vuln_type}_payloads', limit * 2)
+        
+        # Filter payloads based on context
+        context_filtered = []
+        for payload in base_payloads:
+            if context == 'generic' or context.lower() in payload.lower():
+                context_filtered.append(payload)
+        
+        return context_filtered[:limit]
+    
     def _get_directory_wordlists_for_target(self, domain: str, tech_keywords: str) -> List[str]:
         """Select directory wordlists based on target technology"""
         wordlists = ['directories', 'common', 'web_content']  # Always include base

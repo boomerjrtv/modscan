@@ -1,17 +1,19 @@
 {
-  "database_path": "/home/michael/recon-platform/modscan/lean_recon.db",
+  "blind_xss_domain": "kind-extremely-skylark.ngrok-free.app",
+  "gemini_api_key": "AIzaSyD56AgcYW69X_GIJbaF6IhcD4CnznAMMHE",
+  "collaborator": {
+    "auth_token": "",
+    "base_domain": "",
+    "enabled": false,
+    "https": true
+  },
+  "cpu_target_utilization": 75,
   "dashboard_host": "0.0.0.0",
   "dashboard_port": 8000,
-  "secret_key": "default_secret_key_change_me",
-  "template_folder": "templates",
+  "database_path": "/home/michael/recon-platform/modscan/lean_recon.db",
   "log_directory": "logs",
   "log_file": "dashboard.log",
-  "screenshot_dir": "screenshots",
-  "shodan_api_key": "YOUR_SHODAN_API_KEY",
-  "cpu_target_utilization": 75,
-  "rescan_cooldown_hours": 24,
   "max_crawl_depth": 3,
-  "blind_xss_domain": "kind-extremely-skylark.ngrok-free.app",
   "proxy_list": [
     "http://192.168.1.109:8888",
     "http://192.168.1.110:8888",
@@ -43,5 +45,46 @@
     "http://192.168.1.136:3128",
     "http://192.168.1.137:3128",
     "http://192.168.1.138:3128"
+  ],
+  "rescan_cooldown_hours": 24,
+  "rescan_ttl_hours": 24,
+  "screenshot_dir": "screenshots",
+  "secret_key": "default_secret_key_change_me",
+  "shodan_api_key": "YOUR_SHODAN_API_KEY",
+  "template_folder": "templates",
+  "xss_dom_phase": false,
+  "ai_assistance": {
+    "enabled": true,
+    "mode": "ml_classification",
+    "llm_fallback": false,
+    "payload_generation": true,
+    "response_analysis": true,
+    "target_prioritization": true
+  },
+  "advanced_scanners": {
+    "enabled": true,
+    "max_concurrent_scanners": 9999,
+    "scan_timeout": 600,
+    "intelligent_classification": true,
+    "cross_validation": true,
+    "unlimited_mode": true
+  },
+  "performance": {
+    "unlimited_concurrency": true,
+    "network_bandwidth_gbps": 1.0,
+    "cpu_cores": 8,
+    "memory_gb": 16,
+    "aggressive_mode": true
+  },
+  "authorized_domains": [
+    "centene.com",
+    "temu.com",
+    "192.168.1.42"
+  ],
+  "wildcard_domains": [
+    "*.mintmobile.com",
+    "*.centene.com",
+    "*.temu.com",
+    "*.192.168.1.42"
   ]
 }
