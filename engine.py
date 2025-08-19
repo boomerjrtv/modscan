@@ -93,7 +93,8 @@ class ModularVulnerabilityScanner:
         # Initialize modules in parallel with timeout protection
         init_tasks = [
             self.seclists_manager.initialize(),
-            self.vulnerability_scanner.initialize(),
+            # Skip VulnerabilityScanner - hangs on proxy checking
+            # self.vulnerability_scanner.initialize(),
             self.technology_detector.initialize(),
             self.proxy_manager.initialize(),
             self.ml_engine.initialize(),
@@ -147,7 +148,8 @@ class ModularVulnerabilityScanner:
             ("ScreenshotManager", self.screenshot_manager.initialize()),
             ("WAFBypass", self.waf_bypass.initialize()),
             ("ReconnaissanceEngine", self.reconnaissance.initialize()),
-            ("MultiAIPentesterTeam", self.ai_pentester_team.initialize()),
+            # Skip AI team - causing hangs
+            # ("MultiAIPentesterTeam", self.ai_pentester_team.initialize()),
         ]
 
         tasks = [self._with_timeout(coro, 8.0) for _, coro in modules]
@@ -233,8 +235,8 @@ class ModularVulnerabilityScanner:
                     scan_cycle += 1
                     cpu_usage = self.monitor_and_adjust_performance()
                     
-                    # Update proxy health through ProxyManager
-                    await self.proxy_manager.update_proxy_health(session)
+                    # Skip proxy health check to prevent hangs - proxies checked during initialization
+                    logger.debug("⏭️ Skipping proxy health check to prevent hangs")
                     
                     logger.info(f"🔄 MODULAR SCAN CYCLE {scan_cycle} - CPU: {cpu_usage:.1f}%")
                     
