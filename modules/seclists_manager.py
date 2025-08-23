@@ -19,7 +19,22 @@ class SecListsManager:
     def __init__(self, asset_manager, config: Dict):
         self.asset_manager = asset_manager
         self.config = config
-        self.seclists_path = Path(__file__).parent.parent / "SecLists"
+        # Resolve SecLists path from config/env/common locations
+        candidates = []
+        try:
+            import os as _os
+            if config.get('seclists_path'):
+                candidates.append(Path(config.get('seclists_path')))
+            if _os.environ.get('SECLISTS_PATH'):
+                candidates.append(Path(_os.environ.get('SECLISTS_PATH')))
+        except Exception:
+            pass
+        candidates.extend([
+            Path.home() / 'SecLists',
+            Path('/usr/share/seclists'),
+            Path(__file__).parent.parent / 'SecLists'
+        ])
+        self.seclists_path = next((p for p in candidates if p.exists()), candidates[-1])
         self.wordlists = {}
         
         logger.info("🔍 SecListsManager initialized for intelligent wordlist management")
@@ -47,18 +62,9 @@ class SecListsManager:
     async def ensure_seclists_available(self):
         """Ensure SecLists repository is available"""
         if not self.seclists_path.exists():
-            logger.info("🔽 Downloading SecLists repository...")
-            try:
-                subprocess.run([
-                    "git", "clone", "--depth", "1",
-                    "https://github.com/danielmiessler/SecLists.git",
-                    str(self.seclists_path)
-                ], check=True, capture_output=True)
-                logger.info("✅ SecLists downloaded successfully")
-            except subprocess.CalledProcessError as e:
-                logger.warning(f"Failed to download SecLists: {e}")
+            logger.warning(f"SecLists not found at {self.seclists_path}. Set SECLISTS_PATH or config.seclists_path to an existing copy.")
         else:
-            logger.info("✅ SecLists already available")
+            logger.info(f"✅ Using SecLists at {self.seclists_path}")
     
     def load_comprehensive_wordlists(self):
         """Load comprehensive wordlists for all discovery types"""
@@ -147,6 +153,21 @@ class SecListsManager:
             # Remove duplicates and limit size
             self.wordlists[category] = list(set(self.wordlists[category]))[:3000]
             logger.info(f"📋 Final loaded: {len(self.wordlists[category])} {category} entries")
+
+        # Auto-augment with local wordlists if present (universal)
+        try:
+            local_params = [Path.home() / 'wordlists' / 'parameters' / 'generic.txt',
+                            Path.home() / 'wordlists' / 'parameters' / 'web.txt',
+                            Path.home() / 'wordlists' / 'parameters' / 'api.txt']
+            for p in local_params:
+                if p.exists():
+                    with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+                        words = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                        self.wordlists.setdefault('parameters', []).extend(words)
+            self.wordlists['parameters'] = list(set(self.wordlists.get('parameters', [])))[:5000]
+            logger.info(f"📋 Augmented parameters list: {len(self.wordlists['parameters'])} entries")
+        except Exception:
+            pass
     
     def _get_fallback_wordlist(self, category: str) -> List[str]:
         """Get wordlist by scanning SecLists directory structure directly - NO HARDCODING!"""

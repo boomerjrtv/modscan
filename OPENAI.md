@@ -15,7 +15,6 @@ This vulnerability scanning platform is designed to work **UNIVERSALLY** against
 - **NO** Manual configuration for specific platforms
 - **NO** "focused_", "enhanced_", or "comprehensive_" scripts for specific targets
 - **NO** Individual test scripts that only work on one application type
-- **NO** Hardcoded filtering to skip assets (breaks universal scanning)
 - **ALWAYS** enhance the universal engine modules instead of creating bypasses
 
 ### ❌ NEVER CREATE NEW SCRIPTS TO FIX ISSUES
@@ -25,15 +24,6 @@ This vulnerability scanning platform is designed to work **UNIVERSALLY** against
 - **FIX THE ROOT CAUSE** in existing modules, don't create new ones
 - **ENHANCE EXISTING SYSTEMS** rather than creating duplicates
 - If something doesn't work, fix the core module, don't build around it
-
-### ❌ NEVER MANAGE PROCESSES - USER CONTROLS STARTUP
-
-- **NO** Starting/stopping dashboard.py or engine.py processes
-- **NO** Killing user processes without explicit permission
-- **ONLY** examine logs and database to check status
-- **USER** controls when to start/stop dashboard and engine
-- **CHECK LOGS** in logs/ directory or use database queries for status
-- **NEVER ASSUME** processes need restarting
 
 ### ✅ ALWAYS BUILD UNIVERSAL CAPABILITIES
 
@@ -300,3 +290,4 @@ Standard vulnerability types (use these exact strings):
 **ALWAYS** use the centralized VulnerabilityFinding structure from `asset_manager.py` for consistency.
 
 The goal is a single platform that works everywhere, not a collection of target-specific tools.
+

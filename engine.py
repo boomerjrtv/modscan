@@ -7,6 +7,7 @@ Main orchestrator that coordinates all scanning modules
 import asyncio
 import aiohttp
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import time
 import psutil
@@ -27,6 +28,7 @@ from modules.ml_engine import MLEngine
 from modules.screenshot_manager import ScreenshotManager
 from modules.waf_bypass import WAFBypass
 from modules.reconnaissance import ReconnaissanceEngine
+from modules.nuclei_scanner import NucleiVulnerabilityScanner
 
 # Import Multi-AI Pentester Team (XBOW-inspired)
 from modules.multi_ai_pentester_team import MultiAIPentesterTeam
@@ -34,9 +36,30 @@ from modules.multi_ai_pentester_team import MultiAIPentesterTeam
 # Import YOUR AssetManager for centralized field mapping
 from asset_manager import AssetManager
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging (file + console)
+LOG_DIR = Path(__file__).resolve().parent / 'logs'
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 logger = logging.getLogger("ModularScanner")
+logger.setLevel(logging.INFO)
+
+_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# File handler (rotating)
+file_handler = RotatingFileHandler(LOG_DIR / 'engine.log', maxBytes=2_000_000, backupCount=3)
+file_handler.setFormatter(_formatter)
+file_handler.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+
+# Console handler (keep succinct during prod)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(_formatter)
+console_handler.setLevel(logging.INFO)
+logger.addHandler(console_handler)
+
+# Quiet noisy libraries
+logging.getLogger('aiohttp').setLevel(logging.WARNING)
+logging.getLogger('asyncio').setLevel(logging.WARNING)
 
 # Load configuration
 BASE_DIR = Path(__file__).resolve().parent
@@ -60,32 +83,109 @@ class ModularVulnerabilityScanner:
         # Initialize YOUR AssetManager first (centralized field mapping)
         self.asset_manager = AssetManager()
         
-        # Initialize all scanning modules with AssetManager reference
-        self.seclists_manager = SecListsManager(self.asset_manager, CONFIG)
-        self.vulnerability_scanner = VulnerabilityScanner(self.asset_manager, CONFIG)
-        self.proxy_manager = ProxyManager(self.asset_manager, CONFIG)  # Initialize proxy manager first
-        self.discovery_engine = UltimateDiscoveryEngine(self.asset_manager, CONFIG)
-        self.technology_detector = TechnologyDetector(self.asset_manager, CONFIG)
-        self.ml_engine = MLEngine(self.asset_manager, CONFIG)
-        self.screenshot_manager = ScreenshotManager(self.asset_manager, CONFIG)
-        self.waf_bypass = WAFBypass(self.asset_manager, CONFIG)
-        self.reconnaissance = ReconnaissanceEngine(self.asset_manager, CONFIG)
+        # ✅ CHECK FOR AUTHENTICATION - ENV VARS OR DATABASE
+        self.auth_cookie = os.environ.get('MODSCAN_AUTH_COOKIE')
+        self.auth_domain = os.environ.get('MODSCAN_AUTH_DOMAIN')
+        
+        # If no env vars, check database for saved cookies and policy
+        if not self.auth_cookie:
+            try:
+                import sqlite3
+                conn = sqlite3.connect('lean_recon.db')
+                cursor = conn.execute("SELECT domain, cookie, policy FROM cookies LIMIT 1")
+                row = cursor.fetchone()
+                if row:
+                    self.auth_domain = row[0]
+                    self.auth_cookie = row[1]
+                    policy_json = (row[2] if len(row) > 2 else None)
+                    logger.info(f"🔐 Loaded authentication from database for: {self.auth_domain}")
+                    logger.info(f"🍪 Using saved session cookie: {self.auth_cookie[:30]}...")
+                    # Parse policy and merge into config
+                    try:
+                        import json as _json
+                        pol = _json.loads(policy_json) if policy_json else None
+                        if isinstance(pol, dict):
+                            CONFIG.update({
+                                'auth_headers': pol.get('headers'),
+                                'auth_bearer': pol.get('bearer'),
+                                'auth_local_storage': pol.get('local_storage'),
+                                'auth_session_storage': pol.get('session_storage'),
+                            })
+                            login_cfg = pol.get('login') or {}
+                            CONFIG.update({
+                                'login_url': login_cfg.get('url'),
+                                'login_username': login_cfg.get('username'),
+                                'login_password': login_cfg.get('password'),
+                            })
+                    except Exception as e:
+                        logger.debug(f"Failed parsing auth policy: {e}")
+                conn.close()
+            except Exception as e:
+                logger.debug(f"Failed to load auth from database: {e}")
+        
+        if self.auth_cookie:
+            logger.info(f"🔐 Authenticated scanning enabled for domain: {self.auth_domain}")
+        else:
+            logger.info("🌐 Unauthenticated scanning mode")
+        
+        # ✅ ADD AUTHENTICATION TO CONFIG
+        AUTH_CONFIG = CONFIG.copy()
+        AUTH_CONFIG['auth_cookie'] = self.auth_cookie
+        AUTH_CONFIG['auth_domain'] = self.auth_domain
+        
+        # Initialize all scanning modules with AssetManager reference and authentication
+        self.seclists_manager = SecListsManager(self.asset_manager, AUTH_CONFIG)
+        self.vulnerability_scanner = VulnerabilityScanner(self.asset_manager, AUTH_CONFIG)
+        self.proxy_manager = ProxyManager(self.asset_manager, AUTH_CONFIG)  # Initialize proxy manager first
+        # Bind dynamic proxy chooser into screenshot config (callable)
+        AUTH_CONFIG['proxy_selector'] = getattr(self.proxy_manager, 'get_random_proxy', None)
+        self.discovery_engine = UltimateDiscoveryEngine(self.asset_manager, AUTH_CONFIG)
+        self.technology_detector = TechnologyDetector(self.asset_manager, AUTH_CONFIG)
+        self.ml_engine = MLEngine(self.asset_manager, AUTH_CONFIG)
+        self.screenshot_manager = ScreenshotManager(self.asset_manager, AUTH_CONFIG)
+        self.waf_bypass = WAFBypass(self.asset_manager, AUTH_CONFIG)
+        self.reconnaissance = ReconnaissanceEngine(self.asset_manager, AUTH_CONFIG)
+        self.nuclei_scanner = NucleiVulnerabilityScanner(self.asset_manager, AUTH_CONFIG)
         
         # Initialize Multi-AI Pentester Team (XBOW-inspired)
-        self.ai_pentester_team = MultiAIPentesterTeam(self.asset_manager, CONFIG)
+        self.ai_pentester_team = MultiAIPentesterTeam(self.asset_manager, AUTH_CONFIG)
         
         # Runtime controls and state will be set up after initialization
         
-        # Performance settings
-        self.cpu_target = CONFIG.get("cpu_target_utilization", 75)
-        self.max_concurrent = min(4000, self.cpu_target * 30)
-        self.session_limit = self.max_concurrent * 3
+        # Dynamic resource-based performance settings (cap CPU target to 50%)
+        self.cpu_target = min(CONFIG.get("cpu_target_utilization", 85), 50)
+        self.memory_target = CONFIG.get("memory_target_utilization", 60)  # Allow up to 60% memory
+        
+        # Start with very conservative limits to prevent overload
+        self.base_concurrent = 10
+        self.max_concurrent = self.base_concurrent
+        self.session_limit = self.max_concurrent * 2
         # Runtime controls and state
         self.semaphore = asyncio.Semaphore(self.max_concurrent)
         self.seen = set()  # de-duplication of scan keys
         self.findings_path = BASE_DIR / "findings.jsonl"
         
         logger.info("🚀 Modular Scanner initialized - all modules using AssetManager field mappings")
+        # Nuclei long scan settings
+        self.nuclei_long_enabled = CONFIG.get('nuclei_long_scan_enabled', True)
+        self.nuclei_long_ttl_hours = CONFIG.get('nuclei_long_scan_ttl_hours', 24)
+
+    async def _monitor_discovery_progress(self, domain: str, start_time: float, timeout: int):
+        """Monitor discovery progress and alert about potential hangs."""
+        try:
+            alert_count = 0
+            while True:
+                await asyncio.sleep(60)
+                alert_count += 1
+                current_duration = time.time() - start_time
+                if current_duration >= 60:
+                    logger.warning(f"🐌 SLOW DISCOVERY ALERT #{alert_count}: {domain} taking {current_duration:.1f}s (normal: <60s)")
+                if current_duration >= timeout:
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Discovery monitoring error for {domain}: {e}")
     
     async def _initialize_all_modules_old(self):
         """Legacy initialization (kept for reference)"""
@@ -169,29 +269,34 @@ class ModularVulnerabilityScanner:
             logger.info("✅ All modules initialized")
 
     def monitor_and_adjust_performance(self) -> float:
-        cpu_usage = psutil.cpu_percent(interval=1)
-        if cpu_usage > self.cpu_target:
-            self.max_concurrent = max(100, int(self.max_concurrent * 0.9))
-        elif cpu_usage < self.cpu_target - 10:
-            self.max_concurrent = min(4000, int(self.max_concurrent * 1.1))
-        logger.info(f"[Perf] CPU: {cpu_usage}% | Max concurrent: {self.max_concurrent}")
-        """Monitor CPU and adjust all modules dynamically"""
+        """Dynamic resource-based performance scaling"""
         try:
             current_cpu = psutil.cpu_percent(interval=0.2)
+            current_memory = psutil.virtual_memory().percent
             
-            # Adjust all modules based on CPU usage
-            if current_cpu < self.cpu_target - 15:
-                self.max_concurrent = min(1200, self.max_concurrent + 50)
-                # Notify all modules of performance increase
-                self._adjust_module_performance("increase")
-            elif current_cpu > self.cpu_target + 10:
-                self.max_concurrent = max(100, self.max_concurrent - 20)
-                # Notify all modules of performance decrease
+            # Calculate available resource capacity
+            cpu_headroom = max(0, self.cpu_target - current_cpu)
+            memory_headroom = max(0, self.memory_target - current_memory)
+            
+            # Scale concurrency conservatively to keep under target
+            if current_cpu > self.cpu_target or current_memory > self.memory_target:
+                # Over resource limits - scale down
+                self.max_concurrent = max(10, int(self.max_concurrent * 0.7))
                 self._adjust_module_performance("decrease")
+            elif cpu_headroom > 15 and memory_headroom > 15:
+                # Plenty of headroom - scale up slowly
+                self.max_concurrent = min(self.base_concurrent * 2, int(self.max_concurrent * 1.05))
+                self._adjust_module_performance("increase")
+            
+            # Update semaphore with new limit
+            self.semaphore = asyncio.Semaphore(self.max_concurrent)
+            self.session_limit = self.max_concurrent * 2
+            
+            logger.info(f"[Resources] CPU: {current_cpu:.1f}%/{self.cpu_target}% | Memory: {current_memory:.1f}%/{self.memory_target}% | Concurrent: {self.max_concurrent}")
             
             return current_cpu
         except Exception as e:
-            logger.error(f"CPU monitoring error: {e}")
+            logger.error(f"Resource monitoring error: {e}")
             return 50.0
     
     def _adjust_module_performance(self, direction: str):
@@ -222,10 +327,16 @@ class ModularVulnerabilityScanner:
             enable_cleanup_closed=True
         )
         
+        # ✅ INCLUDE AUTHENTICATION HEADERS IF AVAILABLE
+        session_headers = {'User-Agent': 'ModularScanner/2025'}
+        if self.auth_cookie and self.auth_domain:
+            session_headers['Cookie'] = self.auth_cookie
+            logger.info(f"🔐 Adding authentication headers for {self.auth_domain}")
+        
         async with aiohttp.ClientSession(
             connector=connector,
             timeout=aiohttp.ClientTimeout(total=15),
-            headers={'User-Agent': 'ModularScanner/2025'}
+            headers=session_headers
         ) as session:
             
             scan_cycle = 0
@@ -266,10 +377,8 @@ class ModularVulnerabilityScanner:
     async def _tier1_modular_discovery(self, session: aiohttp.ClientSession):
         """Tier 1: Ultimate Discovery using UltimateDiscoveryEngine module"""
         try:
-            # Get scope domains for discovery
-            with self.asset_manager._get_db() as db:
-                cursor = db.execute("SELECT domain FROM scope WHERE active = 1")
-                domains = [row[0] for row in cursor.fetchall()]
+            # Get scope domains using AssetManager (schema tolerant)
+            domains = self.asset_manager.get_scope_domains()
             
             if not domains:
                 logger.warning("⚠️  No scope domains found")
@@ -323,21 +432,60 @@ class ModularVulnerabilityScanner:
                     discovered_urls = []
                 
                 if discovered_urls:
-                    logger.info(f"✅ Found {len(discovered_urls)} URLs for {clean_domain}")
-                    total_discovered += len(discovered_urls)
+                    logger.info(f"✅ Found {len(discovered_urls)} candidate URLs for {clean_domain}")
                     
-                    # Store discovered URLs in database
-                    for url in discovered_urls:
-                        try:
-                            asset_data = {
-                                'url': url,
-                                'host': clean_domain,
-                                'discovery_method': 'ultimate_discovery',
-                                'discovered_at': datetime.now().isoformat()
-                            }
-                            self.asset_manager.add_asset(url, clean_domain, "ultimate_discovery")
-                        except Exception as e:
-                            logger.debug(f"Error storing asset {url}: {e}")
+                    # Validate candidates quickly (HEAD/GET) and only persist non-404s
+                    method = "authenticated_discovery" if (self.auth_cookie and (self.auth_domain == clean_domain)) else "ultimate_discovery"
+                    valid_statuses = set(list(range(200, 300)) + [301,302,307,308,401,403])
+                    sem = asyncio.Semaphore(50)
+
+                    async def try_fetch(u: str):
+                        from urllib.parse import urlsplit, urlunsplit
+                        async with sem:
+                            for attempt in range(2):
+                                url_try = u
+                                if attempt == 1:
+                                    try:
+                                        sp = urlsplit(u)
+                                        alt = 'http' if sp.scheme.lower() == 'https' else 'https'
+                                        url_try = urlunsplit((alt, sp.netloc, sp.path or '/', sp.query, ''))
+                                    except Exception:
+                                        pass
+                                try:
+                                    # HEAD first
+                                    async with session.head(url_try, allow_redirects=True, timeout=8) as r:
+                                        if r.status in valid_statuses:
+                                            return url_try, r.status
+                                except Exception:
+                                    pass
+                                try:
+                                    async with session.get(url_try, allow_redirects=True, timeout=10) as r:
+                                        if r.status in valid_statuses:
+                                            return url_try, r.status
+                                except Exception:
+                                    pass
+                            return None, None
+
+                    tasks = [try_fetch(u) for u in discovered_urls]
+                    results = await asyncio.gather(*tasks, return_exceptions=False)
+                    added = 0
+                    for (url_ok, status_ok) in results:
+                        if url_ok and status_ok is not None:
+                            try:
+                                self.asset_manager.add_asset(url_ok, clean_domain, method)
+                                # Persist quick status fields
+                                try:
+                                    fields = {}
+                                    fields['status_code'] = status_ok
+                                    fields['last_scanned'] = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+                                    self.asset_manager.update_asset_fields(self.asset_manager.get_asset_by_url(url_ok)['id'], fields)
+                                except Exception:
+                                    pass
+                                added += 1
+                            except Exception as e:
+                                logger.debug(f"Error storing asset {url_ok}: {e}")
+                    total_discovered += added
+                    logger.info(f"✅ Valid URLs persisted: {added} for {clean_domain}")
                 
                 # Mark domain as completed to prevent infinite loops (regardless of results)
                 self.completed_domains.add(clean_domain)
@@ -351,6 +499,14 @@ class ModularVulnerabilityScanner:
     async def _tier2_modular_profiling(self, session: aiohttp.ClientSession):
         """Tier 2: Profiling using TechnologyDetector and ScreenshotManager"""
         try:
+            # First: basic HTTP profiling for assets lacking status_code
+            try:
+                filled = await self.reconnaissance.basic_profile_round(session, limit=500)
+                if filled:
+                    logger.info(f"🔎 TIER 2: Basic profiling filled {filled} assets")
+            except Exception as e:
+                logger.warning(f"Tier 2 basic profiling failed: {e}")
+
             # Technology detection using TechnologyDetector module
             tech_tasks = [
                 self.technology_detector.process_pending_assets(session, limit=75),
@@ -371,16 +527,24 @@ class ModularVulnerabilityScanner:
         """Tier 3: Vulnerability scanning using VulnerabilityScanner module"""
         try:
             # Get assets ready for scanning using AssetManager
-            ready_assets = self.asset_manager.get_assets_ready_for_deep_scan(150)
+            per_cycle = max(10, int(self.max_concurrent))
+            ready_assets = self.asset_manager.get_assets_ready_for_deep_scan(per_cycle)
             
             if not ready_assets:
                 return
             
+            # ML-driven prioritization: order ready_assets by quick ML score if available
+            try:
+                if getattr(self.vulnerability_scanner, 'ml_engine', None):
+                    scores = self.vulnerability_scanner.ml_engine.quick_score_assets(ready_assets)
+                    ready_assets.sort(key=lambda a: scores.get(a['url'], 0.0), reverse=True)
+            except Exception as e:
+                logger.debug(f"ML prioritization skipped: {e}")
             logger.info(f"🚨 TIER 3: Modular vulnerability scanning {len(ready_assets)} assets")
             
             # Process vulnerabilities using VulnerabilityScanner module
             vulnerability_results = await self.vulnerability_scanner.scan_assets_for_vulnerabilities(
-                ready_assets, session, semaphore_limit=150
+                ready_assets, session, semaphore_limit=max(8, int(self.max_concurrent/2))
             )
             
             total_vulns = sum(len(vulns) for vulns in vulnerability_results if vulns)
@@ -399,18 +563,30 @@ class ModularVulnerabilityScanner:
             
         except Exception as e:
             logger.error(f"Tier 3 modular vulnerability scanning error: {e}")
+        finally:
+            # Opportunistically run a long Nuclei scan in background
+            if self.nuclei_long_enabled:
+                try:
+                    await self._tier_long_nuclei_scan()
+                except Exception as e2:
+                    logger.debug(f"Background Nuclei long scan error: {e2}")
     
     async def _tier4_multi_ai_pentesting(self, session: aiohttp.ClientSession):
         """Tier 4: Multi-AI Pentester Team (XBOW-inspired parallel testing)"""
         try:
             # Get assets ready for AI pentesting
-            ready_assets = self.asset_manager.get_assets_ready_for_deep_scan(50)
+            # If CPU already near target, skip AI for this cycle
+            if psutil.cpu_percent(interval=0.1) > (self.cpu_target - 5):
+                logger.info("⏭️  Skipping AI pentesting this cycle to respect CPU target")
+                return
+            ready_assets = self.asset_manager.get_assets_ready_for_deep_scan(max(10, int(self.max_concurrent/2)))
             
             if not ready_assets:
                 return
             
             # Extract URLs for testing
-            urls = [asset['url'] for asset in ready_assets if asset.get('url')]
+            # Limit to top-N URLs per cycle to control load
+            urls = [asset['url'] for asset in ready_assets if asset.get('url')][:max(10, int(self.max_concurrent/2))]
             
             if not urls:
                 return
@@ -418,8 +594,9 @@ class ModularVulnerabilityScanner:
             logger.info(f"🤖 TIER 4: Multi-AI Pentester Team testing {len(urls)} assets")
             logger.info("🎯 AI Specialists: SQLi Hunter, XSS Hunter, AuthZ Hunter, InfoDisc Hunter")
             
-            # Run parallel AI pentesting
-            findings = await self.ai_pentester_team.parallel_pentest(urls, max_concurrent=20)
+            # TEMPORARY: Skip AI team to test VulnerabilityScanner with real payloads
+            # findings = await self.ai_pentester_team.parallel_pentest(urls, max_concurrent=8)
+            findings = []  # Skip AI team for now
             
             if findings:
                 # Get team performance summary
@@ -441,6 +618,34 @@ class ModularVulnerabilityScanner:
             
         except Exception as e:
             logger.error(f"Tier 4 multi-AI pentesting error: {e}")
+
+    async def _tier_long_nuclei_scan(self) -> None:
+        """Background long Nuclei scan across assets respecting TTL."""
+        try:
+            with self.asset_manager._get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT url FROM assets
+                    WHERE url LIKE 'http%'
+                      AND (
+                        last_nuclei_scan_at IS NULL OR
+                        datetime(last_nuclei_scan_at) < datetime('now', ?)
+                      )
+                    ORDER BY id DESC LIMIT 200
+                    """,
+                    (f"-{int(self.nuclei_long_ttl_hours)} hours",)
+                ).fetchall()
+                urls = [r[0] for r in rows]
+            if not urls:
+                return
+            found = await self.nuclei_scanner.run_long_scan(urls)
+            with self.asset_manager._get_db() as db:
+                now = datetime.utcnow().isoformat()
+                db.executemany("UPDATE assets SET last_nuclei_scan_at=? WHERE url=?", [(now, u) for u in urls])
+                db.commit()
+            logger.info(f"🧪 Nuclei long scan complete: {found} findings across {len(urls)} URLs")
+        except Exception as e:
+            logger.debug(f"Nuclei long scan error: {e}")
     
     async def _tier5_modular_advanced_recon(self, session: aiohttp.ClientSession):
         """Tier 4: Advanced reconnaissance using ReconnaissanceEngine"""

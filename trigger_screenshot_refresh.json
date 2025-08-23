@@ -1,0 +1,7 @@
+{
+  "trigger_time": "2025-08-22T17:32:35.333623",
+  "reason": "stale_screenshot_cleanup_complete",
+  "message": "All stale screenshots cleared - fresh generation needed",
+  "priority_assets": 18,
+  "total_assets_needing_screenshots": 53
+}

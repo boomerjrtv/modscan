@@ -151,6 +151,12 @@ class ReconnaissanceEngine:
         self.config = config
         self.proxy_manager = proxy_manager
         self.max_concurrent = 25
+        # Shared semaphore for concurrent tasks (initialized safely here)
+        try:
+            import asyncio as _a
+            self.semaphore = _a.Semaphore(20)
+        except Exception:
+            self.semaphore = None
         
         # Reconnaissance techniques
         self.recon_techniques = [
@@ -201,7 +207,7 @@ class ReconnaissanceEngine:
             return 0
 
         sem = asyncio.Semaphore(20)
-
+        
         async def worker(u):
             """ENHANCED httpx-style verification with comprehensive probing"""
             import time, json
@@ -211,14 +217,27 @@ class ReconnaissanceEngine:
             
             proxy = await self._get_proxy()
             try:
-                async with self.semaphore:
+                # Use local semaphore fallback if instance semaphore not available
+                _sem = self.semaphore or sem
+                async with _sem:
+                    # Try original URL, then scheme-switch (https<->http)
+                    from urllib.parse import urlsplit, urlunsplit
+                    urls_to_try = [u]
+                    try:
+                        sp = urlsplit(u)
+                        if sp.scheme.lower() in ('http','https'):
+                            alt_scheme = 'http' if sp.scheme.lower() == 'https' else 'https'
+                            urls_to_try.append(urlunsplit((alt_scheme, sp.netloc, sp.path or '/', sp.query, '')))
+                    except Exception:
+                        pass
+
                     # Multiple request methods for comprehensive coverage
                     methods_to_try = ['GET', 'HEAD']
                     
                     for method in methods_to_try:
                         try:
                             if method == 'GET':
-                                async with session.get(u, timeout=15, allow_redirects=True, proxy=proxy) as r:
+                                async with session.get(urls_to_try[0], timeout=15, allow_redirects=True, proxy=proxy) as r:
                                     status = r.status
                                     headers = dict(r.headers)
                                     # Read body first, then calculate content length
@@ -246,7 +265,7 @@ class ReconnaissanceEngine:
                                     
                             elif method == 'HEAD' and not ok:
                                 # HEAD request for basic info if GET failed
-                                async with session.head(u, timeout=10, allow_redirects=True, proxy=proxy) as r:
+                                async with session.head(urls_to_try[0], timeout=10, allow_redirects=True, proxy=proxy) as r:
                                     status = r.status
                                     headers = dict(r.headers)
                                     content_length = int(headers.get('content-length', 0))
@@ -254,6 +273,28 @@ class ReconnaissanceEngine:
                                     break
                                     
                         except Exception as method_error:
+                            # If first URL failed, try alternate scheme once
+                            if len(urls_to_try) > 1:
+                                try:
+                                    # Try GET on alternate URL
+                                    async with session.get(urls_to_try[1], timeout=10, allow_redirects=True, proxy=proxy) as r2:
+                                        status = r2.status
+                                        headers = dict(r2.headers)
+                                        body_bytes = await r2.read()
+                                        content_length = len(body_bytes)
+                                        try:
+                                            body = body_bytes.decode('utf-8', errors='ignore')
+                                        except Exception:
+                                            body = ''
+                                        import re as _re
+                                        m = _re.search(r"<title[^>]*>(.*?)</title>", body, _re.I|_re.S)
+                                        title = _re.sub(r"\s+"," ", m.group(1)).strip()[:255] if m else None
+                                        if str(r2.url) != u:
+                                            redirect_url = str(r2.url)
+                                        ok = True
+                                        break
+                                except Exception:
+                                    pass
                             continue  # Try next method
                             
             except Exception as _e:
@@ -278,23 +319,21 @@ class ReconnaissanceEngine:
                     vals.append(content_length)
                     
                 if tech_stack:
-                    cols.append(f"technologies_detected=?")
+                    cols.append(f"{fields['tech_stack']}=?")
                     vals.append(json.dumps(tech_stack))
                     
                 if redirect_url:
                     cols.append(f"redirect_url=?")
                     vals.append(redirect_url)
-
-                cols.extend([
-                    f"{fields['status_code']}=?",
-                    f"{fields['title']}=?",
-                    f"{fields['response_body']}=?",
-                    f"{fields['content_length']}=?",
-                    f"{fields['response_time']}=?",
-                    "headers_collected=?",
-                    f"{fields['intelligence_score']}=" + ("0.9" if (status==200) else "0.5" if 300<=status<400 else "0.4")
-                ])
-                vals.extend([status, title, (body or "")[:100000], len(body or ""), rt_ms, __import__("json").dumps(headers or {})])
+                    
+                # Add response body and headers if captured
+                if body:
+                    cols.append(f"{fields['response_body']}=?")
+                    vals.append(body[:100000])  # Limit to 100KB
+                    
+                if headers:
+                    cols.append("headers_collected=?")
+                    vals.append(json.dumps(headers))
             else:
                 cols.append( "scanning_stage=COALESCE(scanning_stage,'new')" )
 
@@ -474,7 +513,8 @@ class ReconnaissanceEngine:
                     headers = {'User-Agent': 'ReconnaissanceEngine/1.0'}
                     
                     proxy = await self._get_proxy()
-                    async with self.semaphore:
+                    _sem = self.semaphore or asyncio.Semaphore(10)
+                    async with _sem:
                         async with session.get(ct_url, headers=headers, timeout=15, proxy=proxy) as response:
                             if response.status == 200:
                                 ct_data = await response.json()
@@ -603,7 +643,8 @@ class ReconnaissanceEngine:
         for source_url in sources:
             try:
                 proxy = await self._get_proxy()
-                async with self.semaphore:
+                _sem = self.semaphore or asyncio.Semaphore(10)
+                async with _sem:
                     timeout = aiohttp.ClientTimeout(total=20)
                     async with session.get(source_url, timeout=timeout, proxy=proxy) as response:
                         if response.status == 200:

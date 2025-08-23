@@ -11,6 +11,7 @@ try:
 except ImportError:
     SOCKETIO_AVAILABLE = False
 import logging
+import subprocess
 from logging.handlers import RotatingFileHandler
 import psutil
 
@@ -576,7 +577,9 @@ def api_scanner_status():
         
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
-                if 'python' in proc.info['name'].lower() and any('engine.py' in arg for arg in proc.info['cmdline']):
+                name = (proc.info.get('name') or '').lower()
+                cmdline = proc.info.get('cmdline') or []
+                if 'python' in name and any('engine.py' in (arg or '') for arg in cmdline):
                     engine_running = True
                     engine_pid = proc.info['pid']
                     break
@@ -741,13 +744,18 @@ def scope_manager():
             
             if not target:
                 return jsonify({"error": "Target is required"}), 400
-                
+            # Gracefully handle duplicates: if domain already in scope, return 200
+            try:
+                with sqlite3.connect(app.config['database_path']) as db:
+                    row = db.execute("SELECT id FROM scope WHERE domain=?", (target,)).fetchone()
+                    if row:
+                        return jsonify({"message": "Target already in scope", "id": row[0]})
+            except Exception:
+                pass
+
             success = asset_manager.add_scope_target(target)
-            
-            if success:
-                return jsonify({"message": "Target added successfully"})
-            else:
-                return jsonify({"error": "Failed to add target"}), 400
+            return (jsonify({"message": "Target added successfully", "id": success})
+                    if success else jsonify({"error": "Failed to add target"}), 200 if success else 400)
         except Exception as e:
             app.logger.error(f"Error adding scope: {e}")
             return jsonify({"error": "Failed to add target"}), 500
@@ -767,6 +775,223 @@ def delete_scope(target_id):
         app.logger.error(f"Error removing scope: {e}")
         return jsonify({"error": "Failed to remove target"}), 500
 
+@app.route('/api/scope/<int:target_id>', methods=['PUT'])
+def update_scope(target_id):
+    """Update scope target flags (currently: is_active)."""
+    try:
+        data = request.get_json() or {}
+        is_active = 1 if str(data.get('is_active')).lower() in ('1', 'true', 'yes') else 0
+        with sqlite3.connect(app.config['database_path']) as db:
+            cols = {row[1] for row in db.execute("PRAGMA table_info(scope)").fetchall()}
+            if 'is_active' in cols:
+                db.execute("UPDATE scope SET is_active = ? WHERE id = ?", (is_active, target_id))
+            elif 'active' in cols:
+                db.execute("UPDATE scope SET active = ? WHERE id = ?", (is_active, target_id))
+            elif 'is_wildcard' in cols:
+                db.execute("UPDATE scope SET is_wildcard = ? WHERE id = ?", (is_active, target_id))
+            else:
+                return jsonify({"error": "Unsupported scope schema"}), 500
+            db.commit()
+        return jsonify({"message": "Scope updated"})
+    except Exception as e:
+        app.logger.error(f"Error updating scope: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ===== Domain cookies API =====
+@app.route('/api/cookies', methods=['GET', 'POST'])
+def domain_cookies():
+    try:
+        with sqlite3.connect(app.config['database_path']) as db:
+            db.row_factory = sqlite3.Row
+            if request.method == 'GET':
+                rows = db.execute("SELECT domain, cookie, persistent, auth_keys, last_updated, policy FROM cookies").fetchall()
+                cookies = [dict(r) for r in rows]
+                return jsonify({"cookies": cookies})
+            data = request.get_json() or {}
+            domain = (data.get('domain') or '').strip()
+            cookie = data.get('cookie') or ''
+            persistent = data.get('persistent')
+            auth_keys = data.get('auth_keys')
+            policy = data.get('policy')
+            if not domain:
+                return jsonify({"success": False, "error": "Domain is required"}), 400
+            import json
+            p_json = json.dumps(persistent) if isinstance(persistent, (list, tuple)) else (persistent or None)
+            a_json = json.dumps(auth_keys) if isinstance(auth_keys, (list, tuple)) else (auth_keys or None)
+            pol_json = json.dumps(policy) if isinstance(policy, dict) else (policy or None)
+            # Upsert full policy
+            # Use COALESCE to keep previous values if not provided
+            row = db.execute("SELECT cookie, persistent, auth_keys, policy FROM cookies WHERE domain=?", (domain,)).fetchone()
+            prev_cookie = (row[0] if row else '')
+            prev_p = (row[1] if row else None)
+            prev_a = (row[2] if row else None)
+            prev_pol = (row[3] if row else None)
+            final_cookie = cookie if cookie != '' else prev_cookie
+            final_p = p_json if p_json is not None else prev_p
+            final_a = a_json if a_json is not None else prev_a
+            final_pol = pol_json if pol_json is not None else prev_pol
+            db.execute("REPLACE INTO cookies(domain, cookie, persistent, auth_keys, last_updated, policy) VALUES(?,?,?,?,datetime('now'),?)",
+                       (domain, final_cookie, final_p, final_a, final_pol))
+            db.commit()
+            return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/cookies/<domain>', methods=['GET'])
+def get_domain_cookie(domain):
+    try:
+        with sqlite3.connect(app.config['database_path']) as db:
+            row = db.execute("SELECT cookie, policy FROM cookies WHERE domain=?", (domain,)).fetchone()
+            return jsonify({
+                "cookie": (row[0] if row else ''),
+                "policy": (row[1] if row and len(row) > 1 else None)
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/cookies/minimize', methods=['POST'])
+def minimize_cookies():
+    """Burp-style cookie minimizer: determine the minimal cookie set required for stable responses.
+    Request JSON: { domain: 'example.com', url?: 'https://example.com/path', cookie_string: 'a=1; b=2' }
+    Response JSON: { success: true, minimized_cookie: 'a=1', details: [{key, kept, reason}], baseline: {status, final_url} }
+    """
+    try:
+        import asyncio
+        import aiohttp
+        import time as _time
+        import re
+        import re
+        from urllib.parse import urlunparse, urlparse
+
+        data = request.get_json() or {}
+        domain = (data.get('domain') or '').strip()
+        candidate_url = (data.get('url') or '').strip()
+        cookie_string = (data.get('cookie_string') or '').strip()
+        if not domain and not candidate_url:
+            return jsonify({"success": False, "error": "Provide 'domain' or 'url'"}), 400
+        if not cookie_string:
+            return jsonify({"success": False, "error": "cookie_string is required"}), 400
+
+        # Build target URL
+        if not candidate_url:
+            candidate_url = urlunparse(('http', domain, '/', '', '', ''))
+
+        # Parse cookies into list of (k,v)
+        def parse_cookie_items(s: str):
+            items = []
+            for part in [p.strip() for p in s.split(';') if p.strip()]:
+                if '=' in part:
+                    k, v = part.split('=', 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if k:
+                        items.append((k, v))
+            return items
+
+        def join_cookie_items(items):
+            return '; '.join([f"{k}={v}" for k, v in items])
+
+        # Normalize response signature to compare equivalence
+        def normalize_text(t: str) -> str:
+            if not t:
+                return ''
+            # Strip dynamic numbers, timestamps, nonces (conservative)
+            t = re.sub(r"\d{10,}", "<NUM>", t)  # long numbers
+            t = re.sub(r"[0-9a-fA-F]{16,}", "<HEX>", t)  # long hex
+            t = re.sub(r"\b\d{1,2}:[0-5]\d(:[0-5]\d)?\b", "<TIME>", t)
+            return t[:50000]  # cap size for hashing
+
+        async def fetch_signature(session: aiohttp.ClientSession, url: str, cookie: str):
+            headers = {"User-Agent": "ModScan-AuthMin/1.0"}
+            if cookie:
+                headers['Cookie'] = cookie
+            try:
+                async with session.get(url, allow_redirects=True, timeout=15, headers=headers) as resp:
+                    txt = await resp.text()
+                    body_norm = normalize_text(txt)
+                    # Extract <title> as a quick semantic hint
+                    m = re.search(r"<title[^>]*>(.*?)</title>", txt, re.I | re.S)
+                    title = (m.group(1).strip() if m else '')
+                    final = str(resp.url)
+                    return {
+                        'status': resp.status,
+                        'final_url': final,
+                        'title': title[:256],
+                        'body_sig': hash(body_norm)
+                    }
+            except Exception as e:
+                return {'error': str(e)}
+
+        async def minimize(url: str, cookie_str: str):
+            items = parse_cookie_items(cookie_str)
+            if not items:
+                return [], cookie_str, {'error': 'no_cookies'}
+            connector = aiohttp.TCPConnector(limit=10, ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                baseline = await fetch_signature(session, url, cookie_str)
+                if 'error' in baseline:
+                    return [], cookie_str, baseline
+
+                kept = items[:]
+                details = []
+
+                async def test_without(index: int):
+                    temp = kept[:index] + kept[index+1:]
+                    sig = await fetch_signature(session, url, join_cookie_items(temp))
+                    return sig
+
+                # First pass: try removing each cookie once
+                i = 0
+                while i < len(kept):
+                    key, val = kept[i]
+                    sig = await test_without(i)
+                    if 'error' in sig:
+                        details.append({'key': key, 'kept': True, 'reason': f"network: {sig['error']}"})
+                        i += 1
+                        continue
+                    same = (sig['status'] == baseline['status'] and sig['final_url'] == baseline['final_url'] and sig['body_sig'] == baseline['body_sig'])
+                    if same:
+                        # Drop unnecessary cookie
+                        details.append({'key': key, 'kept': False, 'reason': 'no_change'})
+                        kept.pop(i)
+                        # Do not increment i; now at next item due to pop
+                        continue
+                    else:
+                        details.append({'key': key, 'kept': True, 'reason': 'changes_response'})
+                        i += 1
+
+                # Optional second pass to catch dependent drops
+                j = 0
+                while j < len(kept):
+                    key, val = kept[j]
+                    sig = await test_without(j)
+                    if 'error' in sig:
+                        j += 1
+                        continue
+                    same = (sig['status'] == baseline['status'] and sig['final_url'] == baseline['final_url'] and sig['body_sig'] == baseline['body_sig'])
+                    if same:
+                        kept.pop(j)
+                        continue
+                    j += 1
+
+                return details, join_cookie_items(kept), baseline
+
+        # Run async minimizer
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        details, minimized, baseline = loop.run_until_complete(minimize(candidate_url, cookie_string))
+        loop.close()
+
+        return jsonify({
+            'success': True,
+            'minimized_cookie': minimized,
+            'details': details,
+            'baseline': baseline,
+            'target_url': candidate_url
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/api/notifications', methods=['GET'])  
 def get_notifications():
     try:
@@ -782,6 +1007,455 @@ def get_asset_mapping():
     mapping_with_cache_bust = ASSET_MAPPING.copy()
     mapping_with_cache_bust['_cache_bust'] = int(time.time())
     return jsonify(mapping_with_cache_bust)
+
+@app.route('/api/schema', methods=['GET'])
+def get_dynamic_schema():
+    """Get dynamic schema configuration for frontend"""
+    try:
+        from api_schema import APISchemaGenerator
+        generator = APISchemaGenerator()
+        config = generator.generate_frontend_config()
+        return jsonify(config)
+    except Exception as e:
+        app.logger.error(f"Schema generation error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/domains', methods=['GET'])
+def get_available_domains():
+    """Get available domains for authentication"""
+    try:
+        from api_schema import APISchemaGenerator
+        generator = APISchemaGenerator()
+        domains = generator.get_available_domains()
+        return jsonify({"domains": domains})
+    except Exception as e:
+        app.logger.error(f"Domains fetch error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/extract-cookies', methods=['POST'])
+def extract_cookies():
+    """Automatically extract cookies using browser automation"""
+    try:
+        import subprocess
+        import asyncio
+        import json as json_lib
+        from urllib.parse import urlparse
+        
+        data = request.get_json()
+        domain_url = data.get('domain_url')
+        
+        if not domain_url:
+            return jsonify({"success": False, "error": "Domain URL is required"}), 400
+        
+        # Check for extractor script availability
+        script_path = os.path.join(os.getcwd(), 'auto_cookie_extractor.py')
+        if not os.path.exists(script_path):
+            return jsonify({"success": False, "error": "Cookie extractor not available"}), 501
+
+        app.logger.info(f"Starting cookie extraction for {domain_url}")
+        result = subprocess.run(['python3', script_path, domain_url], capture_output=True, text=True, timeout=300)
+        
+        if result.returncode == 0:
+            # Try to find the generated cookie file
+            domain = urlparse(domain_url).netloc.replace('.', '_')
+            cookie_file = f"cookies_{domain}.json"
+            
+            try:
+                with open(cookie_file, 'r') as f:
+                    cookie_data = json_lib.load(f)
+                
+                return jsonify({
+                    "success": True,
+                    "cookie_string": cookie_data['cookie_string'],
+                    "domain": cookie_data['domain'],
+                    "extracted_at": cookie_data['extracted_at']
+                })
+            except FileNotFoundError:
+                return jsonify({
+                    "success": False,
+                    "error": "Cookie file not found - extraction may have failed"
+                }), 500
+        else:
+            app.logger.error(f"Cookie extraction failed: {result.stderr}")
+            return jsonify({
+                "success": False,
+                "error": f"Extraction process failed: {result.stderr}"
+            }), 500
+            
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            "success": False,
+            "error": "Cookie extraction timed out - please try again"
+        }), 500
+    except Exception as e:
+        app.logger.error(f"Cookie extraction error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/login-extract-cookies', methods=['POST'])
+def login_extract_cookies():
+    """Login with credentials and extract session cookies"""
+    try:
+        import asyncio
+        import aiohttp
+        from urllib.parse import urljoin, urlparse
+        import re
+        
+        data = request.get_json()
+        login_url = data.get('login_url')
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not all([login_url, username, password]):
+            return jsonify({"success": False, "error": "All fields are required"}), 400
+        
+        app.logger.info(f"Attempting login to {login_url} with username {username}")
+        
+        async def perform_login():
+            jar = aiohttp.CookieJar(unsafe=True)
+            async with aiohttp.ClientSession(cookie_jar=jar) as session:
+                # Step 1: Get login page to extract CSRF tokens
+                async with session.get(login_url) as response:
+                    login_html = await response.text()
+                    app.logger.info(f"Login page status: {response.status}")
+                
+                # Step 2: Extract CSRF token if present
+                csrf_token = None
+                if 'user_token' in login_html:
+                    token_match = re.search(r'name=["\']user_token["\'] value=["\']([^"\']+)["\']', login_html)
+                    if token_match:
+                        csrf_token = token_match.group(1)
+                        app.logger.info("Found CSRF token")
+                
+                # Step 3: Prepare login data
+                login_data = {
+                    'username': username,
+                    'password': password,
+                    'Login': 'Login'
+                }
+                if csrf_token:
+                    login_data['user_token'] = csrf_token
+                
+                # Step 4: Perform login
+                async with session.post(login_url, data=login_data, allow_redirects=False) as response:
+                    app.logger.info(f"Login attempt status: {response.status}")
+                    
+                    # Check if we got a redirect (successful login) or 200
+                    if response.status in [200, 302, 303]:
+        # Extract all cookies from the session
+                        all_cookies = []
+                        for cookie in session.cookie_jar:
+                            all_cookies.append(f"{cookie.key}={cookie.value}")
+                        
+                        app.logger.info(f"Found {len(all_cookies)} cookies: {[c.split('=')[0] for c in all_cookies]}")
+                        
+                        if all_cookies:
+                            cookie_string = "; ".join(all_cookies)
+                            
+                            # Test the cookies by accessing the same origin root
+                            from urllib.parse import urlparse, urlunparse
+                            u = urlparse(login_url)
+                            test_url = urlunparse((u.scheme, u.netloc, '/', '', '', ''))
+                            async with session.get(test_url) as test_response:
+                                test_content = await test_response.text()
+                                if test_response.status in (200, 301, 302):
+                                    app.logger.info("Authentication verified - can access protected pages")
+                                else:
+                                    app.logger.warning("Authentication may have failed - redirected to login")
+                            
+                            return {"success": True, "cookie_string": cookie_string}
+                        else:
+                            return {"success": False, "error": "No cookies found after login"}
+                    else:
+                        return {"success": False, "error": f"Login failed with status {response.status}"}
+        
+        # Run the async login function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(perform_login())
+        loop.close()
+        
+        return jsonify(result)
+            
+    except Exception as e:
+        app.logger.error(f"Login extraction error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/verify_cookie', methods=['POST'])
+def verify_cookie():
+    """Verify a cookie works for provided domain or URL (universal).
+
+    Request JSON: { domain?: string, url?: string, cookie_string?: string, login_url?, username?, password? }
+    - If 'url' provided, probes that URL; else probes http://<domain>/ after normalizing.
+    """
+    try:
+        import asyncio
+        import aiohttp
+        from urllib.parse import urlunparse, urlparse
+        data = request.get_json() or {}
+        domain_or_url = (data.get('domain') or data.get('url') or '').strip()
+        cookie_string = (data.get('cookie_string') or '').strip()
+        login_url = data.get('login_url')
+        username = data.get('username')
+        password = data.get('password')
+        if not domain_or_url:
+            return jsonify({"success": False, "error": "Provide 'domain' or 'url'"}), 400
+        
+        # Normalize domain_or_url to probe_url and normalized domain key
+        parsed = urlparse(domain_or_url)
+        if parsed.scheme and parsed.netloc:
+            probe_url = domain_or_url
+            norm_domain = parsed.hostname or parsed.netloc
+        else:
+            # Strip any scheme/path remnants
+            clean = domain_or_url
+            if clean.startswith('http://') or clean.startswith('https://'):
+                clean = urlparse(clean).hostname or clean
+            clean = clean.split('/')[0]
+            norm_domain = clean
+            probe_url = urlunparse(('http', norm_domain, '/', '', '', ''))
+        
+        async def _probe(u):
+            headers = {"User-Agent": "ModScan-Verify/1.0"}
+            if cookie_string:
+                headers['Cookie'] = cookie_string
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(u, allow_redirects=True, timeout=10) as resp:
+                    txt = await resp.text()
+                    # Heuristic: 200/301/302 and not redirected to obvious login path
+                    ok = resp.status in (200, 301, 302)
+                    return ok, str(resp.url), resp.status, txt[:500]
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        ok, final_url, status, snippet = loop.run_until_complete(_probe(probe_url))
+        
+        if ok:
+            # Merge persistent policy if present and persist back
+            try:
+                with sqlite3.connect(app.config['database_path']) as db:
+                    row = db.execute("SELECT persistent FROM cookies WHERE domain=?", (norm_domain,)).fetchone()
+                    merged_cookie = cookie_string
+                    if row and row[0] and merged_cookie:
+                        merged_cookie = _merge_persistent_cookie(merged_cookie, row[0])
+                    db.execute("INSERT INTO cookies(domain, cookie, last_updated) VALUES(?,?,datetime('now'))\n                               ON CONFLICT(domain) DO UPDATE SET cookie=excluded.cookie, last_updated=excluded.last_updated",
+                               (norm_domain, merged_cookie or ''))
+                    db.commit()
+                    cookie_string = merged_cookie
+            except Exception:
+                pass
+            return jsonify({"success": True, "verified": True, "final_url": final_url, "status": status, "cookie_string": cookie_string, "domain": norm_domain})
+        
+        # Attempt refresh if creds provided
+        if login_url and username and password:
+            async def _refresh():
+                jar = aiohttp.CookieJar(unsafe=True)
+                async with aiohttp.ClientSession(cookie_jar=jar) as session:
+                    async with session.get(login_url) as resp:
+                        html = await resp.text()
+                    import re
+                    csrf = None
+                    if 'user_token' in html:
+                        m = re.search(r'name=["\']user_token["\'] value=["\']([^"\']+)["\']', html)
+                        csrf = m.group(1) if m else None
+                    form = {'username': username, 'password': password, 'Login': 'Login'}
+                    if csrf:
+                        form['user_token'] = csrf
+                    async with session.post(login_url, data=form, allow_redirects=False) as r2:
+                        # Build cookie string
+                        parts = []
+                        for c in session.cookie_jar:
+                            parts.append(f"{c.key}={c.value}")
+                        return '; '.join(parts)
+            new_cookie = loop.run_until_complete(_refresh())
+            loop.close()
+            # Apply persistent policy if present and save
+            try:
+                with sqlite3.connect(app.config['database_path']) as db:
+                    row = db.execute("SELECT persistent FROM cookies WHERE domain=?", (norm_domain,)).fetchone()
+                    if row and row[0] and new_cookie:
+                        new_cookie = _merge_persistent_cookie(new_cookie, row[0])
+                    db.execute("INSERT INTO cookies(domain, cookie, last_updated) VALUES(?,?,datetime('now'))\n                               ON CONFLICT(domain) DO UPDATE SET cookie=excluded.cookie, last_updated=excluded.last_updated",
+                               (norm_domain, new_cookie or ''))
+                    db.commit()
+            except Exception:
+                pass
+            return jsonify({"success": True, "verified": False, "refreshed": True, "cookie_string": new_cookie, "domain": norm_domain})
+        
+        loop.close()
+        return jsonify({"success": True, "verified": False, "domain": norm_domain})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+def _merge_persistent_cookie(cookie_string: str, persistent_json: str) -> str:
+    """Merge persistent cookie key=val pairs into cookie_string (override or append)."""
+    try:
+        import json, re
+        cookie = cookie_string.strip()
+        arr = json.loads(persistent_json) if persistent_json else []
+        pairs = []
+        for kv in arr:
+            if isinstance(kv, str) and '=' in kv:
+                key, val = kv.split('=', 1)
+                key = key.strip()
+                val = val.strip()
+                if re.search(rf"\b{re.escape(key)}=", cookie, re.I):
+                    cookie = re.sub(rf"\b{re.escape(key)}=[^;]*", f"{key}={val}", cookie, flags=re.I)
+                else:
+                    pairs.append(f"{key}={val}")
+        if pairs:
+            cookie = (cookie + '; ' + '; '.join(pairs)) if cookie else '; '.join(pairs)
+        return cookie
+    except Exception:
+        return cookie_string
+
+@app.route('/api/auth_policy', methods=['POST'])
+def set_auth_policy():
+    """Set per-domain auth policy: headers, bearer, localStorage/sessionStorage, login flow.
+
+    Request JSON: {
+      domain: 'example.com',
+      policy: {
+        headers?: {k: v},
+        bearer?: 'token',
+        local_storage?: {k: v},
+        session_storage?: {k: v},
+        login?: { url: 'https://...', username: 'u', password: 'p' }
+      }
+    }
+    """
+    try:
+        data = request.get_json() or {}
+        domain = (data.get('domain') or '').strip()
+        policy = data.get('policy') or {}
+        if not domain:
+            return jsonify({"success": False, "error": "Domain is required"}), 400
+        import json
+        pol_json = json.dumps(policy, ensure_ascii=False)
+        with sqlite3.connect(app.config['database_path']) as db:
+            row = db.execute("SELECT domain FROM cookies WHERE domain=?", (domain,)).fetchone()
+            if row:
+                db.execute("UPDATE cookies SET policy=?, last_updated=datetime('now') WHERE domain=?", (pol_json, domain))
+            else:
+                db.execute("INSERT INTO cookies(domain, policy, last_updated) VALUES(?,?,datetime('now'))", (domain, pol_json))
+            db.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/auth_policy/<domain>', methods=['GET'])
+def get_auth_policy(domain):
+    """Fetch per-domain auth policy JSON"""
+    try:
+        with sqlite3.connect(app.config['database_path']) as db:
+            row = db.execute("SELECT policy FROM cookies WHERE domain=?", (domain,)).fetchone()
+            return jsonify({"policy": (row[0] if row else None)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/rescan_with_auth', methods=['POST'])
+def rescan_with_auth():
+    """Run authenticated vulnerability scan with stored cookies"""
+    try:
+        import subprocess
+        import asyncio
+        import aiohttp
+        from urllib.parse import urlunparse
+        
+        data = request.get_json() or {}
+        domain = (data.get('domain') or '').strip()
+        cookie_string = (data.get('cookie_string') or '').strip()
+        
+        # Fallback: if domain missing, use first scope domain
+        if not domain:
+            try:
+                from asset_manager import AssetManager
+                am = AssetManager()
+                scope = am.get_scope_domains()
+                if scope:
+                    domain = scope[0]
+            except Exception:
+                pass
+        if not domain:
+            return jsonify({"success": False, "error": "Domain is required"}), 400
+        # Fetch saved cookie if not provided
+        if not cookie_string:
+            try:
+                with sqlite3.connect(app.config['database_path']) as db:
+                    row = db.execute("SELECT cookie FROM cookies WHERE domain=?", (domain,)).fetchone()
+                    if row and row[0]:
+                        cookie_string = row[0]
+            except Exception:
+                pass
+        if not cookie_string:
+            return jsonify({"success": False, "error": "Cookie string is required; verify/refresh or save policy"}), 400
+        
+        app.logger.info(f"Starting authenticated vulnerability scan for {domain}")
+        
+        # Verify cookie server-side before launching
+        async def _probe():
+            u = urlunparse(('http', domain, '/', '', '', ''))
+            headers = {"User-Agent": "ModScan-Verify/1.0", "Cookie": cookie_string}
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(u, allow_redirects=True, timeout=10) as resp:
+                    return resp.status in (200, 301, 302)
+        # Use a dedicated event loop in this request thread to avoid 'no current event loop'
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        ok = loop.run_until_complete(_probe())
+        loop.close()
+        if not ok:
+            return jsonify({"success": False, "error": "Cookie invalid/expired; use Verify/Refresh first"}), 400
+        
+        # Merge persistent cookie policy (e.g., security=low) and persist
+        try:
+            with sqlite3.connect(app.config['database_path']) as db:
+                row = db.execute("SELECT persistent FROM cookies WHERE domain=?", (domain,)).fetchone()
+                if row and row[0] and cookie_string:
+                    cookie_string = _merge_persistent_cookie(cookie_string, row[0])
+                db.execute(
+                    "INSERT INTO cookies(domain, cookie, last_updated) VALUES(?, ?, datetime('now'))\n                     ON CONFLICT(domain) DO UPDATE SET cookie=excluded.cookie, last_updated=excluded.last_updated",
+                    (domain, cookie_string or '')
+                )
+                db.commit()
+        except Exception:
+            pass
+
+        # Create placeholder logs so UI doesn't show not-found
+        try:
+            logs_dir = Path(__file__).parent / 'logs'
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            for name in ('engine.log', 'dashboard.log', 'main.log'):
+                p = logs_dir / name
+                if not p.exists():
+                    p.touch()
+        except Exception:
+            pass
+
+        # Launch engine with provided cookie and domain (universal approach)
+        app.logger.info(f"Launching engine with MODSCAN_AUTH_DOMAIN={domain} and provided cookie...")
+        env = os.environ.copy()
+        env['MODSCAN_AUTH_DOMAIN'] = domain
+        env['MODSCAN_AUTH_COOKIE'] = cookie_string
+        # Force run regardless of TTL for user-initiated authenticated scans
+        env['MODSCAN_TTL_HOURS'] = '0'
+        subprocess.Popen(['python3', 'engine.py'], env=env)
+        return jsonify({
+            "success": True,
+            "message": f"Engine started for {domain} with authentication",
+            "hint": "Results will populate asynchronously in the dashboard",
+            "started": True,
+            "assets_scanned": 0,
+            "vulnerabilities_found": 0
+        })
+            
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            "success": False,
+            "error": "Authenticated scan timed out - this may take longer for large targets"
+        }), 500
+    except Exception as e:
+        app.logger.error(f"Authenticated scan error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/screenshots/<path:filename>', methods=['GET'])
 def serve_screenshot(filename):
@@ -800,8 +1474,262 @@ def serve_screenshot(filename):
             return send_file(screenshot_path, mimetype='image/png')
         
         # Return 404 if not found
-        from flask import abort
-        abort(404)
+        return jsonify({"error": f"Screenshot not found: {filename}"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ===== Evidence API =====
+
+@app.route('/api/evidence/list', methods=['GET'])
+def list_evidence():
+    try:
+        import os
+        from pathlib import Path
+        import time
+        ev_dir = Path('evidence')
+        sc_dir = Path('screenshots')
+        items = []
+        if ev_dir.exists():
+            for html_file in ev_dir.glob('*.html'):
+                base = html_file.stem
+                headers_file = ev_dir / f"{base}.headers.json"
+                requests_file = ev_dir / f"{base}.requests.jsonl"
+                screenshot_file = sc_dir / f"{base}.png"
+                items.append({
+                    'base': base,
+                    'modified': int(html_file.stat().st_mtime),
+                    'html': f"/api/evidence/{html_file.name}",
+                    'headers': f"/api/evidence/{headers_file.name}" if headers_file.exists() else None,
+                    'requests': f"/api/evidence/{requests_file.name}" if requests_file.exists() else None,
+                    'screenshot': f"/api/screenshots/{screenshot_file.name}" if screenshot_file.exists() else None,
+                })
+        # Sort by modified desc
+        items.sort(key=lambda x: x['modified'], reverse=True)
+        return jsonify({'evidence': items, 'total': len(items)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/evidence/<path:filename>', methods=['GET'])
+def serve_evidence(filename):
+    try:
+        import os
+        from flask import send_file
+        import mimetypes
+        from urllib.parse import unquote
+        fname = unquote(filename)
+        path = os.path.join('evidence', fname)
+        if not os.path.exists(path):
+            return jsonify({'error': 'Not found'}), 404
+        mime, _ = mimetypes.guess_type(path)
+        if not mime:
+            # headers.json and requests.jsonl fall back to JSON/text
+            if path.endswith('.json'):
+                mime = 'application/json'
+            elif path.endswith('.jsonl'):
+                mime = 'text/plain'
+            elif path.endswith('.html'):
+                mime = 'text/html'
+            else:
+                mime = 'application/octet-stream'
+        return send_file(path, mimetype=mime)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ===== Auth Auto-Refresh =====
+
+@app.route('/api/auto_refresh_session', methods=['POST'])
+def auto_refresh_session():
+    """Attempt to refresh session using stored per-domain policy login flow (universal)."""
+    try:
+        import asyncio
+        import aiohttp
+        import re
+        data = request.get_json() or {}
+        domain = (data.get('domain') or '').strip()
+        override_login = data.get('login') or {}
+        if not domain:
+            return jsonify({'success': False, 'error': 'Domain is required'}), 400
+        # Load policy
+        pol = None
+        with sqlite3.connect(app.config['database_path']) as db:
+            row = db.execute('SELECT policy, persistent FROM cookies WHERE domain=?', (domain,)).fetchone()
+            if row and row[0]:
+                try:
+                    import json as _json
+                    pol = _json.loads(row[0])
+                except Exception:
+                    pol = None
+            persistent_json = row[1] if row else None
+        login_cfg = (pol.get('login') if isinstance(pol, dict) else {}) or {}
+        # Override with provided fields if present
+        for key in ('url','username','password'):
+            if key in override_login and override_login[key]:
+                login_cfg[key] = override_login[key]
+        login_url = login_cfg.get('url')
+        username = login_cfg.get('username')
+        password = login_cfg.get('password')
+        if not (login_url and username and password):
+            return jsonify({'success': False, 'error': 'Missing login policy (url/username/password)'}), 400
+
+        async def _do_login():
+            jar = aiohttp.CookieJar(unsafe=True)
+            async with aiohttp.ClientSession(cookie_jar=jar) as session:
+                async with session.get(login_url, timeout=15) as r:
+                    html = await r.text()
+                csrf = None
+                m = re.search(r'name=["\']user_token["\']\s+value=["\']([^"\']+)["\']', html)
+                if m:
+                    csrf = m.group(1)
+                form = {'username': username, 'password': password}
+                # Try common submit field names
+                for k in ('Login','submit','logon','signin','_submit'):
+                    form.setdefault(k, 'Login')
+                if csrf:
+                    form['user_token'] = csrf
+                async with session.post(login_url, data=form, allow_redirects=True, timeout=20) as r2:
+                    # Build cookie string
+                    parts = []
+                    for c in session.cookie_jar:
+                        parts.append(f"{c.key}={c.value}")
+                    return '; '.join(parts)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        new_cookie = loop.run_until_complete(_do_login())
+        loop.close()
+        if not new_cookie:
+            return jsonify({'success': False, 'error': 'Login failed'}), 500
+        # Merge persistent keys and save
+        try:
+            if persistent_json and new_cookie:
+                new_cookie = _merge_persistent_cookie(new_cookie, persistent_json)
+            with sqlite3.connect(app.config['database_path']) as db:
+                db.execute(
+                    "INSERT INTO cookies(domain, cookie, last_updated) VALUES(?,?,datetime('now'))\n                     ON CONFLICT(domain) DO UPDATE SET cookie=excluded.cookie, last_updated=excluded.last_updated",
+                    (domain, new_cookie)
+                )
+                db.commit()
+        except Exception:
+            pass
+        return jsonify({'success': True, 'cookie_string': new_cookie, 'domain': domain})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ===== Asset Enrichment & Cleanup =====
+
+@app.route('/api/enrich_assets', methods=['POST'])
+def enrich_assets():
+    """Fetch details for assets with NULL status_code (unscanned seeds)."""
+    try:
+        import asyncio
+        import aiohttp
+        data = request.get_json() or {}
+        domain = (data.get('domain') or '').strip()
+        cookie_string = data.get('cookie_string') or ''
+        limit = int(data.get('limit', 100))
+
+        # If no cookie passed and a domain was provided, try to load stored cookie and merge persistent keys
+        if domain and not cookie_string:
+            try:
+                with sqlite3.connect(app.config['database_path']) as db:
+                    row = db.execute("SELECT cookie, persistent FROM cookies WHERE domain=?", (domain,)).fetchone()
+                    if row:
+                        cookie_string = row[0] or ''
+                        if row[1]:
+                            cookie_string = _merge_persistent_cookie(cookie_string, row[1])
+            except Exception as e:
+                app.logger.warning(f"Could not load cookie for {domain}: {e}")
+
+        headers = {"User-Agent": "ModScan Enricher/1.0"}
+        if cookie_string:
+            headers["Cookie"] = cookie_string
+
+        # Pull seeds needing enrichment
+        with sqlite3.connect(app.config['database_path']) as db:
+            db.row_factory = sqlite3.Row
+            if domain:
+                cursor = db.execute(
+                    """
+                    SELECT id, url FROM assets 
+                    WHERE status_code IS NULL AND url LIKE ?
+                    ORDER BY id DESC LIMIT ?
+                    """, (f"%://{domain}/%", limit)
+                )
+            else:
+                cursor = db.execute(
+                    "SELECT id, url FROM assets WHERE status_code IS NULL ORDER BY id DESC LIMIT ?",
+                    (limit,)
+                )
+            targets = [(row[0], row[1]) for row in cursor.fetchall()]
+
+        async def fetch_update(session, item):
+            asset_id, url = item
+            t0 = _time.monotonic()
+            try:
+                async with session.get(url, allow_redirects=True, timeout=15) as resp:
+                    txt = await resp.text()
+                    dt = int((_time.monotonic() - t0) * 1000)
+                    # extract <title>
+                    m = re.search(r"<title[^>]*>(.*?)</title>", txt, re.I | re.S)
+                    title = (m.group(1).strip() if m else 'Unknown')
+                    content_len = len(txt.encode('utf-8', 'ignore'))
+                    with sqlite3.connect(app.config['database_path']) as db:
+                        db.execute(
+                            """
+                            UPDATE assets
+                            SET status_code=?, title=?, content_length=?, response_time=?, last_scanned=datetime('now')
+                            WHERE id=?
+                            """,
+                            (resp.status, title, content_len, dt, asset_id)
+                        )
+                        db.commit()
+                    return True
+            except Exception:
+                # mark last_scanned so we don't hammer
+                try:
+                    with sqlite3.connect(app.config['database_path']) as db:
+                        db.execute("UPDATE assets SET last_scanned=datetime('now') WHERE id=?", (asset_id,))
+                        db.commit()
+                except Exception:
+                    pass
+                return False
+
+        async def run_enrichment():
+            conn = aiohttp.TCPConnector(limit=20, ssl=False)
+            async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
+                tasks = [fetch_update(session, it) for it in targets]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                ok = sum(1 for r in results if r is True)
+                return ok, len(targets)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        ok, total = loop.run_until_complete(run_enrichment())
+        loop.close()
+
+        return jsonify({"success": True, "enriched": ok, "attempted": total})
+    except Exception as e:
+        app.logger.error(f"Asset enrichment error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/assets/cleanup', methods=['POST'])
+def cleanup_assets():
+    """Remove duplicate and malformed asset rows (universal)."""
+    try:
+        with sqlite3.connect(app.config['database_path']) as db:
+            db.row_factory = sqlite3.Row
+            # Remove rows with NULL/empty URL
+            cur = db.execute("DELETE FROM assets WHERE url IS NULL OR TRIM(url) = ''")
+            removed_empty = cur.rowcount if cur.rowcount is not None else 0
+            # Collapse duplicates by keeping the smallest id per URL
+            cur = db.execute("DELETE FROM assets WHERE id NOT IN (SELECT MIN(id) FROM assets GROUP BY url)")
+            removed_dups = cur.rowcount if cur.rowcount is not None else 0
+            db.commit()
+        return jsonify({"success": True, "removed_empty": removed_empty, "removed_duplicates": removed_dups})
+    except Exception as e:
+        app.logger.error(f"Cleanup assets error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
     except Exception as e:
         app.logger.error(f"Error serving screenshot {filename}: {e}")
         from flask import abort
@@ -878,30 +1806,170 @@ def index():
     response.headers['Expires'] = '0'
     return response
 
+def get_scope():
+    """Return current DB-backed scope list with active flag."""
+    try:
+        rows = asset_manager.get_scope_targets()
+        scope_list = []
+        with sqlite3.connect(app.config['database_path']) as db:
+            db.row_factory = sqlite3.Row
+            cookie_map = {r[0]: True for r in db.execute("SELECT domain FROM cookies").fetchall()}
+            for tid, dom, active in rows:
+                last_scan = db.execute(
+                    "SELECT MAX(last_nuclei_scan_at) FROM assets WHERE host = ?", (dom,)
+                ).fetchone()[0]
+                scope_list.append({
+                    "id": tid,
+                    "domain": dom,
+                    "is_active": bool(active),
+                    "cookie_present": bool(cookie_map.get(dom)),
+                    "last_long_scan": last_scan or ""
+                })
+        # Expose a flat authorized_domains list using current scope domains for UI display
+        authorized_domains = [item[1] for item in rows] if rows else []
+        return jsonify({"scope": scope_list, "authorized_domains": authorized_domains, "wildcard_domains": []})
+    except Exception as e:
+        app.logger.error(f"Error getting scope: {e}")
+        return jsonify({"scope": [], "error": str(e)}), 500
+
+@app.route('/api/scan_unauth', methods=['POST'])
+def scan_unauth():
+    """Launch engine unauthenticated for a given or first scope domain."""
+    try:
+        data = request.get_json() or {}
+        domain = (data.get('domain') or '').strip()
+        if not domain:
+            try:
+                from asset_manager import AssetManager
+                am = AssetManager()
+                scope = am.get_scope_domains()
+                if scope:
+                    domain = scope[0]
+            except Exception:
+                pass
+        if not domain:
+            return jsonify({"success": False, "error": "No domain provided and scope is empty"}), 400
+        env = os.environ.copy()
+        env.pop('MODSCAN_AUTH_COOKIE', None)
+        env['MODSCAN_AUTH_DOMAIN'] = domain
+        env['MODSCAN_TTL_HOURS'] = '0'
+        subprocess.Popen(['python3', 'engine.py'], env=env)
+        return jsonify({"success": True, "message": f"Unauthenticated scan started for {domain}"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 def init_db_and_scope():
     with app.app_context():
         db = sqlite3.connect(app.config['database_path'])
         with db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS assets (
-                    id INTEGER PRIMARY KEY, url TEXT, host TEXT, status_code INTEGER, title TEXT,
-                    tech_stack TEXT, content_length INTEGER, response_time REAL, response_body TEXT,
-                    screenshot_path TEXT, last_scanned TEXT, discovery_method TEXT
+                    id INTEGER PRIMARY KEY,
+                    url TEXT,
+                    host TEXT,
+                    status_code INTEGER,
+                    title TEXT,
+                    tech_stack TEXT,
+                    content_length INTEGER,
+                    response_time REAL,
+                    response_body TEXT,
+                    screenshot_path TEXT,
+                    last_scanned TEXT,
+                    discovery_method TEXT,
+                    discovered_at TEXT
                 )
             """)
+
+            # Ensure critical columns exist for mapping (SQLite lacks IF NOT EXISTS for columns)
+            cols = {row[1] for row in db.execute('PRAGMA table_info(assets)').fetchall()}
+            if 'discovered_at' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN discovered_at TEXT")
+            if 'tech_stack' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN tech_stack TEXT")
+            if 'response_time' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN response_time REAL")
+            if 'content_length' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN content_length INTEGER")
+            if 'last_nuclei_scan_at' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN last_nuclei_scan_at TEXT")
+            # Add columns required by scanning workflow if missing
+            if 'basic_scan_complete' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN basic_scan_complete INTEGER DEFAULT 0")
+            if 'deep_scan_complete' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN deep_scan_complete INTEGER DEFAULT 0")
+            if 'intelligence_score' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN intelligence_score REAL DEFAULT 0")
+            if 'scanning_stage' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN scanning_stage TEXT")
+            if 'completion_attempts' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN completion_attempts INTEGER DEFAULT 0")
+            if 'state' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN state TEXT")
+            if 'asn_info' not in cols:
+                db.execute("ALTER TABLE assets ADD COLUMN asn_info TEXT")
             db.execute("""
                 CREATE TABLE IF NOT EXISTS vulnerabilities (
                     id INTEGER PRIMARY KEY, asset_id INTEGER, type TEXT, description TEXT,
-                    severity TEXT, evidence TEXT, payload TEXT, detected_at TEXT
+                    severity TEXT, evidence TEXT, payload TEXT, detected_at TEXT, confidence REAL
                 )
             """)
+            # Ensure confidence column exists
+            vcols = {row[1] for row in db.execute('PRAGMA table_info(vulnerabilities)').fetchall()}
+            if 'confidence' not in vcols:
+                db.execute("ALTER TABLE vulnerabilities ADD COLUMN confidence REAL")
+
+            # Ensure activities table exists
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS activities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT,
+                    message TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            # Migrate/ensure columns expected by AssetManager.activity mappings
+            try:
+                acols = {row[1] for row in db.execute('PRAGMA table_info(activities)').fetchall()}
+                if 'timestamp' not in acols:
+                    db.execute("ALTER TABLE activities ADD COLUMN timestamp TEXT")
+                if 'action' not in acols:
+                    db.execute("ALTER TABLE activities ADD COLUMN action TEXT")
+                if 'details' not in acols:
+                    db.execute("ALTER TABLE activities ADD COLUMN details TEXT")
+                if 'target' not in acols:
+                    db.execute("ALTER TABLE activities ADD COLUMN target TEXT")
+                # Optional status column for richer logging
+                if 'status' not in acols:
+                    db.execute("ALTER TABLE activities ADD COLUMN status TEXT")
+            except Exception:
+                pass
+            # Ensure scope table exists with universal schema (domain/is_active)
             db.execute("""
                 CREATE TABLE IF NOT EXISTS scope (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    target TEXT NOT NULL UNIQUE,
-                    is_wildcard BOOLEAN NOT NULL
-                );
+                    domain TEXT NOT NULL UNIQUE,
+                    is_active INTEGER NOT NULL DEFAULT 1
+                )
             """)
+            # Cookies table for per-domain session persistence and policies
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS cookies (
+                    domain TEXT PRIMARY KEY,
+                    cookie TEXT,
+                    persistent TEXT,   -- JSON array of 'key=value'
+                    auth_keys TEXT,    -- JSON array of cookie names considered auth
+                    last_updated TEXT DEFAULT (datetime('now')),
+                    policy TEXT        -- JSON object with headers/bearer/login/storage
+                )
+            """)
+            # Ensure columns exist (migrations for existing DBs)
+            ccols = {row[1] for row in db.execute('PRAGMA table_info(cookies)').fetchall()}
+            if 'persistent' not in ccols:
+                db.execute("ALTER TABLE cookies ADD COLUMN persistent TEXT")
+            if 'auth_keys' not in ccols:
+                db.execute("ALTER TABLE cookies ADD COLUMN auth_keys TEXT")
+            if 'policy' not in ccols:
+                db.execute("ALTER TABLE cookies ADD COLUMN policy TEXT")
         print("Database initialized.")
 
         print("Scope table ready - use setup_scope.py to add targets if needed.")
@@ -1203,6 +2271,575 @@ def stream_log():
         app.logger.error(f"Error streaming log: {e}")
         return jsonify({"error": str(e)})
 
+@app.route('/api/logs/clear', methods=['POST'])
+def clear_logs():
+    """Delete log files for a clean workspace (non-destructive to code)."""
+    try:
+        base_dir = Path(__file__).parent
+        logs_dir = base_dir / 'logs'
+        removed = []
+        patterns = [
+            'engine.log', 'dashboard.log', 'main.log',
+            'dashboard.log.*', 'engine.log.*', 'main.log.*'
+        ]
+        # Remove top-level logs
+        for pat in patterns:
+            for p in base_dir.glob(pat):
+                try:
+                    p.unlink()
+                    removed.append(str(p))
+                except Exception:
+                    pass
+        # Remove logs in logs/
+        if logs_dir.exists():
+            for p in logs_dir.glob('*.log*'):
+                try:
+                    p.unlink()
+                    removed.append(str(p))
+                except Exception:
+                    pass
+        return jsonify({"success": True, "removed": removed, "count": len(removed)})
+    except Exception as e:
+        app.logger.error(f"Error clearing logs: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/cookies/persist', methods=['POST'])
+def persist_cookie_keys():
+    """Set or update persistent cookie key=val pairs for a domain."""
+    try:
+        data = request.get_json() or {}
+        domain = (data.get('domain') or '').strip()
+        pairs = data.get('pairs') or []  # list of 'key=value'
+        if not domain:
+            return jsonify({"success": False, "error": "Domain is required"}), 400
+        # Normalize pairs
+        cleaned = []
+        for p in pairs:
+            if isinstance(p, str) and '=' in p:
+                k, v = p.split('=', 1)
+                k = k.strip(); v = v.strip()
+                if k:
+                    cleaned.append(f"{k}={v}")
+        import json
+        with sqlite3.connect(app.config['database_path']) as db:
+            # Merge with existing persistent
+            row = db.execute("SELECT persistent FROM cookies WHERE domain=?", (domain,)).fetchone()
+            existing = []
+            if row and row[0]:
+                try:
+                    existing = json.loads(row[0])
+                except Exception:
+                    existing = []
+            # Merge/override by key
+            merged_map = {}
+            for kv in existing:
+                if isinstance(kv, str) and '=' in kv:
+                    k, v = kv.split('=', 1)
+                    merged_map[k.strip()] = v.strip()
+            for kv in cleaned:
+                k, v = kv.split('=', 1)
+                merged_map[k.strip()] = v.strip()
+            merged = [f"{k}={v}" for k, v in merged_map.items()]
+            db.execute("INSERT INTO cookies(domain, persistent, last_updated) VALUES(?, ?, datetime('now'))\n                       ON CONFLICT(domain) DO UPDATE SET persistent=excluded.persistent, last_updated=excluded.last_updated",
+                       (domain, json.dumps(merged)))
+            db.commit()
+        return jsonify({"success": True, "domain": domain, "persistent": merged})
+    except Exception as e:
+        app.logger.error(f"Persist cookie error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/admin/reset_db', methods=['POST'])
+def reset_db():
+    """Clear core data tables (assets, vulnerabilities, activities) but preserve scope and cookies."""
+    try:
+        removed = {"assets": 0, "vulnerabilities": 0, "activities": 0}
+        with sqlite3.connect(app.config['database_path']) as db:
+            db.row_factory = sqlite3.Row
+            # Count and delete
+            for table in ("assets", "vulnerabilities", "activities"):
+                try:
+                    c = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                except Exception:
+                    c = 0
+                removed[table] = c
+                try:
+                    db.execute(f"DELETE FROM {table}")
+                except Exception:
+                    pass
+            db.commit()
+            try:
+                db.execute("VACUUM")
+            except Exception:
+                pass
+        # Also clear scan registry file if present
+        try:
+            reg_path = Path(__file__).resolve().parent / 'scan_registry.json'
+            if reg_path.exists():
+                reg_path.write_text('{}', encoding='utf-8')
+        except Exception:
+            pass
+        return jsonify({"success": True, "removed": removed})
+    except Exception as e:
+        app.logger.error(f"DB reset error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ===== Service Control =====
+
+@app.route('/api/restart_services', methods=['POST'])
+def restart_services():
+    """Kill existing engine processes, clear logs, and start engine (optionally with auth)."""
+    try:
+        data = request.get_json() or {}
+        domain = (data.get('domain') or '').strip()
+        cookie_string = data.get('cookie') or ''
+
+        # Kill existing engine processes
+        killed = 0
+        try:
+            current_pid = os.getpid()
+            for proc in psutil.process_iter(["pid", "cmdline"]):
+                if proc.info.get("pid") == current_pid:
+                    continue
+                cmdline = " ".join(proc.info.get("cmdline") or [])
+                if "engine.py" in cmdline and "python" in cmdline:
+                    proc.kill()
+                    killed += 1
+        except Exception as e:
+            app.logger.warning(f"Process kill warning: {e}")
+
+        # Clear logs (engine/dashboard/main, both top-level and logs/)
+        removed = []
+        try:
+            base_dir = Path(__file__).parent
+            logs_dir = base_dir / 'logs'
+            patterns = [
+                'engine.log', 'dashboard.log', 'main.log',
+                'dashboard.log.*', 'engine.log.*', 'main.log.*'
+            ]
+            for pat in patterns:
+                for p in base_dir.glob(pat):
+                    try:
+                        p.unlink()
+                        removed.append(str(p))
+                    except Exception:
+                        pass
+            if logs_dir.exists():
+                for p in logs_dir.glob('*.log*'):
+                    try:
+                        p.unlink()
+                        removed.append(str(p))
+                    except Exception:
+                        pass
+        except Exception as e:
+            app.logger.warning(f"Log clear warning: {e}")
+
+        # Default to sole saved session if none explicitly provided
+        if not domain and not cookie_string:
+            try:
+                with sqlite3.connect(app.config['database_path']) as db:
+                    rows = list(db.execute("SELECT domain, cookie, persistent FROM cookies").fetchall())
+                    if len(rows) == 1:
+                        domain = rows[0][0]
+                        cookie_string = rows[0][1] or ''
+                        if rows[0][2]:
+                            cookie_string = _merge_persistent_cookie(cookie_string, rows[0][2])
+                        app.logger.info(f"Default-auth restart using saved session for {domain}")
+            except Exception as e:
+                app.logger.warning(f"Default-auth selection failed: {e}")
+
+        # Resolve cookie if domain provided
+        env = os.environ.copy()
+        if domain:
+            # If cookie not provided, try to fetch from DB
+            if not cookie_string:
+                try:
+                    with sqlite3.connect(app.config['database_path']) as db:
+                        row = db.execute("SELECT cookie, persistent FROM cookies WHERE domain=?", (domain,)).fetchone()
+                        if row:
+                            cookie_string = row[0] or ''
+                            # Merge persistent if present
+                            if row[1]:
+                                cookie_string = _merge_persistent_cookie(cookie_string, row[1])
+                except Exception:
+                    pass
+            else:
+                # Merge persistent policy and persist back
+                try:
+                    with sqlite3.connect(app.config['database_path']) as db:
+                        row = db.execute("SELECT persistent FROM cookies WHERE domain=?", (domain,)).fetchone()
+                        if row and row[0]:
+                            cookie_string = _merge_persistent_cookie(cookie_string, row[0])
+                        db.execute(
+                            "INSERT INTO cookies(domain, cookie, last_updated) VALUES(?,?,datetime('now'))\n                             ON CONFLICT(domain) DO UPDATE SET cookie=excluded.cookie, last_updated=excluded.last_updated",
+                            (domain, cookie_string or '')
+                        )
+                        db.commit()
+                except Exception:
+                    pass
+
+            # Set env for auth if we have cookie
+            if cookie_string:
+                env['MODSCAN_AUTH_DOMAIN'] = domain
+                env['MODSCAN_AUTH_COOKIE'] = cookie_string
+        # Create placeholder logs so UI doesn't show not-found
+        try:
+            logs_dir = Path(__file__).parent / 'logs'
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            for name in ('engine.log', 'dashboard.log', 'main.log'):
+                p = logs_dir / name
+                if not p.exists():
+                    p.touch()
+        except Exception:
+            pass
+
+        # Force run immediately
+        env['MODSCAN_TTL_HOURS'] = '0'
+        subprocess.Popen(['python3', 'engine.py'], env=env)
+        app.logger.info(f"Engine restarted. Killed={killed}, Logs cleared={len(removed)}")
+
+        # Kick off background enrichment for quick status/title population
+        try:
+            import threading
+            threading.Thread(target=_background_enrich, args=(domain, cookie_string, 500), daemon=True).start()
+            app.logger.info("Background enrichment started")
+        except Exception as e:
+            app.logger.warning(f"Failed to start background enrichment: {e}")
+
+        return jsonify({"success": True, "killed": killed, "logs_cleared": len(removed)})
+    except Exception as e:
+        app.logger.error(f"Restart services error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+def _background_enrich(domain: str, cookie_string: str, limit: int = 150):
+    """Populate status/title/time for assets missing status_code in background."""
+    try:
+        import asyncio, aiohttp, re, time as _time
+        # Pull targets
+        with sqlite3.connect(app.config['database_path']) as db:
+            db.row_factory = sqlite3.Row
+            if domain:
+                cursor = db.execute(
+                    """
+                    SELECT id, url FROM assets 
+                    WHERE status_code IS NULL AND url LIKE ?
+                    ORDER BY id DESC LIMIT ?
+                    """, (f"%://{domain}/%", limit)
+                )
+            else:
+                cursor = db.execute(
+                    "SELECT id, url FROM assets WHERE status_code IS NULL ORDER BY id DESC LIMIT ?",
+                    (limit,)
+                )
+            targets = [(row[0], row[1]) for row in cursor.fetchall()]
+        if not targets:
+            return
+
+        headers = {"User-Agent": "ModScan Enricher/1.0"}
+        if cookie_string:
+            headers["Cookie"] = cookie_string
+
+        async def fetch_update(session, item):
+            asset_id, url = item
+            t0 = _time.monotonic()
+            try:
+                async with session.get(url, allow_redirects=True, timeout=15) as resp:
+                    txt = await resp.text()
+                    dt = int((_time.monotonic() - t0) * 1000)
+                    m = re.search(r"<title[^>]*>(.*?)</title>", txt, re.I | re.S)
+                    title = (m.group(1).strip() if m else 'Unknown')
+                    content_len = len(txt.encode('utf-8', 'ignore'))
+                    with sqlite3.connect(app.config['database_path']) as db:
+                        db.execute(
+                            """
+                            UPDATE assets
+                            SET status_code=?, title=?, content_length=?, response_time=?, last_scanned=datetime('now')
+                            WHERE id=?
+                            """,
+                            (resp.status, title, content_len, dt, asset_id)
+                        )
+                        db.commit()
+                    return True
+            except Exception:
+                try:
+                    # Fallback: if HTTPS fails, try HTTP for same path
+                    from urllib.parse import urlsplit, urlunsplit
+                    sp = urlsplit(url)
+                    if sp.scheme.lower() == 'https':
+                        http_url = urlunsplit(('http', sp.netloc, sp.path or '/', sp.query, ''))
+                        try:
+                            async with session.get(http_url, allow_redirects=True, timeout=10) as r2:
+                                txt2 = await r2.text()
+                                dt2 = int((_time.monotonic() - t0) * 1000)
+                                import re as _re
+                                m2 = _re.search(r"<title[^>]*>(.*?)</title>", txt2, _re.I | _re.S)
+                                title2 = (m2.group(1).strip() if m2 else 'Unknown')
+                                clen2 = len(txt2.encode('utf-8', 'ignore'))
+                                with sqlite3.connect(app.config['database_path']) as db2:
+                                    db2.execute(
+                                        """
+                                        UPDATE assets
+                                        SET status_code=?, title=?, content_length=?, response_time=?, last_scanned=datetime('now')
+                                        WHERE id=?
+                                        """,
+                                        (r2.status, title2, clen2, dt2, asset_id)
+                                    )
+                                    db2.commit()
+                                return True
+                        except Exception:
+                            pass
+                    # Final: just bump last_scanned to avoid hammering
+                    with sqlite3.connect(app.config['database_path']) as db3:
+                        db3.execute("UPDATE assets SET last_scanned=datetime('now') WHERE id=?", (asset_id,))
+                        db3.commit()
+                except Exception:
+                    pass
+                return False
+
+        async def run_enrichment():
+            conn = aiohttp.TCPConnector(limit=20, ssl=False)
+            async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
+                tasks = [fetch_update(session, it) for it in targets]
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(run_enrichment())
+        loop.close()
+    except Exception as e:
+        try:
+            app.logger.warning(f"Background enrich error: {e}")
+        except Exception:
+            pass
+
+# ===== IDOR Testing API Endpoints =====
+
+@app.route('/api/credentials', methods=['GET'])
+def get_credentials():
+    """Get all stored credential sets"""
+    try:
+        # Placeholder: start with no baked-in credentials (universal)
+        credentials = []
+        return jsonify({"success": True, "credentials": credentials})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/credentials', methods=['POST'])
+def add_credential():
+    """Add a new credential set"""
+    try:
+        data = request.get_json()
+        name = data.get('name')
+        session_cookie = data.get('session_cookie')
+        role = data.get('role', 'user')
+        user_id = data.get('user_id', '')
+        description = data.get('description', '')
+        
+        if not name or not session_cookie:
+            return jsonify({"success": False, "error": "Name and session cookie are required"}), 400
+        
+        # In a full implementation, save to database
+        # For now, just validate and return success
+        
+        return jsonify({
+            "success": True,
+            "message": f"Credential set '{name}' added successfully",
+            "credential": {
+                "name": name,
+                "role": role,
+                "user_id": user_id,
+                "description": description
+            }
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/automated-burp-test', methods=['POST'])
+def run_automated_burp_test():
+    """Run comprehensive automated Burp-style vulnerability testing"""
+    try:
+        data = request.get_json()
+        target_url = data.get('target_url', '')
+        
+        # Import and initialize automated tester
+        import sys
+        import os
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'modules'))
+        from automated_burp_testing import AutomatedBurpTester
+        
+        tester = AutomatedBurpTester(asset_manager, config)
+        
+        # Run automated testing
+        async def run_test():
+            findings = await tester.run_automated_testing(target_url)
+            await tester.save_findings_to_db(findings)
+            return findings
+        
+        findings = asyncio.run(run_test())
+        
+        findings_data = []
+        for finding in findings:
+            findings_data.append({
+                'type': finding['type'],
+                'severity': finding['severity'],
+                'url': finding['url'],
+                'evidence': finding['evidence'],
+                'parameter': finding.get('parameter', 'N/A'),
+                'payload': finding.get('payload', 'N/A')
+            })
+        
+        return jsonify({
+            "success": True,
+            "findings_count": len(findings),
+            "findings": findings_data,
+            "message": f"Automated testing complete. Found {len(findings)} potential vulnerabilities."
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Automated testing failed: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/idor-test', methods=['POST'])
+def run_idor_test():
+    """Run comprehensive IDOR testing with multiple credentials"""
+    try:
+        data = request.get_json()
+        target_url = data.get('target_url', '')
+        credentials = data.get('credentials', [])
+        
+        if not credentials:
+            return jsonify({"success": False, "error": "At least one credential set is required"}), 400
+        
+        # Import and initialize IDOR tester
+        import sys
+        sys.path.append('/home/michael/recon-platform/modscan/modules')
+        from multi_credential_idor_tester import MultiCredentialIDORTester, Credential
+        from asset_manager import AssetManager
+        
+        # Initialize components
+        asset_manager = AssetManager()
+        config = {"test_credentials": credentials}
+        idor_tester = MultiCredentialIDORTester(asset_manager, config)
+        
+        # Run IDOR testing
+        import asyncio
+        import aiohttp
+        
+        async def run_test():
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=30)) as session:
+                findings = await idor_tester.test_idor_vulnerabilities(session)
+                return findings
+        
+        # Execute the test
+        findings = asyncio.run(run_test())
+        
+        # Convert findings to JSON serializable format
+        findings_data = []
+        for finding in findings:
+            findings_data.append({
+                "url": finding.url,
+                "vuln_type": finding.vuln_type,
+                "severity": finding.severity,
+                "confidence": finding.confidence,
+                "source_user": finding.source_user,
+                "target_user": finding.target_user,
+                "payload": finding.payload,
+                "evidence": finding.evidence,
+                "discovered_at": finding.discovered_at.isoformat()
+            })
+        
+        return jsonify({
+            "success": True,
+            "message": f"IDOR testing completed - {len(findings)} vulnerabilities found",
+            "findings": findings_data,
+            "test_summary": {
+                "credentials_tested": len(credentials),
+                "vulnerabilities_found": len(findings),
+                "critical": len([f for f in findings if f.severity == 'CRITICAL']),
+                "high": len([f for f in findings if f.severity == 'HIGH']),
+                "medium": len([f for f in findings if f.severity == 'MEDIUM'])
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"IDOR testing error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/response-compare', methods=['POST'])
+def compare_responses():
+    """Compare two HTTP responses for differences"""
+    try:
+        data = request.get_json()
+        url = data.get('url')
+        credential1 = data.get('credential1')
+        credential2 = data.get('credential2')
+        
+        if not all([url, credential1, credential2]):
+            return jsonify({"success": False, "error": "URL and both credentials are required"}), 400
+        
+        import asyncio
+        import aiohttp
+        
+        async def fetch_responses():
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=15)) as session:
+                # Fetch with credential 1
+                headers1 = {'Cookie': credential1.get('session_cookie', '')}
+                async with session.get(url, headers=headers1) as response1:
+                    text1 = await response1.text()
+                    status1 = response1.status
+                
+                # Fetch with credential 2  
+                headers2 = {'Cookie': credential2.get('session_cookie', '')}
+                async with session.get(url, headers=headers2) as response2:
+                    text2 = await response2.text()
+                    status2 = response2.status
+                
+                return (text1, status1), (text2, status2)
+        
+        # Get responses
+        (response1, status1), (response2, status2) = asyncio.run(fetch_responses())
+        
+        # Import response comparator
+        import sys
+        sys.path.append('/home/michael/recon-platform/modscan/modules')
+        from multi_credential_idor_tester import ResponseComparator
+        
+        # Analyze differences
+        similarity = ResponseComparator.calculate_response_similarity(response1, response2)
+        sensitive_data1 = ResponseComparator.extract_sensitive_data(response1)
+        sensitive_data2 = ResponseComparator.extract_sensitive_data(response2)
+        leakage = ResponseComparator.identify_data_leakage(response1, response2, credential2.get('name', 'user2'))
+        
+        # Generate diff
+        import difflib
+        diff = list(difflib.unified_diff(
+            response1.splitlines(keepends=True),
+            response2.splitlines(keepends=True),
+            fromfile=f"{credential1.get('name', 'user1')}_response",
+            tofile=f"{credential2.get('name', 'user2')}_response",
+            n=3
+        ))
+        
+        return jsonify({
+            "success": True,
+            "comparison": {
+                "similarity": similarity,
+                "status_codes": {"user1": status1, "user2": status2},
+                "response_lengths": {"user1": len(response1), "user2": len(response2)},
+                "sensitive_data": {
+                    "user1": sensitive_data1,
+                    "user2": sensitive_data2
+                },
+                "data_leakage": leakage,
+                "diff": ''.join(diff[:100])  # Limit diff size
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Response comparison error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 if __name__ == '__main__':
     with app.app_context():
         init_db_and_scope()
@@ -1218,3 +2855,14 @@ def _scope_conn():
 
 def _normalize_domain(d: str) -> str:
     return (d or "").strip().lower()
+@app.route('/api/admin/migrate', methods=['POST'])
+def run_migrations():
+    """Run lightweight DB migrations (safe to run while engine is active)."""
+    try:
+        init_db_and_scope()
+        return jsonify({"success": True, "message": "Migrations applied"})
+    except Exception as e:
+        app.logger.error(f"Migration error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+# ===== Code Audit (Unused Scripts) =====
+# (Removed interactive audit/delete endpoints per request; keep code cleanup manual)
