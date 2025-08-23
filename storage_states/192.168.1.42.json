@@ -1,0 +1,1 @@
+{"cookies": [{"name": "security", "value": "low", "domain": "192.168.1.42", "path": "/", "expires": -1, "httpOnly": false, "secure": false, "sameSite": "Lax"}, {"name": "PHPSESSID", "value": "vqotppigf9mlb0drkiaahanr5s", "domain": "192.168.1.42", "path": "/", "expires": -1, "httpOnly": false, "secure": false, "sameSite": "Lax"}], "origins": []}

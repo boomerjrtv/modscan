@@ -1,6 +1,46 @@
 import sqlite3
 import json
 import time
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
+# --- CRITICAL: Centralized VulnerabilityFinding Structure ---
+# This is the AUTHORITATIVE definition - all vulnerability scanners MUST use this structure
+@dataclass
+class VulnerabilityFinding:
+    """
+    AUTHORITATIVE VulnerabilityFinding structure for ModScan platform.
+    ALL vulnerability scanners must use these exact field names and types.
+    """
+    # REQUIRED fields
+    url: str                        # Target URL where vulnerability was found
+    vuln_type: str                  # Vulnerability type (e.g., 'SQL_INJECTION', 'XSS', 'IDOR')
+    severity: str                   # Severity: 'Critical', 'High', 'Medium', 'Low', 'Info'
+    confidence: float               # Confidence score 0.0-1.0
+    payload: str                    # Attack payload used
+    evidence: str                   # Evidence of the vulnerability
+    discovered_at: datetime         # When vulnerability was discovered
+    
+    # OPTIONAL fields (with defaults)
+    impact_description: str = ""    # Impact description
+    remediation: str = ""           # Remediation advice
+    affected_parameter: str = ""    # Parameter that was vulnerable
+    raw_request: str = ""           # Raw HTTP request
+    raw_response: str = ""          # Raw HTTP response
+    screenshot_path: str = ""       # Screenshot path if available
+
+# Database field mapping for vulnerabilities table
+VULNERABILITY_DB_MAPPING = {
+    'vuln_type': 'type',           # VulnerabilityFinding.vuln_type -> DB.type
+    'url': 'url',                  # VulnerabilityFinding.url -> DB.url  
+    'severity': 'severity',        # VulnerabilityFinding.severity -> DB.severity
+    'confidence': 'confidence',    # VulnerabilityFinding.confidence -> DB.confidence
+    'payload': 'payload',          # VulnerabilityFinding.payload -> DB.payload
+    'evidence': 'evidence',        # VulnerabilityFinding.evidence -> DB.evidence
+    'discovered_at': 'detected_at', # VulnerabilityFinding.discovered_at -> DB.detected_at
+    'impact_description': 'description' # VulnerabilityFinding.impact_description -> DB.description
+}
 
 # --- Configuration ---
 from pathlib import Path
@@ -232,9 +272,15 @@ class AssetManager:
         """Get current proxy statistics from recent activity logs using centralized mapping."""
         try:
             with self._get_db() as db:
+                # Ensure activities table and columns exist; otherwise return zeros quietly
+                try:
+                    cols = {row[1] for row in db.execute('PRAGMA table_info(activities)').fetchall()}
+                except Exception:
+                    cols = set()
+                if not cols or not {'timestamp', 'action', 'details'} <= cols:
+                    return {'healthy_proxies': 0, 'total_proxies': 0, 'active_connections': 0}
+
                 fields = self.get_activity_fields()
-                
-                # Get most recent proxy health check (last hour to be safe)
                 query = f"""
                     SELECT {fields['details']} FROM activities 
                     WHERE {fields['action']} = 'PROXY_HEALTH' 
@@ -242,11 +288,9 @@ class AssetManager:
                     LIMIT 1
                 """
                 cursor = db.execute(query)
-                
                 result = cursor.fetchone()
                 if result and result[0]:
                     details = result[0]
-                    # Parse "Proxy health check completed: 29/30 proxies operational"
                     if "proxies operational" in details:
                         import re
                         match = re.search(r'(\d+)/(\d+) proxies operational', details)
@@ -258,54 +302,77 @@ class AssetManager:
                                 'total_proxies': total_count,
                                 'active_connections': healthy_count
                             }
-                            
-                # Fallback if no recent proxy health data
-                return {
-                    'healthy_proxies': 0,
-                    'total_proxies': 0,
-                    'active_connections': 0
-                }
-                
-        except Exception as e:
-            print(f"Error retrieving proxy stats: {e}")
-            return {
-                'healthy_proxies': 0,
-                'total_proxies': 0,
-                'active_connections': 0
-            }
+                return {'healthy_proxies': 0, 'total_proxies': 0, 'active_connections': 0}
+        except Exception:
+            return {'healthy_proxies': 0, 'total_proxies': 0, 'active_connections': 0}
 
     def get_scope_domains(self):
-        """Get scope domains for enhanced discovery using centralized mapping"""
+        """Get scope domains with schema tolerance (domain/is_active or target/is_wildcard)."""
         try:
             with self._get_db() as db:
-                cursor = db.execute("SELECT domain FROM scope WHERE is_active = 1")
-                domains = [row[0] for row in cursor.fetchall()]
-                return domains
+                # Detect scope columns
+                cols = {row[1] for row in db.execute("PRAGMA table_info(scope)").fetchall()}
+                if not cols:
+                    return []
+                if 'domain' in cols:
+                    # Prefer active domains if column exists (is_active or active); else return all
+                    if 'is_active' in cols:
+                        cursor = db.execute("SELECT domain FROM scope WHERE is_active = 1")
+                    elif 'active' in cols:
+                        cursor = db.execute("SELECT domain FROM scope WHERE active = 1")
+                    else:
+                        cursor = db.execute("SELECT domain FROM scope")
+                    return [row[0] for row in cursor.fetchall()]
+                elif 'target' in cols:
+                    cursor = db.execute("SELECT target FROM scope")
+                    return [row[0] for row in cursor.fetchall()]
+                return []
         except Exception as e:
             print(f"Error getting scope domains: {e}")
             return []
     
     def get_scope_targets(self):
-        """Get all scope targets for API with proper field mappings"""
+        """Get all scope targets for API (schema tolerant)."""
         try:
             with self._get_db() as db:
-                cursor = db.execute("SELECT id, domain, is_active FROM scope")
+                cols = {row[1] for row in db.execute("PRAGMA table_info(scope)").fetchall()}
                 targets = []
-                for row in cursor.fetchall():
-                    target_id, domain, is_active = row
-                    is_wildcard = domain.startswith('*.')
-                    targets.append((target_id, domain, is_wildcard))
+                if 'domain' in cols:
+                    # Map 'is_active' or 'active' to the third tuple position
+                    if 'is_active' in cols:
+                        q = "SELECT id, domain, is_active FROM scope"
+                    elif 'active' in cols:
+                        q = "SELECT id, domain, active FROM scope"
+                    else:
+                        q = "SELECT id, domain, 1 as is_active FROM scope"
+                    for row in db.execute(q).fetchall():
+                        target_id, domain, is_active = row
+                        targets.append((target_id, domain, is_active))
+                elif 'target' in cols:
+                    for row in db.execute("SELECT id, target, is_wildcard FROM scope").fetchall():
+                        target_id, domain, is_wildcard = row
+                        targets.append((target_id, domain, 1 if is_wildcard else 0))
                 return targets
         except Exception as e:
             print(f"Error getting scope targets: {e}")
             return []
     
     def add_scope_target(self, domain, is_active=1):
-        """Add a new scope target using centralized mapping"""
+        """Add a new scope target (handles both schema variants)."""
         try:
             with self._get_db() as db:
-                cursor = db.execute("INSERT INTO scope (domain, is_active) VALUES (?, ?)", 
-                                  (domain, is_active))
+                cols = {row[1] for row in db.execute("PRAGMA table_info(scope)").fetchall()}
+                if 'domain' in cols:
+                    if 'is_active' in cols:
+                        cursor = db.execute("INSERT INTO scope (domain, is_active) VALUES (?, ?)", (domain, is_active))
+                    elif 'active' in cols:
+                        cursor = db.execute("INSERT INTO scope (domain, active) VALUES (?, ?)", (domain, is_active))
+                    else:
+                        cursor = db.execute("INSERT INTO scope (domain) VALUES (?)", (domain,))
+                elif 'target' in cols:
+                    cursor = db.execute("INSERT INTO scope (target, is_wildcard) VALUES (?, 0)", (domain,))
+                else:
+                    return None
                 db.commit()
                 return cursor.lastrowid
         except Exception as e:
@@ -522,8 +589,29 @@ class AssetManager:
             with self._get_db() as db:
                 # Use field mappings for database columns
                 fields = self.get_asset_fields()
-                query = f"INSERT OR IGNORE INTO assets ({fields['url']}, {fields['host']}, {fields['discovery_method']}, {fields['last_scanned']}) VALUES (?, ?, ?, ?)"
-                cursor = db.execute(query, (url, host, discovery_method, time.strftime('%Y-%m-%d %H:%M:%S')))
+                
+                # Check if asset already exists first
+                check_query = f"SELECT id FROM assets WHERE {fields['url']} = ?"
+                existing = db.execute(check_query, (url,)).fetchone()
+                
+                if existing:
+                    # Update existing asset
+                    update_query = f"""
+                        UPDATE assets SET 
+                            {fields['discovery_method']} = ?,
+                            {fields['last_scanned']} = ?
+                        WHERE {fields['url']} = ?
+                    """
+                    cursor = db.execute(update_query, (discovery_method, time.strftime('%Y-%m-%d %H:%M:%S'), url))
+                else:
+                    # Insert new asset with discovered_at timestamp
+                    insert_query = f"""
+                        INSERT INTO assets ({fields['url']}, {fields['host']}, {fields['discovery_method']}, {fields['last_scanned']}, discovered_at) 
+                        VALUES (?, ?, ?, ?, ?)
+                    """
+                    cursor = db.execute(insert_query, (url, host, discovery_method, time.strftime('%Y-%m-%d %H:%M:%S'), time.strftime('%Y-%m-%d %H:%M:%S')))
+                
+                db.commit()  # Explicitly commit the transaction
                 
                 # Log activity if new asset was actually added
                 if cursor.rowcount > 0:
@@ -533,9 +621,6 @@ class AssetManager:
                     except Exception:
                         pass  # Don't fail asset addition if logging fails
                         
-        except sqlite3.IntegrityError:
-            # Asset already exists
-            pass
         except Exception as e:
             print(f"Error adding asset {url}: {e}")
 
@@ -579,9 +664,10 @@ class AssetManager:
                 else:
                     query = base_query
 
-                # Add ordering
+                # Add ordering - prioritize newest discoveries first
                 query += f"""
                     ORDER BY 
+                        discovered_at DESC,
                         ({fields['status_code']} IS NOT NULL) DESC,
                         ({fields['screenshot_path']} IS NOT NULL) DESC,
                         ({fields['response_time']} IS NOT NULL) DESC,
@@ -1077,7 +1163,8 @@ class AssetManager:
                 base_query = '''
                     SELECT v.id, v.asset_id, v.type, v.description, v.severity, 
                            v.evidence, v.payload, v.detected_at, v.confidence,
-                           a.url as asset_url, a.host as asset_host
+                           a.url as asset_url, a.host as asset_host,
+                           CASE WHEN a.discovery_method = 'authenticated_discovery' THEN 1 ELSE 0 END as auth
                     FROM vulnerabilities v
                     JOIN assets a ON v.asset_id = a.id
                 '''
@@ -1151,10 +1238,72 @@ class AssetManager:
             print(f"Error getting vulnerability categories: {e}")
             return []
     
-    def add_vulnerability(self, vuln_data: dict):
-        """Add a vulnerability finding to the database"""
+    def add_vulnerability_finding(self, finding: VulnerabilityFinding, asset_id: int):
+        """
+        Add a VulnerabilityFinding object to the database with proper field mapping.
+        This is the AUTHORITATIVE method for storing vulnerability findings.
+        Prevents duplicates based on asset_id + type + payload combination.
+        """
         try:
             with self._get_db() as db:
+                # Check for existing duplicate
+                duplicate_check = '''
+                    SELECT COUNT(*) FROM vulnerabilities 
+                    WHERE asset_id = ? AND type = ? AND payload = ?
+                '''
+                cursor = db.execute(duplicate_check, (
+                    asset_id,
+                    finding.vuln_type,
+                    finding.payload
+                ))
+                
+                if cursor.fetchone()[0] > 0:
+                    print(f"🔄 Skipping duplicate vulnerability: {finding.vuln_type} with payload '{finding.payload}' for asset {asset_id}")
+                    return
+                
+                # Insert new vulnerability
+                query = '''
+                    INSERT INTO vulnerabilities 
+                    (asset_id, type, description, severity, evidence, payload, detected_at, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+                db.execute(query, (
+                    asset_id,
+                    finding.vuln_type,                                    # vuln_type -> type
+                    finding.impact_description or finding.evidence,      # impact_description -> description
+                    finding.severity,
+                    finding.evidence,
+                    finding.payload,
+                    finding.discovered_at.isoformat() if isinstance(finding.discovered_at, datetime) else finding.discovered_at,
+                    finding.confidence
+                ))
+                print(f"✅ Added vulnerability: {finding.vuln_type} ({finding.severity}) for asset {asset_id}")
+        except Exception as e:
+            print(f"Error adding vulnerability finding: {e}")
+    
+    def add_vulnerability(self, vuln_data: dict):
+        """
+        DEPRECATED: Use add_vulnerability_finding() with VulnerabilityFinding objects instead.
+        Legacy method for backward compatibility with duplicate prevention.
+        """
+        try:
+            with self._get_db() as db:
+                # Check for existing duplicate
+                duplicate_check = '''
+                    SELECT COUNT(*) FROM vulnerabilities 
+                    WHERE asset_id = ? AND type = ? AND payload = ?
+                '''
+                cursor = db.execute(duplicate_check, (
+                    vuln_data['asset_id'],
+                    vuln_data['type'],
+                    vuln_data.get('payload', '')
+                ))
+                
+                if cursor.fetchone()[0] > 0:
+                    print(f"🔄 Skipping duplicate vulnerability: {vuln_data['type']} with payload '{vuln_data.get('payload', '')}' for asset {vuln_data['asset_id']}")
+                    return
+                
+                # Insert new vulnerability
                 query = '''
                     INSERT INTO vulnerabilities 
                     (asset_id, type, description, severity, evidence, payload, detected_at, confidence)
@@ -1166,7 +1315,7 @@ class AssetManager:
                     vuln_data['description'],
                     vuln_data['severity'],
                     vuln_data['evidence'],
-                    vuln_data['payload'],
+                    vuln_data.get('payload', ''),
                     vuln_data['detected_at'],
                     vuln_data.get('confidence', 0.5)
                 ))

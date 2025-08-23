@@ -1,7 +1,0 @@
-2025-08-17 19:11:59,461 - INFO - 🚀 Starting ModScan Engine with process management...
-2025-08-17 19:11:59,461 - INFO - 🔍 Checking for existing engine processes...
-2025-08-17 19:11:59,465 - INFO - 📍 Found existing engine process: PID 2498891
-2025-08-17 19:11:59,465 - INFO - 📍 Found existing engine process: PID 2499365
-2025-08-17 19:11:59,465 - INFO - 💀 Killed existing engine process: PID 2498891
-2025-08-17 19:12:00,466 - INFO - 🔨 Force killed stubborn process: PID 2498891
-2025-08-17 19:12:00,466 - INFO - 💀 Killed existing engine process: PID 2499365

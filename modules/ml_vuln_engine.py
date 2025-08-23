@@ -53,7 +53,7 @@ class MLVulnerabilityEngine:
         # Initialize Gemini if key is provided
         if self.gemini_key:
             genai.configure(api_key=self.gemini_key)
-            self.gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+            self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
             logger.info("🤖 Gemini Flash 2.5 initialized for AI-assisted vulnerability analysis")
         else:
             self.gemini_model = None
@@ -162,6 +162,31 @@ class MLVulnerabilityEngine:
             return enhanced_findings
         
         return findings
+
+    def quick_score_assets(self, assets: List[Dict]) -> Dict[str, float]:
+        """Lightweight heuristic scoring to prioritize assets for testing.
+
+        Uses URL patterns, query parameters, and tech hints; no network calls.
+        """
+        scores: Dict[str, float] = {}
+        for a in assets:
+            url = a.get('url','')
+            tech = (a.get('tech_stack') or '').lower()
+            s = 0.0
+            u = url.lower()
+            # Paths of interest
+            for kw, w in [('admin',2.0),('login',1.0),('account',1.2),('dashboard',0.8),('api',1.5),('graphql',1.8),('soap',1.2),('upload',2.0),('file',1.5),('include',1.5),('redirect',1.2),('download',1.2),('export',1.0),('report',0.8),('search',1.0),('query',1.0),('id=',1.2),('page=',0.8),('action=',0.8)]:
+                if kw in u:
+                    s += w
+            # Tech hints
+            for tkw, w in [('php',1.2),('asp',1.0),('jsp',1.0),('python',0.8),('node',0.8),('wordpress',2.0),('drupal',1.5),('joomla',1.5),('magento',1.5),('mysql',1.0),('postgres',0.8)]:
+                if tkw in tech:
+                    s += w
+            # Query-rich URLs
+            if '?' in url:
+                s += 0.8
+            scores[url] = s
+        return scores
 
     async def _analyze_single_asset_ml(self, asset: Dict, session: aiohttp.ClientSession) -> List[MLVulnerabilityFinding]:
         """ML-powered analysis of a single asset"""

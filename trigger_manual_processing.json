@@ -1,0 +1,13 @@
+{
+  "trigger_time": "2025-08-22T17:36:19.713368",
+  "reason": "manual_screenshot_generation_trigger",
+  "action": "process_discovered_assets",
+  "priority": "high",
+  "assets_waiting": 53,
+  "specific_targets": [
+    "http://192.168.1.42/dvwa/vulnerabilities/sqli/",
+    "http://192.168.1.42/dvwa/vulnerabilities/sqli_blind/"
+  ],
+  "force_processing": true,
+  "generate_screenshots": true
+}

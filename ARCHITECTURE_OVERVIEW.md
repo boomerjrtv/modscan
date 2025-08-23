@@ -105,7 +105,7 @@
                   ▼
 ┌─────────────────────────────────────────┐
 │       BROWSER AUTOMATION                │
-│  • DVWA login automation               │
+│  • Auth automation (generic)           │
 │  • Real exploit demonstrations         │
 │  • Screenshot evidence capture         │
 │  • Interactive vulnerability tests     │
@@ -128,10 +128,10 @@
 ### **YES - You can test specific URLs:**
 ```bash
 # Single URL scan
-python3 engine.py --target http://192.168.1.42/dvwa/
+python3 engine.py --target http://example.com/
 
 # Specific endpoint  
-python3 engine.py --target http://192.168.1.42/dvwa/vulnerabilities/sqli/
+python3 engine.py --target http://example.com/products?id=1
 
 # Multiple depths
 python3 engine.py --target http://example.com --max-depth 3

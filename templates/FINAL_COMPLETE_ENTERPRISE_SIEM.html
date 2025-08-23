@@ -178,13 +178,8 @@
             flex-direction: column;
         }
 
-        .side-panel {
-            width: 300px;
-            background: #262626;
-            border-left: 1px solid #404040;
-            display: flex;
-            flex-direction: column;
-        }
+        /* Disable legacy side panel to prevent left gaps */
+        .side-panel { display: none !important; width: 0 !important; }
 
         /* Search/Filter Bar */
         .siem-search-bar {
@@ -945,6 +940,7 @@
         <button class="siem-nav-item" onclick="showView('vulnerabilities')">Vulnerabilities</button>
         <button class="siem-nav-item" onclick="showView('ml-xss')">ML XSS Results</button>
         <button class="siem-nav-item" onclick="showView('bypasses')">403 Bypasses</button>
+        <button class="siem-nav-item" onclick="showView('system')">System</button>
         <button class="siem-nav-item" onclick="showView('logs')">Terminal Logs</button>
     </nav>
 
@@ -957,16 +953,17 @@
                 <div class="siem-search-bar">
                     <input type="text" class="siem-search-input" id="asset-search" 
                            placeholder="Search assets (e.g., host:*.temu.com status:200 tech:nginx)" 
-                           value="scanned:true"
+                           value=""
                            onkeypress="handleSearchKeypress(event)">
                     <button class="siem-btn primary" onclick="searchAssets()">Search</button>
                     <button class="siem-btn" onclick="clearSearch()">Clear</button>
-                    <button class="siem-btn success" onclick="showScannedOnly()">Scanned Only</button>
+                    <button class="siem-btn" onclick="showScannedOnly()">Filter: Scanned</button>
                     <button class="siem-btn" onclick="refreshAssets()">Refresh</button>
+                    <button class="siem-btn" onclick="enrichAssets()">Enrich Assets</button>
                     <button class="siem-btn" onclick="exportData('assets')">Export CSV</button>
                     <button class="siem-btn" onclick="captureScreenshots()">Capture Screenshots</button>
                 </div>
-                
+
                 <!-- Filter Controls -->
                 <div class="siem-search-bar" style="margin-top: 10px; font-size: 14px;">
                     <span style="color: #888; margin-right: 15px;">Quick Filters:</span>
@@ -978,6 +975,25 @@
                     <button class="siem-btn secondary" onclick="toggleColumnSelector()" title="Show/Hide Columns">📋 Columns</button>
                     <button class="siem-btn secondary" onclick="toggleFullUrls()" title="Show/Hide Full URLs" id="toggle-urls-btn">🔗 Full URLs</button>
                     <button class="siem-btn danger" onclick="cleanupTestPaths()" title="Remove obvious test/random paths">🗑️ Cleanup Test Paths</button>
+                    <span style="color: #666; margin: 0 15px;">|</span>
+                    <label for="enrich-domain-select" style="color:#ccc; margin-right:6px;">Enrich Target:</label>
+                    <select id="enrich-domain-select" style="background:#1a1a1a; color:#00ff41; border:1px solid #333; padding:5px; min-width:220px;">
+                        <option value="">All Domains</option>
+                    </select>
+                    <button class="siem-btn" onclick="enrichAssets()">Enrich Domain</button>
+                    <button class="siem-btn" onclick="enrichAllAssets()">Enrich All</button>
+                </div>
+
+                <!-- Fallback Hint (shown when displaying discovered assets instead of scanned) -->
+                <div id="assets-fallback-hint" style="display:none; margin: 10px 0; padding: 8px 12px; background: #1f2937; border-left: 3px solid #f59e0b; color: #f3f4f6; font-size: 12px; border-radius: 4px; display:flex; align-items:center; gap:10px;">
+                    <span>Showing discovered assets while scans run. Use "Enrich Assets" to populate status codes faster.</span>
+                    <button class="siem-btn" onclick="enrichAssets()">Enrich Now</button>
+                </div>
+
+                <!-- Enrichment Progress Banner -->
+                <div id="enrich-progress" style="display:none; margin: 10px 0; padding: 8px 12px; background: #1e293b; border-left: 3px solid #38bdf8; color: #e5e7eb; font-size: 12px; border-radius: 4px; display:flex; align-items:center; gap:10px;">
+                    <span id="enrich-status-text">Enriching discovered assets...</span>
+                    <span id="enrich-counts" style="color:#93c5fd;"></span>
                 </div>
 
                 <!-- Column Visibility Selector -->
@@ -993,9 +1009,6 @@
                         <label><input type="checkbox" checked data-column="time"> Response Time</label>
                         <label><input type="checkbox" checked data-column="title"> Title</label>
                         <label><input type="checkbox" checked data-column="tech"> Tech Stack</label>
-                        <label><input type="checkbox" checked data-column="takeover"> Takeover Risk</label>
-                        <label><input type="checkbox" checked data-column="params"> Parameters</label>
-                        <label><input type="checkbox" checked data-column="versions"> Tech Versions</label>
                         <label><input type="checkbox" checked data-column="asn"> ASN Info</label>
                         <label><input type="checkbox" checked data-column="size"> Content Size</label>
                         <label><input type="checkbox" checked data-column="method"> Discovery Method</label>
@@ -1042,9 +1055,11 @@
                         <span class="stat-value" id="screenshot-count">0</span>
                     </div>
                 </div>
+                
+                
 
                 <!-- Enterprise Table -->
-                <div class="siem-table-container">
+                <div class="siem-table-container" id="assets-table">
                     <table class="siem-table resizable-table">
                         <thead>
                             <tr>
@@ -1070,18 +1085,6 @@
                                 </th>
                                 <th class="sortable resizable" data-sort="tech_stack" data-column="tech" style="width: 150px; min-width: 100px; position: relative;">
                                     TECH STACK
-                                    <div class="column-resizer"></div>
-                                </th>
-                                <th class="sortable resizable" data-sort="subdomain_takeover_risk" data-column="takeover" style="width: 100px; min-width: 80px; position: relative;">
-                                    TAKEOVER
-                                    <div class="column-resizer"></div>
-                                </th>
-                                <th class="sortable resizable" data-sort="discovered_parameters" data-column="params" style="width: 100px; min-width: 70px; position: relative;">
-                                    PARAMS
-                                    <div class="column-resizer"></div>
-                                </th>
-                                <th class="sortable resizable" data-sort="technology_versions" data-column="versions" style="width: 120px; min-width: 90px; position: relative;">
-                                    VERSIONS
                                     <div class="column-resizer"></div>
                                 </th>
                                 <th class="sortable resizable" data-sort="asn_info" data-column="asn" style="width: 100px; min-width: 70px; position: relative;">
@@ -1116,7 +1119,7 @@
                         </thead>
                         <tbody id="assets-table-body">
                             <tr>
-                                <td colspan="12" class="loading">Loading asset data...</td>
+                                <td colspan="13" class="loading">Loading asset data...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -1146,8 +1149,200 @@
                     <button class="siem-btn success" onclick="showAddDomainForm()">Add Domain</button>
                 </div>
 
+                
+                <!-- Authentication Manager -->
+                <div class="siem-card" style="margin-top: 15px; background: linear-gradient(145deg, #1e1e2e, #2a2a3e); border-left: 4px solid #dc2626;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                        <div style="display: flex; align-items: center;">
+                            <span style="font-size: 18px; margin-right: 8px;">🔐</span>
+                            <h3 style="color: #dc2626; margin: 0; font-size: 16px; font-weight: 600;">Authentication Manager</h3>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div id="auth-status" style="padding: 4px 12px; background: #374151; border-radius: 12px; font-size: 12px; color: #9ca3af;">
+                                No active sessions
+                            </div>
+                            <button id="auth-minimize-btn" onclick="toggleAuthPanel()" 
+                                    style="background: #6b7280; color: white; border: none; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; font-weight: bold;">
+                                ─
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Authentication Panel Content (collapsible) -->
+                    <div id="auth-panel-content">
+                    
+                    <!-- Add Authenticated Domain -->
+                    <div style="background: #1e3a8a; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                        <div style="display: flex; align-items: center; margin-bottom: 15px;">
+                            <span style="font-size: 16px; margin-right: 8px;">🔑</span>
+                            <h4 style="color: #93c5fd; margin: 0; font-size: 14px; font-weight: 600;">Add Authenticated Domain to Scope</h4>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; margin-bottom: 15px;">
+                            <div>
+                                <label style="display: block; color: #bfdbfe; font-size: 12px; margin-bottom: 5px;">Target URL</label>
+                                <input type="text" id="login-url" value="http://example.com/login" 
+                                       style="width: 100%; padding: 8px; background: #1e40af; color: #fff; border: 1px solid #3b82f6; border-radius: 4px; font-size: 13px;"
+                                       placeholder="http://example.com/login.php">
+                            </div>
+                            <div>
+                                <label style="display: block; color: #bfdbfe; font-size: 12px; margin-bottom: 5px;">Username</label>
+                                <input type="text" id="login-username" value="admin" 
+                                       style="width: 100%; padding: 8px; background: #1e40af; color: #fff; border: 1px solid #3b82f6; border-radius: 4px; font-size: 13px;">
+                            </div>
+                            <div>
+                                <label style="display: block; color: #bfdbfe; font-size: 12px; margin-bottom: 5px;">Password</label>
+                                <input type="password" id="login-password" value="password" 
+                                       style="width: 100%; padding: 8px; background: #1e40af; color: #fff; border: 1px solid #3b82f6; border-radius: 4px; font-size: 13px;">
+                            </div>
+                            <div style="display: flex; align-items: end; gap: 8px;">
+                                <button onclick="loginAndExtractCookies()" 
+                                        style="flex:1; padding: 8px 16px; background: #16a34a; color: white; border: none; border-radius: 4px; font-size: 13px; font-weight: 500; cursor: pointer;"
+                                        onmouseover="this.style.background='#15803d'" onmouseout="this.style.background='#16a34a'">
+                                    🚀 Add to Scope
+                                </button>
+                                <label style="display:flex; align-items:center; gap:6px; color:#bfdbfe; font-size:12px;">
+                                    <input type="checkbox" id="auto-refresh-cookie"> Auto-refresh
+                                </label>
+                            </div>
+                        </div> <!-- End grid -->
+                        
+                        <div id="login-status" style="padding: 8px; background: #1e40af; border-radius: 4px; font-size: 12px; color: #bfdbfe; min-height: 20px;">
+                            Ready to add authenticated domain to scanning scope
+                        </div>
+                    </div>
+                    
+                    <!-- Manual Cookie Entry -->
+                    <details style="margin-bottom: 15px;">
+                        <summary style="color: #9ca3af; font-size: 13px; cursor: pointer; padding: 5px 0;">Manual Cookie Entry (Advanced)</summary>
+                        <div style="margin-top: 10px; padding: 10px; background: #374151; border-radius: 6px;">
+                            <div style="display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 10px; align-items: end;">
+                                <div>
+                                    <label style="display: block; color: #d1d5db; font-size: 12px; margin-bottom: 5px;">Target Domain</label>
+                                    <select id="target-domain" style="width: 100%; padding: 8px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 13px;">
+                                        <option value="">Select Domain</option>
+                                    </select>
+                                </div>
+                                
+                                <div>
+                                    <label style="display: block; color: #d1d5db; font-size: 12px; margin-bottom: 5px;">Session Cookie</label>
+                                    <input type="text" id="session-cookie" 
+                                           placeholder="PHPSESSID=abc123 or full cookie string" 
+                                           style="width: 100%; padding: 8px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 13px;">
+                                </div>
+                                
+                                <div style="display: flex; gap: 6px;">
+                                    <button onclick="setDomainCookie()" 
+                                            style="flex: 1; padding: 8px 12px; background: #6b7280; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;" 
+                                            onmouseover="this.style.background='#4b5563'" onmouseout="this.style.background='#6b7280'">
+                                        Save
+                                    </button>
+                                </div>
+                            </div> <!-- End grid -->
+                        </div>
+                    </details>
+                    
+                    <!-- Scan button -->
+                    <div style="text-align: center; margin-bottom: 15px;">
+                        <button onclick="rescanDomainWithAuth()" 
+                                style="padding: 12px 24px; background: #16a34a; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s;"
+                                onmouseover="this.style.background='#15803d'" onmouseout="this.style.background='#16a34a'">
+                            🔍 Scan with Authentication
+                        </button>
+                    </div>
+                    
+                    <div id="saved-sessions" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #374151;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <span style="color: #9ca3af; font-size: 13px; font-weight: 500;">Saved Sessions</span>
+                            <button onclick="clearAllSessions()" style="padding: 4px 8px; background: #6b7280; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;">Clear All</button>
+                        </div>
+                        <div id="session-list" style="display: flex; flex-wrap: wrap; gap: 8px;">
+                            <!-- Sessions will be populated here -->
+                        </div>
+                    </div>
+                    
+                    <!-- Cookie Editor -->
+                    <div id="cookie-editor" style="margin-top: 15px; padding: 15px; background: #374151; border-radius: 6px; display: none;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                            <h4 style="color: #d1d5db; margin: 0; font-size: 14px;">Edit Cookies for <span id="edit-domain"></span></h4>
+                            <button onclick="closeCookieEditor()" style="background: #6b7280; color: white; border: none; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer;">✕</button>
+                        </div>
+                        <textarea id="cookie-editor-text" 
+                                  style="width: 100%; height: 80px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; padding: 8px; font-family: monospace; font-size: 13px; resize: vertical;"
+                                  placeholder="PHPSESSID=abc123; other=value"></textarea>
+                        <div id="cookie-list" style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px;"></div>
+                        <div style="margin-top:8px;">
+                            <button onclick="autoRefreshSession()" style="padding: 6px 12px; background: #0ea5e9; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;">⚡ Auto-Refresh Session</button>
+                        </div>
+                        <div id="cookie-minimize-status" style="margin-top:8px; color:#93c5fd; font-size:12px; display:none;"></div>
+                        <div style="display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items:center;">
+                            <button onclick="saveCookieEdits()" 
+                                    style="padding: 8px 16px; background: #16a34a; color: white; border: none; border-radius: 4px; font-size: 13px; cursor: pointer;">
+                                💾 Save Changes
+                            </button>
+                            
+                            <button onclick="verifyOrRefreshCookie()" 
+                                    style="padding: 8px 16px; background: #2563eb; color: white; border: none; border-radius: 4px; font-size: 13px; cursor: pointer;">
+                                🔄 Verify/Refresh Cookie
+                            </button>
+                            <button id="minimize-btn" onclick="minimizeCookies()" 
+                                    style="padding: 8px 16px; background: #9333ea; color: white; border: none; border-radius: 4px; font-size: 13px; cursor: pointer;">
+                                ✂️ Minimize Required Cookies
+                            </button>
+                            <button id="undo-minimize-btn" onclick="undoMinimize()" disabled
+                                    style="padding: 8px 16px; background: #6b7280; color: white; border: none; border-radius: 4px; font-size: 13px; cursor: pointer;">
+                                ↩️ Undo Minimize
+                            </button>
+                            <label style="display:flex; align-items:center; gap:6px; color:#d1d5db; font-size:12px;">
+                                <input type="checkbox" id="auto-run-idor" checked> Auto-run IDOR scan
+                            </label>
+                        </div>
+                        <details style="margin-top:10px;">
+                            <summary style="color:#fff; cursor:pointer;">Advanced Auth Policy (Universal)</summary>
+                            <div style="margin-top:8px; display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+                                <div>
+                                    <label style="color:#d1d5db; font-size:12px;">Bearer Token</label>
+                                    <input id="auth-bearer" placeholder="eyJ..." style="width:100%; background:#4b5563; color:#e5e7eb; border:1px solid #6b7280; border-radius:4px; padding:6px; font-family:monospace;" />
+                                </div>
+                                <div>
+                                    <label style="color:#d1d5db; font-size:12px;">Extra Headers (one per line, key=value)</label>
+                                    <textarea id="auth-headers" placeholder="X-Role=admin\nX-Forwarded-For=127.0.0.1" style="width:100%; height:80px; background:#4b5563; color:#e5e7eb; border:1px solid #6b7280; border-radius:4px; padding:6px; font-family:monospace;"></textarea>
+                                </div>
+                                <div>
+                                    <label style="color:#d1d5db; font-size:12px;">localStorage (one per line, key=value)</label>
+                                    <textarea id="auth-ls" placeholder="jwt=...\nrole=admin" style="width:100%; height:80px; background:#4b5563; color:#e5e7eb; border:1px solid #6b7280; border-radius:4px; padding:6px; font-family:monospace;"></textarea>
+                                </div>
+                                <div>
+                                    <label style="color:#d1d5db; font-size:12px;">sessionStorage (one per line, key=value)</label>
+                                    <textarea id="auth-ss" placeholder="sessionId=..." style="width:100%; height:80px; background:#4b5563; color:#e5e7eb; border:1px solid #6b7280; border-radius:4px; padding:6px; font-family:monospace;"></textarea>
+                                </div>
+                                <div>
+                                    <label style="color:#d1d5db; font-size:12px;">Login URL</label>
+                                    <input id="login-url-input" placeholder="https://target.tld/login" style="width:100%; background:#4b5563; color:#e5e7eb; border:1px solid #6b7280; border-radius:4px; padding:6px; font-family:monospace;" />
+                                </div>
+                                <div>
+                                    <label style="color:#d1d5db; font-size:12px;">Username</label>
+                                    <input id="login-username-input" placeholder="user@example.com" style="width:100%; background:#4b5563; color:#e5e7eb; border:1px solid #6b7280; border-radius:4px; padding:6px; font-family:monospace;" />
+                                </div>
+                                <div>
+                                    <label style="color:#d1d5db; font-size:12px;">Password</label>
+                                    <input id="login-password-input" type="password" placeholder="••••••" style="width:100%; background:#4b5563; color:#e5e7eb; border:1px solid #6b7280; border-radius:4px; padding:6px; font-family:monospace;" />
+                                </div>
+                            </div>
+                            <div style="margin-top:8px;">
+                                <button onclick="saveAuthPolicy()" style="padding: 8px 16px; background: #16a34a; color: white; border: none; border-radius: 4px; font-size: 13px; cursor: pointer;">Save Auth Policy</button>
+                            </div>
+                        </details>
+                    </div>
+                    
+                    </div> <!-- End auth-panel-content -->
+                    
+                    
+                </div> <!-- End auth-panel-content -->
+                </div> <!-- End Authentication Manager -->
+
                 <div class="content-container">
-                    <div class="alert alert-warning">
+                    <div class="alert alert-warning scope-only">
                         <strong>⚠️ CRITICAL LEGAL WARNING:</strong> Only test targets you have explicit written permission to scan. Unauthorized testing is illegal!
                     </div>
 
@@ -1170,14 +1365,24 @@
                         <div id="add-domain-result"></div>
                     </div>
 
-                    <div class="domain-list">
+                    <div class="domain-list scope-only">
                         <h4 style="color: #fff; margin-bottom: 12px;">Authorized Domains (<span id="authorized-count">0</span>)</h4>
                         <div id="authorized-domains">
                             <div class="loading">Loading authorized domains...</div>
                         </div>
                     </div>
 
-                    <div class="domain-list">
+                    <div class="domain-list" style="margin-top:20px;">
+                        <h4 style="color:#fff; margin-bottom:10px; display:flex; align-items:center; justify-content:space-between;">
+                            Evidence Viewer
+                            <button class="siem-btn" onclick="loadEvidenceList()">Refresh</button>
+                        </h4>
+                        <div id="evidence-list">
+                            <div class="loading">No evidence yet. Run screenshots to generate HTML/headers/request logs.</div>
+                        </div>
+                    </div>
+
+                    <div class="domain-list scope-only">
                         <h4 style="color: #fff; margin-bottom: 12px;">Wildcard Domains (<span id="wildcard-count">0</span>)</h4>
                         <div id="wildcard-domains">
                             <div class="loading">Loading wildcard domains...</div>
@@ -1250,10 +1455,108 @@
                                 <button onclick="toggleFilterDropdown()" style="background: #666; color: white; border: none; padding: 6px 12px; border-radius: 3px; font-size: 11px; cursor: pointer;">Close Filters</button>
                             </div>
                         </div>
-                    </div>
+                    </div> <!-- End grid -->
                     </div>
                 </div>
                 
+                
+                <!-- IDOR Testing Interface -->
+                    <div style="background: #7c2d12; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                            <div style="display: flex; align-items: center;">
+                                <span style="font-size: 16px; margin-right: 8px;">🎯</span>
+                                <h4 style="color: #fed7aa; margin: 0; font-size: 14px; font-weight: 600;">Multi-Credential IDOR Testing</h4>
+                            </div>
+                            <button id="idor-minimize-btn" onclick="toggleIdorPanel()" 
+                                    style="background: #6b7280; color: white; border: none; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; font-weight: bold;">
+                                ─
+                            </button>
+                        </div>
+                        
+                        <!-- IDOR Panel Content (collapsible) -->
+                        <div id="idor-panel-content">
+                            <!-- Add Credential Section -->
+                            <div style="background: #92400e; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
+                                <h5 style="color: #fed7aa; margin: 0 0 8px 0; font-size: 13px;">Add Test Credential</h5>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: end;">
+                                    <input type="text" id="cred-name" 
+                                           placeholder="User label (e.g., admin)" 
+                                           style="padding: 6px; background: #7c2d12; color: #fff; border: 1px solid #ea580c; border-radius: 4px; font-size: 12px;">
+                                    <input type="text" id="cred-username" 
+                                           placeholder="username" 
+                                           style="padding: 6px; background: #7c2d12; color: #fff; border: 1px solid #ea580c; border-radius: 4px; font-size: 12px;">
+                                    <input type="password" id="cred-password" 
+                                           placeholder="password" 
+                                           style="padding: 6px; background: #7c2d12; color: #fff; border: 1px solid #ea580c; border-radius: 4px; font-size: 12px;">
+                                    <button onclick="addCredential()" 
+                                            style="padding: 6px 12px; background: #f59e0b; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;">
+                                        Add
+                                    </button>
+                                </div>
+                            </div> <!-- End grid -->
+                            
+                            <!-- Stored Credentials -->
+                            <div style="margin-bottom: 10px;">
+                                <h5 style="color: #fed7aa; margin: 0 0 8px 0; font-size: 13px;">Stored Credentials</h5>
+                                <div id="credential-list" style="display: flex; flex-wrap: wrap; gap: 6px;">
+                                    <!-- Credentials will be displayed here -->
+                                </div>
+                            </div>
+                            
+                            <!-- Test URL -->
+                            <div style="margin-bottom: 10px;">
+                                <h5 style="color: #fed7aa; margin: 0 0 8px 0; font-size: 13px;">IDOR Test</h5>
+                                <div style="display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 8px; align-items: end;">
+                                    <input type="text" id="idor-test-url" 
+                                           placeholder="URL with parameter to test (e.g., /profile?user_id=123)" 
+                                           style="padding: 6px; background: #7c2d12; color: #fff; border: 1px solid #ea580c; border-radius: 4px; font-size: 12px;">
+                                    <select id="test-cred1" 
+                                            style="padding: 6px; background: #7c2d12; color: #fff; border: 1px solid #ea580c; border-radius: 4px; font-size: 12px;">
+                                        <option value="">Select User 1</option>
+                                    </select>
+                                    <select id="test-cred2" 
+                                            style="padding: 6px; background: #7c2d12; color: #fff; border: 1px solid #ea580c; border-radius: 4px; font-size: 12px;">
+                                        <option value="">Select User 2</option>
+                                    </select>
+                                    <button onclick="testIdor()" 
+                                            style="padding: 6px 12px; background: #f59e0b; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;">
+                                        🧪 Test IDOR
+                                    </button>
+                                </div>
+                            </div> <!-- End grid -->
+                            
+                            <!-- Response Comparison -->
+                            <div style="margin-bottom: 10px;">
+                                <h5 style="color: #fed7aa; margin: 0 0 8px 0; font-size: 13px;">Response Comparison</h5>
+                                <div style="display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 8px; align-items: end;">
+                                    <input type="text" id="compare-url" 
+                                           placeholder="URL to compare" 
+                                           style="padding: 6px; background: #7c2d12; color: #fff; border: 1px solid #ea580c; border-radius: 4px; font-size: 12px;">
+                                    <select id="compare-cred1" 
+                                            style="padding: 6px; background: #7c2d12; color: #fff; border: 1px solid #ea580c; border-radius: 4px; font-size: 12px;">
+                                        <option value="">Select User 1</option>
+                                    </select>
+                                    <select id="compare-cred2" 
+                                            style="padding: 6px; background: #7c2d12; color: #fff; border: 1px solid #ea580c; border-radius: 4px; font-size: 12px;">
+                                        <option value="">Select User 2</option>
+                                    </select>
+                                    <button onclick="compareResponses()" 
+                                            style="padding: 6px 12px; background: #f59e0b; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;">
+                                        🔍 Compare Responses
+                                    </button>
+                                </div>
+                            </div> <!-- End grid -->
+                            
+                            <!-- IDOR Test Results -->
+                            <div id="idor-results" style="display: none; background: #92400e; padding: 10px; border-radius: 4px; margin-top: 10px;">
+                                <h5 style="color: #fed7aa; margin: 0 0 8px 0; font-size: 13px;">Test Results</h5>
+                                <div id="idor-results-content" style="color: #fed7aa; font-size: 12px; font-family: monospace;">
+                                </div>
+                            </div>
+                            
+                        </div> <!-- End idor-panel-content -->
+                    </div> <!-- End IDOR Testing Interface -->
+
                 <div class="content-container">
                     <div id="vulnerabilities-table">
                         <div class="loading">Loading vulnerability data...</div>
@@ -1296,11 +1599,12 @@
             <div id="logs-view" style="display: none;">
                 <div class="siem-search-bar">
                     <select id="log-file-selector" onchange="switchLogFile()">
-                        <option value="engine.log">Engine Log</option>
-                        <option value="dashboard.log">Dashboard Log</option>
-                        <option value="main.log">Main Log</option>
+                        <option value="logs/engine.log">Engine Log</option>
+                        <option value="logs/dashboard.log">Dashboard Log</option>
+                        <option value="logs/main.log">Main Log</option>
                     </select>
                     <button class="siem-btn primary" onclick="refreshLogs()">Refresh</button>
+                    <button class="siem-btn danger" onclick="clearLogs()">Clear Logs</button>
                     <button class="siem-btn" onclick="toggleAutoRefresh()" id="auto-refresh-btn">Auto-Refresh: OFF</button>
                     <input type="number" id="log-lines" value="100" min="10" max="1000" style="width: 80px; margin-left: 10px;">
                     <label for="log-lines">lines</label>
@@ -1318,89 +1622,80 @@
                 <div class="siem-search-bar">
                     <button class="siem-btn primary" onclick="refreshSystemMetrics()">Refresh Metrics</button>
                     <button class="siem-btn danger" onclick="restartAllServices()">Restart Services</button>
+                    <span style="color:#888; margin: 0 8px;">|</span>
+                    <label style="color:#ccc; margin-right:6px;">Auth Session:</label>
+                    <select id="restart-domain-selector" style="background:#1a1a1a; color:#00ff41; border:1px solid #333; padding:5px; min-width:220px;">
+                        <option value="">No saved sessions</option>
+                    </select>
+                    <button class="siem-btn success" onclick="restartWithSelectedSession()">Restart (Auth)</button>
+                    <button class="siem-btn" onclick="verifySelectedCookie()">Verify Cookie</button>
+                    <span style="color:#888; margin: 0 8px;">|</span>
+                    <button class="siem-btn" onclick="runMigrations()">Run Migrations</button>
+                    <button class="siem-btn danger" onclick="resetDbAndRestart()">Reset DB + Restart</button>
                 </div>
                 
                 <div class="content-container">
-                    <div id="system-metrics-display">
-                        <div class="loading">Loading system metrics...</div>
+                    
+                    <!-- System Monitoring -->
+                    <div class="panel-section">
+                        <div class="panel-title">System Monitoring</div>
+                        <div class="system-metric">
+                            <span class="metric-label">CPU Usage:</span>
+                            <span class="metric-value" id="detailed-cpu">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill progress-normal" id="cpu-progress"></div>
+                        </div>
+                        
+                        <div class="system-metric" style="margin-top: 12px;">
+                            <span class="metric-label">Memory Usage:</span>
+                            <span class="metric-value" id="detailed-memory">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill progress-normal" id="memory-progress"></div>
+                        </div>
+                        
+                        <div class="system-metric" style="margin-top: 12px;">
+                            <span class="metric-label">Disk Usage:</span>
+                            <span class="metric-value" id="detailed-disk">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill progress-normal" id="disk-progress"></div>
+                        </div>
+
+                        <div class="system-metric" style="margin-top: 12px;">
+                            <span class="metric-label">Active Threads:</span>
+                            <span class="metric-value" id="detailed-threads">0</span>
+                        </div>
+                        
+                        <div class="system-metric" style="margin-top: 12px;">
+                            <span class="metric-label">Proxy Connections:</span>
+                            <span class="metric-value" id="detailed-proxies">0</span>
+                        </div>
+                    </div>
+
+                    <!-- Advanced Scanner Status -->
+                    <div class="panel-section" style="margin-top: 20px;">
+                        <div class="panel-title">🚀 Advanced Scanner Status (Surpasses XBOW)</div>
+                        <div id="advanced-stats-panel">
+                            <div class="loading">Loading advanced statistics...</div>
+                        </div>
+                    </div>
+
+                    <!-- Live Activity Feed -->
+                    <div class="panel-section" style="flex: 1; display: flex; flex-direction: column; margin-top: 20px;">
+                        <div class="panel-title">Live Activity Feed</div>
+                        <div class="activity-feed" id="activity-feed">
+                            <div class="loading">Loading activity...</div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Side Panel -->
-        <div class="side-panel">
-            <!-- System Monitoring -->
-            <div class="panel-section">
-                <div class="panel-title">System Monitoring</div>
-                <div class="system-metric">
-                    <span class="metric-label">CPU Usage:</span>
-                    <span class="metric-value" id="detailed-cpu">0%</span>
-                </div>
-                <div class="progress-bar">
-                    <div class="progress-fill progress-normal" id="cpu-progress"></div>
-                </div>
-                
-                <div class="system-metric" style="margin-top: 12px;">
-                    <span class="metric-label">Memory Usage:</span>
-                    <span class="metric-value" id="detailed-memory">0%</span>
-                </div>
-                <div class="progress-bar">
-                    <div class="progress-fill progress-normal" id="memory-progress"></div>
-                </div>
-                
-                <div class="system-metric" style="margin-top: 12px;">
-                    <span class="metric-label">Disk Usage:</span>
-                    <span class="metric-value" id="detailed-disk">0%</span>
-                </div>
-                <div class="progress-bar">
-                    <div class="progress-fill progress-normal" id="disk-progress"></div>
-                </div>
-
-                <div class="system-metric" style="margin-top: 12px;">
-                    <span class="metric-label">Active Threads:</span>
-                    <span class="metric-value" id="active-threads">0</span>
-                </div>
-
-                <div class="system-metric">
-                    <span class="metric-label">Proxy Connections:</span>
-                    <span class="metric-value" id="proxy-connections">0</span>
-                </div>
-            </div>
-
-            <!-- Advanced Scanner Status (XBOW-Crushing Features) -->
-            <div class="panel-section">
-                <div class="panel-title">🚀 Advanced Scanner Status (Surpasses XBOW)</div>
-                <div id="advanced-scanner-status">
-                    <div class="loading">Loading advanced scanner status...</div>
-                </div>
-            </div>
-
-            <!-- Scanner Status -->
-            <div class="panel-section">
-                <div class="panel-title">Traditional Scanners</div>
-                <div id="scanner-status-list">
-                    <div class="loading">Loading scanner status...</div>
-                </div>
-            </div>
-            
-            <!-- Advanced Statistics Panel -->
-            <div class="panel-section">
-                <div class="panel-title">🎯 Zero False Positive Stats</div>
-                <div id="advanced-stats-panel">
-                    <div class="loading">Loading advanced statistics...</div>
-                </div>
-            </div>
-
-            <!-- Live Activity Feed -->
-            <div class="panel-section" style="flex: 1; display: flex; flex-direction: column;">
-                <div class="panel-title">Live Activity Feed</div>
-                <div class="activity-feed" id="activity-feed">
-                    <div class="loading">Loading activity...</div>
-                </div>
-            </div>
-        </div>
-    </div>
+        </div> <!-- End all views container -->
+    </div> <!-- End content-area -->
+    </div> <!-- End siem-main -->
 
     <!-- Screenshot Modal -->
     <div id="screenshot-modal" class="modal">
@@ -1415,8 +1710,8 @@
                     Screenshot not available for this URL
                 </div>
             </div>
-        </div>
-    </div>
+        </div> <!-- End modal-content -->
+    </div> <!-- End screenshot-modal -->
 
 <script>
         // Global State
@@ -1427,6 +1722,7 @@
         let scopeData = {};
         let globalConfig = {};
         let assetMapping = {}; // Backwards compatibility
+        let currentAssetData = []; // currently rendered assets for the details modal
         
         // Pagination state
         let currentPage = 1;
@@ -1443,9 +1739,16 @@
         document.addEventListener('DOMContentLoaded', async function() {
             await fetchAssetMapping();
             
-            // Initialize tab from URL hash instead of loading all data
+            // Initialize tab from URL hash first - don't block on session loading
             const initialTab = getTabFromURL();
             showView(initialTab);
+            
+            // Load sessions - now safe since they're synchronous
+            updateSessionList();
+            populateRestartDomains();
+            
+            // Populate target domain dropdown with existing domains
+            await populateTargetDomains();
             
             setInterval(updateSystemMetrics, 5000);   // Update every 5 seconds
             setInterval(updateActivityFeed, 3000);    // Update every 3 seconds for more responsive updates
@@ -1510,6 +1813,8 @@
         function showView(viewName) {
             // Update URL hash for persistence
             setURLTab(viewName);
+            // Mark current view on body for robust scoping
+            try { document.body.setAttribute('data-view', viewName); } catch (e) {}
             
             // Hide all views
             document.querySelectorAll('[id$="-view"]').forEach(view => {
@@ -1538,11 +1843,12 @@
             }
             
             currentView = viewName;
-            
+
             // Load view-specific data
             switch(viewName) {
                 case 'assets':
                     loadAssetData();
+                    populateEnrichDomains();
                     break;
                 case 'scope':
                     loadScope();
@@ -1562,8 +1868,16 @@
                     break;
                 case 'system':
                     loadSystemData();
+                    populateRestartDomains();
                     break;
             }
+
+            // Hard gate: ensure any scope-only blocks never show outside Scope tab
+            try {
+                document.querySelectorAll('.scope-only').forEach(el => {
+                    el.style.display = (viewName === 'scope') ? 'block' : 'none';
+                });
+            } catch (e) {}
         }
 
         // System Metrics Updates
@@ -1781,6 +2095,99 @@
             }
         }
 
+        // Quickly populate missing status/title/size for discovered assets
+        async function enrichAssets() {
+            try {
+                // Show progress and start polling summary to simulate progress
+                const banner = document.getElementById('enrich-progress');
+                const counts = document.getElementById('enrich-counts');
+                let poll = null;
+                if (banner && counts) {
+                    banner.style.display = 'flex';
+                    counts.textContent = '';
+                    let last = '';
+                    poll = setInterval(async () => {
+                        try {
+                            const s = await fetch('/api/assets/summary');
+                            const d = await s.json();
+                            const total = d.total_assets || 0;
+                            const scanned = d.scanned_assets || 0;
+                            const missing = Math.max(0, total - scanned);
+                            const line = `Scanned: ${scanned}/${total} • Missing: ${missing}`;
+                            if (line !== last) { counts.textContent = line; last = line; }
+                        } catch (e) {}
+                    }, 1000);
+                }
+                const selected = document.getElementById('enrich-domain-select');
+                const domain = selected ? (selected.value || '') : '';
+                const res = await fetch('/api/enrich_assets', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ limit: 500, domain })
+                });
+                const result = await res.json();
+                if (!result.success) {
+                    alert('Enrichment failed: ' + (result.error || 'Unknown error'));
+                    return;
+                }
+                // Reload data to reflect updates
+                await loadAssetData();
+                const msg = `Enriched ${result.enriched || 0} of ${result.attempted || 0} assets`;
+                console.log('✅ ' + msg);
+                // Lightweight toast via alert for now
+                alert('✅ ' + msg);
+                if (poll) { clearInterval(poll); }
+                if (banner) { banner.style.display = 'none'; }
+            } catch (e) {
+                alert('Network error enriching assets: ' + e.message);
+                const banner = document.getElementById('enrich-progress');
+                if (banner) banner.style.display = 'none';
+            }
+        }
+
+        async function enrichAllAssets() {
+            try {
+                const banner = document.getElementById('enrich-progress');
+                if (banner) banner.style.display = 'flex';
+                const res = await fetch('/api/enrich_assets', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ limit: 500 })
+                });
+                const result = await res.json();
+                await loadAssetData();
+                alert(result.success ? `✅ Enriched ${result.enriched || 0} of ${result.attempted || 0}` : `❌ ${result.error || 'Failed'}`);
+            } catch (e) {
+                alert('Network error enriching assets: ' + e.message);
+            } finally {
+                const banner = document.getElementById('enrich-progress');
+                if (banner) banner.style.display = 'none';
+            }
+        }
+
+        async function populateEnrichDomains() {
+            try {
+                const sel = document.getElementById('enrich-domain-select');
+                if (!sel) return;
+                const r = await fetch('/api/tabs/scope');
+                const d = await r.json();
+                const scope = (d && d.scope) ? d.scope : [];
+                sel.innerHTML = '';
+                const allOpt = document.createElement('option');
+                allOpt.value = '';
+                allOpt.textContent = 'All Domains';
+                sel.appendChild(allOpt);
+                scope.forEach(s => {
+                    const opt = document.createElement('option');
+                    opt.value = s.domain;
+                    opt.textContent = s.domain + (s.is_active ? '' : ' (inactive)');
+                    sel.appendChild(opt);
+                });
+            } catch (e) {
+                console.warn('Failed to populate enrich domains', e);
+            }
+        }
+
         async function loadAssetData(page = currentPage, searchQuery = null) {
             try {
                 // Ensure asset mapping is loaded before processing assets
@@ -1789,19 +2196,26 @@
                     await fetchAssetMapping();
                 }
                 
-                const query = searchQuery || document.getElementById('asset-search')?.value || 'scanned:true';
+                let query = searchQuery || document.getElementById('asset-search')?.value || '*';
                 const from = (page - 1) * pageSize;
                 console.log('📊 LoadAssetData called with page:', page, 'searchQuery:', searchQuery, 'final query:', query);
                 const response = await fetch(`/api/assets?q=${encodeURIComponent(query)}&from=${from}&size=${pageSize}`);
                 const data = await response.json();
                 
                 if (data.error) {
-                    showError('assets-table-body', 'Failed to load asset data: ' + data.error, 11);
+                    showError('assets-table-body', 'Failed to load asset data: ' + data.error, 13);
                     return;
                 }
 
+                // Prefer not to auto-fallback. Keep 'scanned:true' strict and show hint instead.
+                const fallbackHint = document.getElementById('assets-fallback-hint');
                 assetsData = data.assets || [];
                 totalAssets = data.total || 0;
+                if ((totalAssets || 0) === 0 && query === 'scanned:true' && !searchQuery) {
+                    if (fallbackHint) fallbackHint.style.display = 'block';
+                } else {
+                    if (fallbackHint) fallbackHint.style.display = 'none';
+                }
                 currentPage = page;
                 updateAssetTable(assetsData);
                 updatePaginationControls();
@@ -1814,7 +2228,7 @@
                 }
 
             } catch (error) {
-                showError('assets-table-body', 'Network error loading assets: ' + error.message, 11);
+                showError('assets-table-body', 'Network error loading assets: ' + error.message, 13);
             }
         }
 
@@ -1846,7 +2260,7 @@
             if (!tbody) return;
             
             if (assets.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="11" class="loading">No assets found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="13" class="loading">No assets found</td></tr>';
                 return;
             }
 
@@ -1854,6 +2268,9 @@
             if (currentSort.column) {
                 assets.sort((a, b) => sortAssets(a, b, currentSort.column, currentSort.direction));
             }
+
+            // Keep a copy for detail views
+            currentAssetData = assets.slice();
 
             tbody.innerHTML = assets.map(asset => {
                 const timestamp = formatTimestamp(asset[assetMapping.timestamp] || asset.discovered_at);
@@ -1901,23 +2318,19 @@
                 
                 return `
                     <tr>
+                        <!-- TIMESTAMP -->
                         <td class="timestamp">${timestamp}</td>
+                        <!-- STATUS -->
                         <td><span class="${statusClass}">${asset[assetMapping.status] || '-'}</span></td>
+                        <!-- URL -->
                         <td class="url-cell"><a href="${asset[assetMapping.url]}" class="asset-url" target="_blank" title="${asset[assetMapping.url]}" data-full-url="${asset[assetMapping.url]}">${asset[assetMapping.url]}</a></td>
+                        <!-- TIME -->
                         <td>${responseTime}</td>
+                        <!-- TITLE -->
                         <td class="title-cell" title="${asset[assetMapping.title] || ''}" data-full-title="${asset[assetMapping.title] || 'Unknown'}">${truncate(asset[assetMapping.title] || 'Unknown', 25)}</td>
+                        <!-- TECH STACK -->
                         <td class="tech-stack tech-cell" title="${techDisplay}" data-full-tech="${techDisplay}">${truncate(techDisplay, 20)}</td>
-                        <td class="takeover-risk" onclick="showAssetDetails('${asset[assetMapping.id]}')" style="cursor: pointer;">
-                            ${asset[assetMapping.takeover_risk] === 'HIGH' ? '<span style="color: #dc2626;">HIGH</span>' : 
-                              asset[assetMapping.takeover_risk] === 'MEDIUM' ? '<span style="color: #ca8a04;">MED</span>' : 
-                              '<span style="color: #16a34a;">SAFE</span>'}
-                        </td>
-                        <td class="discovered-params" onclick="showAssetDetails('${asset[assetMapping.id]}')" style="cursor: pointer;">
-                            ${JSON.parse(asset[assetMapping.discovered_params] || '[]').length || '0'}
-                        </td>
-                        <td class="tech-versions" onclick="showAssetDetails('${asset[assetMapping.id]}')" style="cursor: pointer;">
-                            ${Object.keys(JSON.parse(asset[assetMapping.tech_versions] || '{}')).length || '0'}
-                        </td>
+                        <!-- ASN -->
                         <td class="asn-info" onclick="showAssetDetails('${asset[assetMapping.id]}')" style="cursor: pointer;">
                             ${(() => {
                                 try {
@@ -1926,20 +2339,25 @@
                                 } catch(e) { return '-'; }
                             })()}
                         </td>
+                        <!-- SIZE -->
                         <td>${contentSize}</td>
+                        <!-- METHOD -->
+                        <td>${getMethodDisplay(asset)}</td>
+                        <!-- SCREENSHOT + DETAILS side-by-side -->
                         <td>
-                            ${getMethodDisplay(asset)}
-                        </td>
-                        <td>
-                            ${hasScreenshot ? 
-                                `<a href="#" class="screenshot-indicator" onclick="viewScreenshot('${asset[assetMapping.url]}', '${asset[assetMapping.screenshot]}')">VIEW</a>` : 
+                            ${hasScreenshot ?
+                                `<a href="#" class="screenshot-indicator" onclick="viewScreenshot('${asset[assetMapping.url]}', '${asset[assetMapping.screenshot]}')">VIEW</a>` :
                                 '<span class="no-screenshot">NONE</span>'
                             }
+                            <a href="#" class="screenshot-indicator" style="margin-left: 6px; background: #8b5cf6;" onclick="showAssetDetails('${asset[assetMapping.id]}')">DETAILS</a>
                         </td>
+                        <!-- RESPONSE -->
                         <td>
                             <a href="#" class="screenshot-indicator" onclick="showAssetResponse(this)" data-response="${escapeHtml(asset[assetMapping.response] || 'No response captured')}" data-url="${asset[assetMapping.url]}" style="background: #16a34a;">VIEW</a>
                         </td>
+                        <!-- NEW -->
                         <td>${timestamp.includes(new Date().toISOString().split('T')[0]) ? '<span class="newly-discovered">NEW</span>' : ''}</td>
+                        <!-- SOURCE -->
                         <td title="Scanner: ${asset.tool || 'Unknown'}" style="max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${asset[assetMapping.source] || '-'}</td>
                     </tr>
                 `;
@@ -3109,7 +3527,10 @@
         `;
     } catch (error) {
         console.error('Error loading system metrics:', error);
-        container.innerHTML = '<div class="alert alert-error">Network error loading system metrics</div>';
+        const container = document.getElementById('system-metrics-display');
+        if (container) {
+            container.innerHTML = '<div class="alert alert-error">Network error loading system metrics</div>';
+        }
     }
 }
 
@@ -3120,7 +3541,7 @@
         }
         
         function loadVulnerabilityCategories() {
-            console.log('Loading vulnerability categories...');
+            // no-op placeholder
         }
         function searchMLResults() { loadMLXSSData(); }
         function refreshMLResults() { loadMLXSSData(); }
@@ -3128,8 +3549,265 @@
         function load403Results() { load403Data(); }
         function refreshSystemMetrics() { updateSystemMetrics(); loadSystemData(); }
         function restartAllServices() {
-            if (confirm('Are you sure you want to restart all services?')) {
-                alert('Service restart functionality not yet implemented');
+            if (!confirm('Restart engine and clear logs?')) return;
+
+            // If a session is selected, use it; otherwise restart unauthenticated with scope
+            const restartSel = document.getElementById('restart-domain-selector');
+            if (restartSel && restartSel.value) {
+                restartWithSelectedSession();
+                return;
+            }
+
+            // Unauthenticated restart (engine will use Scope domains automatically)
+            fetch('/api/restart_services', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            }).then(r => r.json()).then(data => {
+                if (!data.success) {
+                    alert('Failed to restart: ' + (data.error || 'Unknown error'));
+                    return;
+                }
+                showView('logs');
+                let n = 0;
+                const timer = setInterval(() => { refreshLogs(); if (++n >= 15) clearInterval(timer); }, 1000);
+                alert(`Engine restarted. Killed ${data.killed || 0} old processes.`);
+            }).catch(e => {
+                alert('Network error: ' + e.message);
+            });
+        }
+
+        function populateRestartDomains() {
+            try {
+                const sel = document.getElementById('restart-domain-selector');
+                if (!sel) return;
+                // Use localStorage fallback for now - no blocking async calls
+                const sessions = JSON.parse(localStorage.getItem('saved-sessions') || '{}');
+                const domains = Object.keys(sessions);
+                sel.innerHTML = '';
+                if (!domains.length) {
+                    const opt = document.createElement('option');
+                    opt.value = '';
+                    opt.textContent = 'No saved sessions';
+                    sel.appendChild(opt);
+                    return;
+                }
+                domains.sort().forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d;
+                    opt.textContent = d;
+                    sel.appendChild(opt);
+                });
+                // Restore last selected session from localStorage (non-critical)
+                const last = localStorage.getItem('last-selected-session');
+                sel.value = (last && domains.includes(last)) ? last : domains[0];
+                // Save changes on selection
+                sel.onchange = function() {
+                    if (sel.value) {
+                        localStorage.setItem('last-selected-session', sel.value);
+                    }
+                };
+            } catch (e) {
+                console.warn('Failed to populate restart domains', e);
+            }
+        }
+
+        function restartWithSelectedSession() {
+            const sel = document.getElementById('restart-domain-selector');
+            if (!sel || !sel.value) {
+                alert('No saved session selected. Add one in Scope → Authentication Manager.');
+                return;
+            }
+            const domain = sel.value;
+            let cookie = '';
+            try {
+                const sessions = JSON.parse(localStorage.getItem('saved-sessions') || '{}');
+                const s = sessions[domain];
+                if (s && s.cookies) {
+                    cookie = Object.entries(s.cookies).map(([k,v]) => `${k}=${v}`).join('; ');
+                }
+            } catch (e) {}
+            if (!cookie) {
+                alert('Saved session has no cookies; add or edit in Scope view.');
+                return;
+            }
+            fetch('/api/restart_services', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ domain, cookie })
+            }).then(r => r.json()).then(data => {
+                if (!data.success) {
+                    alert('Failed to restart: ' + (data.error || 'Unknown error'));
+                    return;
+                }
+                showView('logs');
+                // Auto-refresh logs for 15 seconds
+                let n = 0;
+                const timer = setInterval(() => { refreshLogs(); if (++n >= 15) clearInterval(timer); }, 1000);
+                alert(`Engine restarted for ${domain}. Killed ${data.killed || 0} old processes.`);
+            }).catch(e => {
+                alert('Network error: ' + e.message);
+            });
+        }
+
+        async function resetDbAndRestart() {
+            if (!confirm('This will delete all assets, vulnerabilities, and activities. Continue?')) return;
+            try {
+                const r = await fetch('/api/admin/reset_db', { method: 'POST' });
+                const data = await r.json();
+                if (!data.success) { alert('DB reset failed: ' + (data.error || 'Unknown error')); return; }
+                // Restart with selected session if available
+                const sel = document.getElementById('restart-domain-selector');
+                if (sel && sel.value) { restartWithSelectedSession(); }
+                else {
+                    // Unauthenticated restart without prompts
+                    fetch('/api/restart_services', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+                    }).then(r => r.json()).then(d => {
+                        if (!d.success) { alert('Failed to restart: ' + (d.error || 'Unknown error')); return; }
+                        showView('logs');
+                        let n = 0; const timer = setInterval(() => { refreshLogs(); if (++n >= 15) clearInterval(timer); }, 1000);
+                        alert(`Engine restarted. Killed ${d.killed || 0} old processes.`);
+                    }).catch(e => alert('Network error: ' + e.message));
+                }
+            } catch (e) {
+                alert('Network error during reset: ' + e.message);
+            }
+        }
+
+        async function runMigrations() {
+            try {
+                const r = await fetch('/api/admin/migrate', { method: 'POST' });
+                let data = null;
+                try {
+                    data = await r.json();
+                } catch (e) {
+                    const txt = await r.text();
+                    alert('Migration response (non-JSON):\n' + txt.substring(0,200));
+                    return;
+                }
+                if (!data.success) { alert('Migrations failed: ' + (data.error || 'Unknown error')); return; }
+                alert('✅ Migrations applied');
+            } catch (e) {
+                alert('Network error running migrations: ' + e.message);
+            }
+        }
+
+        
+
+        async function verifySelectedCookie() {
+            const sel = document.getElementById('restart-domain-selector');
+            if (!sel || !sel.value) { alert('Select a saved session first'); return; }
+            const domain = sel.value;
+            let cookie = '';
+            try {
+                const sessions = JSON.parse(localStorage.getItem('saved-sessions') || '{}');
+                const s = sessions[domain];
+                if (s && s.cookies) {
+                    cookie = Object.entries(s.cookies).map(([k,v]) => `${k}=${v}`).join('; ');
+                }
+            } catch (e) {}
+            const res = await fetch('/api/verify_cookie', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ domain, cookie_string: cookie })
+            });
+            const data = await res.json();
+            if (!data.success) { alert('Verify failed: ' + (data.error || 'Unknown error')); return; }
+            if (data.verified) {
+                alert(`✅ Cookie valid for ${domain} (status ${data.status})`);
+            } else if (data.refreshed) {
+                alert(`🔄 Cookie refreshed for ${domain}`);
+            } else {
+                alert(`⚠️ Could not verify cookie for ${domain}`);
+            }
+        }
+
+        async function persistCookieKeys() {
+            const sel = document.getElementById('restart-domain-selector');
+            if (!sel || !sel.value) { alert('Select a saved session first'); return; }
+            const domain = sel.value;
+            const input = prompt('Enter key=value pairs to persist (comma-separated). Example: role=admin', '');
+            if (!input) return;
+            const pairs = input.split(',').map(s => s.trim()).filter(Boolean);
+            const res = await fetch('/api/cookies/persist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ domain, pairs })
+            });
+            const data = await res.json();
+            if (!data.success) { alert('Persist failed: ' + (data.error || 'Unknown error')); return; }
+            alert(`✅ Persistent cookies set for ${domain}:\n${(data.persistent || []).join(', ')}`);
+        }
+
+        // === Evidence Viewer ===
+        async function loadEvidenceList() {
+            try {
+                const r = await fetch('/api/evidence/list');
+                const d = await r.json();
+                const c = document.getElementById('evidence-list');
+                if (!d || !d.evidence || d.evidence.length === 0) {
+                    c.innerHTML = '<div class="loading">No evidence found.</div>';
+                    return;
+                }
+                let out = '';
+                d.evidence.slice(0, 150).forEach(item => {
+                    const base = item.base;
+                    out += `<div class="evidence-row" style="padding:8px; border-bottom:1px solid #334155;">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <code style="color:#cbd5e1;">${base}</code>
+                            ${item.screenshot ? `<a class="siem-btn" href="${item.screenshot}" target="_blank">Screenshot</a>` : ''}
+                            <button class="siem-btn" onclick="viewEvidenceInline('${base}','${item.html}','${item.headers||''}','${item.requests||''}')">View Inline</button>
+                            <a class="siem-btn" href="${item.html}" target="_blank">HTML</a>
+                            ${item.headers ? `<a class="siem-btn" href="${item.headers}" target="_blank">Headers</a>` : ''}
+                            ${item.requests ? `<a class="siem-btn" href="${item.requests}" target="_blank">Requests</a>` : ''}
+                            <span style="color:#9ca3af; font-size:12px; margin-left:auto;">${new Date(item.modified*1000).toLocaleString()}</span>
+                        </div>
+                        <div id="ev-${base}" style="display:none; margin-top:8px; background:#0f172a; border:1px solid #334155; border-radius:4px; padding:8px;"></div>
+                    </div>`;
+                });
+                c.innerHTML = out;
+            } catch (e) {
+                console.warn('Failed loading evidence list', e);
+            }
+        }
+
+        async function viewEvidenceInline(base, htmlUrl, headersUrl, requestsUrl) {
+            const box = document.getElementById(`ev-${base}`);
+            if (!box) return;
+            if (box.style.display === 'block') { box.style.display = 'none'; box.innerHTML=''; return; }
+            box.style.display = 'block';
+            box.innerHTML = '<div class="loading">Loading evidence…</div>';
+            try {
+                const [htmlRes, hdrRes, reqRes] = await Promise.all([
+                    fetch(htmlUrl).then(r => r.text()).catch(()=>''),
+                    headersUrl ? fetch(headersUrl).then(r => r.json()).catch(()=>null) : Promise.resolve(null),
+                    requestsUrl ? fetch(requestsUrl).then(r => r.text()).catch(()=>null) : Promise.resolve(null)
+                ]);
+                const safeHtml = htmlRes || '';
+                let hdrHtml = '';
+                if (hdrRes) {
+                    hdrHtml = `<pre style="white-space:pre-wrap;color:#e5e7eb;">${JSON.stringify(hdrRes, null, 2)}</pre>`;
+                }
+                let reqHtml = '';
+                if (reqRes) {
+                    reqHtml = `<pre style="white-space:pre-wrap;color:#e5e7eb; max-height:200px; overflow:auto;">${reqRes.replace(/</g,'&lt;')}</pre>`;
+                }
+                box.innerHTML = `
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                        <div>
+                            <div style="color:#93c5fd; font-size:13px; margin-bottom:6px;">HTML Snapshot</div>
+                            <iframe sandbox="allow-same-origin" style="width:100%; height:300px; background:white; border:1px solid #334155;" srcdoc="${safeHtml.replace(/"/g,'&quot;')}"></iframe>
+                        </div>
+                        <div>
+                            <div style="color:#93c5fd; font-size:13px; margin-bottom:6px;">Response Metadata</div>
+                            ${hdrHtml || '<div style="color:#94a3b8;">No headers</div>'}
+                            <div style="color:#93c5fd; font-size:13px; margin:6px 0;">Requests</div>
+                            ${reqHtml || '<div style="color:#94a3b8;">No requests</div>'}
+                        </div>
+                    </div>`;
+            } catch (e) {
+                box.innerHTML = `<div style="color:#ef4444;">Failed to load evidence: ${e.message}</div>`;
             }
         }
 
@@ -3194,6 +3872,22 @@
                     clearInterval(logRefreshInterval);
                     logRefreshInterval = null;
                 }
+            }
+        }
+
+        async function clearLogs() {
+            if (!confirm('Delete all log files?')) return;
+            try {
+                const res = await fetch('/api/logs/clear', { method: 'POST' });
+                const data = await res.json();
+                if (!data.success) {
+                    alert('Failed to clear logs: ' + (data.error || 'Unknown error'));
+                    return;
+                }
+                await loadTerminalLogs();
+                alert(`Removed ${data.count} log files`);
+            } catch (e) {
+                alert('Network error clearing logs: ' + e.message);
             }
         }
 
@@ -3973,7 +4667,716 @@
                 }
             }
         }
-    </script>
+    
+        
+        // Authentication Manager Functions
+        function toggleAuthPanel() {
+            const panel = document.getElementById('auth-panel-content');
+            const btn = document.getElementById('auth-minimize-btn');
+            if (panel.style.display === 'none') {
+                panel.style.display = 'block';
+                btn.textContent = '─';
+            } else {
+                panel.style.display = 'none';
+                btn.textContent = '+';
+            }
+        }
+        
+        async function loginAndExtractCookies() {
+            const login_url = document.getElementById('login-url').value;
+            const username = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+            const statusDiv = document.getElementById('login-status');
+            
+            statusDiv.innerHTML = '🔄 Adding authenticated domain to scope...';
+            statusDiv.style.background = '#1e40af';
+            
+            try {
+                const response = await fetch('/api/login-extract-cookies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ login_url, username, password })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    statusDiv.innerHTML = `✅ Domain added to scope with authentication!`;
+                    statusDiv.style.background = '#16a34a';
+                    
+                    // Update target domain dropdown and save to backend
+                    const domain = new URL(login_url).hostname;
+                    updateDomainDropdown(domain);
+                    
+                    // Save cookies to backend database
+                    if (result.cookie_string) {
+                        saveCookieToBackend(domain, result.cookie_string);
+                        
+                        // Add domain to authorized scope
+                        await addDomainToScope(domain);
+                        
+                        // Show cookie editor
+                        showCookieEditor(domain, result.cookie_string);
+                    }
+                } else {
+                    statusDiv.innerHTML = `❌ Login failed: ${result.error || 'Unknown error'}`;
+                    statusDiv.style.background = '#dc2626';
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `❌ Network error: ${error.message}`;
+                statusDiv.style.background = '#dc2626';
+            }
+        }
+        
+        async function setDomainCookie() {
+            const domain = document.getElementById('target-domain').value;
+            const cookie = document.getElementById('session-cookie').value;
+            
+            if (!domain || !cookie) {
+                alert('Please select a domain and enter a cookie');
+                return;
+            }
+            
+            try {
+                saveCookieToBackend(domain, cookie);
+                alert(`✅ Cookie saved for ${domain}`);
+                
+                // Clear the input
+                document.getElementById('session-cookie').value = '';
+            } catch (error) {
+                alert(`❌ Failed to save cookie: ${error.message}`);
+            }
+        }
+
+        // === PERSISTENT COOKIE SESSION MANAGEMENT ===
+        async function loadSavedSessions() {
+            try {
+                const response = await fetch('/api/cookies');
+                const data = await response.json();
+                const sessions = {};
+                
+                if (data.cookies) {
+                    data.cookies.forEach(cookie => {
+                        sessions[cookie.domain] = {
+                            cookies: parseCookieString(cookie.cookie),
+                            saved_at: cookie.last_updated
+                        };
+                    });
+                }
+                return sessions;
+            } catch (error) {
+                console.warn('Failed to load saved sessions:', error);
+                return {};
+            }
+        }
+
+        async function saveDomainSession(domain, cookieString) {
+            try {
+                await fetch('/api/cookies', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        domain: domain,
+                        cookie: cookieString
+                    })
+                });
+            } catch (error) {
+                console.error('Failed to save session:', error);
+                throw error;
+            }
+        }
+
+        // Removed duplicate async version
+
+        function parseCookieString(cookieString) {
+            const cookies = {};
+            if (cookieString) {
+                cookieString.split(';').forEach(c => {
+                    const [key, value] = c.split('=').map(s => s.trim());
+                    if (key && value) cookies[key] = value;
+                });
+            }
+            return cookies;
+        }
+        
+async function saveSession(domain, cookies) {
+    // Persist to backend so sessions survive restarts
+    try {
+        const cookieText = Object.entries(cookies).map(([k,v]) => `${k}=${v}`).join('; ');
+        // Determine lock set from UI
+        const locks = [];
+        const list = document.getElementById('cookie-list');
+        if (list) {
+            list.querySelectorAll('input[id$="_lock"]').forEach(el => {
+                if (el.checked) {
+                    const key = el.getAttribute('data-key');
+                    const val = list.querySelector(`input[data-key="${key}"]`)?.value || '';
+                    if (key && val) locks.push(`${key}=${val}`);
+                }
+            });
+        }
+        await fetch('/api/cookies', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain, cookie: cookieText, persistent: locks })
+        });
+    } catch (e) { console.warn('Failed to persist session to backend', e); }
+
+    // Keep local copy for quick UI
+    const sessions = JSON.parse(localStorage.getItem('saved-sessions') || '{}');
+    sessions[domain] = { cookies, saved_at: new Date().toISOString() };
+    localStorage.setItem('saved-sessions', JSON.stringify(sessions));
+    updateSessionList();
+}
+        
+async function updateSessionList() {
+    // Sync from backend first so sessions persist across restarts
+    await syncSessionsFromDB();
+    const sessions = JSON.parse(localStorage.getItem('saved-sessions') || '{}');
+    const list = document.getElementById('session-list');
+            
+            list.innerHTML = '';
+            Object.keys(sessions).forEach(domain => {
+                const session = sessions[domain];
+                const div = document.createElement('div');
+                div.style.cssText = 'background:#374151; padding:8px; border-radius:4px; margin:4px; cursor:pointer; font-size:12px;';
+                div.innerHTML = `
+                    <strong>${domain}</strong><br>
+                    <small>Saved: ${new Date(session.saved_at).toLocaleString()}</small>
+                `;
+                div.onclick = () => editCookies(domain);
+                list.appendChild(div);
+            });
+        }
+        
+function editCookies(domain) {
+    const sessions = JSON.parse(localStorage.getItem('saved-sessions') || '{}');
+            const session = sessions[domain];
+            
+            if (session) {
+                document.getElementById('edit-domain').textContent = domain;
+                const cookieText = Object.entries(session.cookies)
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join('; ');
+                document.getElementById('cookie-editor-text').value = cookieText;
+                document.getElementById('cookie-editor').style.display = 'block';
+                renderCookieListFromText(cookieText);
+                resetMinimizeState();
+            }
+}
+
+// Ensure sessions persist across dashboard restarts by syncing from backend cookies table
+async function syncSessionsFromDB() {
+    try {
+        const r = await fetch('/api/cookies');
+        const d = await r.json();
+        const sessions = {};
+        (d.cookies || []).forEach(row => {
+            const cookies = {};
+            (row.cookie || '').split(';').forEach(c => {
+                const [k, v] = c.split('=').map(s => (s || '').trim());
+                if (k && v) cookies[k] = v;
+            });
+            sessions[row.domain] = {
+                cookies,
+                saved_at: row.last_updated || new Date().toISOString()
+            };
+        });
+        localStorage.setItem('saved-sessions', JSON.stringify(sessions));
+    } catch (e) {
+        // Non-fatal
+        console.warn('Failed to sync sessions from backend', e);
+    }
+}
+
+// === PER-DOMAIN AUTH POLICY MANAGEMENT ===
+async function loadAuthPolicy(domain) {
+    try {
+        const r = await fetch(`/api/auth_policy/${encodeURIComponent(domain)}`);
+        const d = await r.json();
+        let pol = {};
+        try { pol = d && d.policy ? JSON.parse(d.policy) : {}; } catch (e) { pol = {}; }
+        // Populate fields in advanced section if present
+        const bearerEl = document.getElementById('auth-bearer'); if (bearerEl) bearerEl.value = pol.bearer || '';
+        const headersEl = document.getElementById('auth-headers'); if (headersEl) headersEl.value = (pol.headers ? Object.entries(pol.headers).map(([k,v]) => `${k}=${v}`).join('\n') : '');
+        const lsEl = document.getElementById('auth-ls'); if (lsEl) lsEl.value = (pol.local_storage ? Object.entries(pol.local_storage).map(([k,v]) => `${k}=${v}`).join('\n') : '');
+        const ssEl = document.getElementById('auth-ss'); if (ssEl) ssEl.value = (pol.session_storage ? Object.entries(pol.session_storage).map(([k,v]) => `${k}=${v}`).join('\n') : '');
+        const lurlEl = document.getElementById('login-url-input'); if (lurlEl) lurlEl.value = (pol.login && pol.login.url) || '';
+        const luserEl = document.getElementById('login-username-input'); if (luserEl) luserEl.value = (pol.login && pol.login.username) || '';
+        const lpassEl = document.getElementById('login-password-input'); if (lpassEl) lpassEl.value = (pol.login && pol.login.password) || '';
+    } catch (e) { console.warn('Failed to load auth policy', e); }
+}
+
+function parseKVLines(text) {
+    const obj = {};
+    (text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean).forEach(line => {
+        const idx = line.indexOf('=');
+        if (idx > 0) {
+            const k = line.slice(0, idx).trim();
+            const v = line.slice(idx + 1).trim();
+            if (k) obj[k] = v;
+        }
+    });
+    return obj;
+}
+
+async function saveAuthPolicy() {
+    const domain = (document.getElementById('edit-domain')?.textContent || '').trim();
+    if (!domain) { alert('No domain selected'); return; }
+    const policy = {
+        bearer: document.getElementById('auth-bearer')?.value.trim() || undefined,
+        headers: parseKVLines(document.getElementById('auth-headers')?.value || ''),
+        local_storage: parseKVLines(document.getElementById('auth-ls')?.value || ''),
+        session_storage: parseKVLines(document.getElementById('auth-ss')?.value || ''),
+        login: {
+            url: document.getElementById('login-url-input')?.value.trim() || undefined,
+            username: document.getElementById('login-username-input')?.value.trim() || undefined,
+            password: document.getElementById('login-password-input')?.value || undefined
+        }
+    };
+    try {
+        const r = await fetch('/api/auth_policy', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain, policy })
+        });
+        const d = await r.json();
+        if (!d.success) throw new Error(d.error || 'Failed to save policy');
+        alert('✅ Auth policy saved');
+    } catch (e) { alert('❌ Failed to save policy: ' + e.message); }
+}
+
+        
+        
+        function closeCookieEditor() {
+            document.getElementById('cookie-editor').style.display = 'none';
+        }
+        
+        function saveCookieEdits() {
+            const domain = document.getElementById('edit-domain').textContent;
+            const cookieText = document.getElementById('cookie-editor-text').value;
+            
+            const cookies = {};
+            cookieText.split(';').forEach(c => {
+                const [key, value] = c.split('=').map(s => s.trim());
+                if (key && value) cookies[key] = value;
+            });
+            
+            saveSession(domain, cookies);
+            closeCookieEditor();
+            alert(`✅ Cookies updated for ${domain}`);
+        }
+
+        // --- Cookie editor helpers ---
+        let __lastCookieText = null;
+
+        function resetMinimizeState() {
+            __lastCookieText = null;
+            const undo = document.getElementById('undo-minimize-btn');
+            if (undo) {
+                undo.disabled = true;
+                undo.style.background = '#6b7280';
+            }
+            const status = document.getElementById('cookie-minimize-status');
+            if (status) {
+                status.style.display = 'none';
+                status.textContent = '';
+            }
+            const btn = document.getElementById('minimize-btn');
+            if (btn) btn.disabled = false;
+        }
+
+        function parseCookieText(txt) {
+            const out = [];
+            (txt || '').split(';').forEach(part => {
+                const p = part.trim();
+                if (!p) return;
+                const idx = p.indexOf('=');
+                if (idx > 0) {
+                    const key = p.slice(0, idx).trim();
+                    const val = p.slice(idx + 1).trim();
+                    if (key) out.push([key, val]);
+                }
+            });
+            return out;
+        }
+
+        function renderCookieListFromText(txt) {
+            const items = parseCookieText(txt);
+            const list = document.getElementById('cookie-list');
+            list.innerHTML = '';
+            items.forEach(([k, v]) => {
+                const id = `ck_${k.replace(/[^a-zA-Z0-9_\-]/g, '')}`;
+                const wrapper = document.createElement('div');
+                wrapper.style.cssText = 'background:#4b5563; border:1px solid #6b7280; border-radius:6px; padding:8px; display:grid; grid-template-columns: 1fr auto auto; align-items:center; gap:8px;';
+                
+                // Cookie key=value input
+                const cookieInput = document.createElement('div');
+                cookieInput.style.cssText = 'display:flex; align-items:center; gap:6px;';
+                cookieInput.innerHTML = `
+                    <label style="color:#e5e7eb; font-size:12px; min-width:80px;">${k}=</label>
+                    <input type="text" value="${v}" data-key="${k}" style="background:#374151; color:#fff; border:1px solid #6b7280; border-radius:4px; padding:4px 6px; font-size:12px; flex:1;">
+                `;
+                
+                // Use checkbox
+                const useDiv = document.createElement('div');
+                useDiv.style.cssText = 'display:flex; align-items:center; gap:4px;';
+                useDiv.innerHTML = `
+                    <input type="checkbox" id="${id}_use" data-key="${k}" checked>
+                    <label for="${id}_use" style="color:#10b981; font-size:11px; cursor:pointer; white-space:nowrap;">Use</label>
+                `;
+                
+                // Lock checkbox  
+                const lockDiv = document.createElement('div');
+                lockDiv.style.cssText = 'display:flex; align-items:center; gap:4px;';
+                lockDiv.innerHTML = `
+                    <input type="checkbox" id="${id}_lock" data-key="${k}">
+                    <label for="${id}_lock" style="color:#f59e0b; font-size:11px; cursor:pointer; white-space:nowrap;">Lock</label>
+                `;
+                
+                wrapper.appendChild(cookieInput);
+                wrapper.appendChild(useDiv); 
+                wrapper.appendChild(lockDiv);
+                list.appendChild(wrapper);
+            });
+            
+            // Hook change handlers to update textarea
+            list.querySelectorAll('input').forEach(el => {
+                el.addEventListener('change', updateCookieTextFromList);
+                el.addEventListener('input', updateCookieTextFromList);
+            });
+        }
+
+        function updateCookieTextFromList() {
+            const list = document.getElementById('cookie-list');
+            const wrappers = Array.from(list.children);
+            const parts = [];
+            
+            wrappers.forEach(wrapper => {
+                const valInput = wrapper.querySelector('input[type="text"]');
+                const useCheckbox = wrapper.querySelector('input[id$="_use"]');
+                
+                if (valInput && useCheckbox && useCheckbox.checked) {
+                    const key = valInput.getAttribute('data-key');
+                    const val = valInput.value || '';
+                    if (key && val) {
+                        parts.push(`${key}=${val}`);
+                    }
+                }
+            });
+            
+            document.getElementById('cookie-editor-text').value = parts.join('; ');
+        }
+
+        async function minimizeCookies() {
+            const domain = document.getElementById('edit-domain').textContent;
+            const cookieText = document.getElementById('cookie-editor-text').value;
+            if (!domain || !cookieText) {
+                alert('Please enter cookies to minimize');
+                return;
+            }
+            try {
+                __lastCookieText = cookieText;
+                const btn = document.getElementById('minimize-btn');
+                const undo = document.getElementById('undo-minimize-btn');
+                const status = document.getElementById('cookie-minimize-status');
+                if (btn) btn.disabled = true;
+                if (status) {
+                    status.style.display = 'block';
+                    status.style.color = '#93c5fd';
+                    status.textContent = '⏳ Minimizing cookies...';
+                }
+                const res = await fetch('/api/cookies/minimize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain: domain, cookie_string: cookieText })
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    if (status) {
+                        status.style.display = 'block';
+                        status.style.color = '#f87171';
+                        status.textContent = `❌ Minimize failed: ${data.error || 'unknown error'}`;
+                    } else {
+                        alert(`❌ Minimize failed: ${data.error || 'unknown error'}`);
+                    }
+                    if (btn) btn.disabled = false;
+                    return;
+                }
+                const minimized = data.minimized_cookie || '';
+                document.getElementById('cookie-editor-text').value = minimized;
+                renderCookieListFromText(minimized);
+                if (status) {
+                    status.style.display = 'block';
+                    status.style.color = '#34d399';
+                    const beforeCount = (cookieText.split(';').filter(s => s.trim()).length) || 0;
+                    const afterCount = (minimized.split(';').filter(s => s.trim()).length) || 0;
+                    status.textContent = `✅ Minimized: ${beforeCount} → ${afterCount} cookies`;
+                }
+                if (undo) {
+                    undo.disabled = false;
+                    undo.style.background = '#4b5563';
+                }
+                if (btn) btn.disabled = false;
+
+                // Auto-save minimized cookie and auto-run IDOR scan if enabled
+                try {
+                    saveCookieToBackend(domain, minimized);
+                    const auto = document.getElementById('auto-run-idor');
+                    if (auto && auto.checked) {
+                        await startIdorScan(domain, minimized);
+                        if (status) {
+                            status.style.display = 'block';
+                            status.style.color = '#93c5fd';
+                            status.textContent += ' • 🚀 IDOR scan started';
+                        }
+                    }
+                } catch (e) {
+                    console.error('Auto-save/IDOR start failed:', e);
+                }
+            } catch (e) {
+                const status = document.getElementById('cookie-minimize-status');
+                if (status) {
+                    status.style.display = 'block';
+                    status.style.color = '#f87171';
+                    status.textContent = `❌ Network error: ${e.message}`;
+                } else {
+                    alert(`❌ Network error: ${e.message}`);
+                }
+                const btn = document.getElementById('minimize-btn');
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        function undoMinimize() {
+            if (!__lastCookieText) return;
+            document.getElementById('cookie-editor-text').value = __lastCookieText;
+            renderCookieListFromText(__lastCookieText);
+            const status = document.getElementById('cookie-minimize-status');
+            if (status) {
+                status.style.display = 'block';
+                status.style.color = '#93c5fd';
+                status.textContent = '↩️ Restored previous cookie set';
+            }
+        }
+        
+        function clearAllSessions() {
+            if (confirm('Clear all saved sessions?')) {
+                localStorage.removeItem('saved-sessions');
+                updateSessionList();
+            }
+        }
+        
+        function saveCookieToBackend(domain, cookieString) {
+            // For now, save to localStorage - keeps UI working
+            const cookies = {};
+            cookieString.split(';').forEach(c => {
+                const [key, value] = c.split('=').map(s => s.trim());
+                if (key && value) cookies[key] = value;
+            });
+            saveSession(domain, cookies);
+            console.log(`✅ Saved cookies for ${domain} to localStorage`);
+        }
+        
+        async function rescanDomainWithAuth() {
+            const domain = document.getElementById('target-domain').value;
+            if (!domain) {
+                alert('Please select a domain to scan');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/rescan_with_auth', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain: domain })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`✅ ${result.message}`);
+                } else {
+                    alert(`❌ Scan failed: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`❌ Network error: ${error.message}`);
+            }
+        }
+
+        async function startIdorScan(domain, cookieString) {
+            // Reuse the authenticated scan endpoint; it runs all engines including IDOR
+            const payload = { domain };
+            if (cookieString) payload.cookie_string = cookieString;
+            const response = await fetch('/api/rescan_with_auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to start IDOR scan');
+            }
+            return result;
+        }
+        
+        async function populateTargetDomains() {
+            try {
+                const response = await fetch('/api/cookies');
+                const payload = await response.json();
+                const cookies = Array.isArray(payload) ? payload : (payload.cookies || []);
+                
+                const dropdown = document.getElementById('target-domain');
+                // Clear existing options except the first one
+                dropdown.innerHTML = '<option value="">Select Domain</option>';
+                
+                cookies.forEach(cookie => {
+                    if (!cookie || !cookie.domain) return;
+                    const option = document.createElement('option');
+                    option.value = cookie.domain;
+                    option.textContent = cookie.domain;
+                    dropdown.appendChild(option);
+                });
+                
+                console.log(`✅ Populated target domains: ${cookies.length} domains loaded`);
+            } catch (error) {
+                console.error('Failed to load target domains:', error);
+            }
+        }
+        
+        function updateDomainDropdown(newDomain) {
+            const dropdown = document.getElementById('target-domain');
+            let found = false;
+            
+            for (let option of dropdown.options) {
+                if (option.value === newDomain) {
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                const option = document.createElement('option');
+                option.value = newDomain;
+                option.textContent = newDomain;
+                dropdown.appendChild(option);
+            }
+            
+            dropdown.value = newDomain;
+        }
+        
+        async function addDomainToScope(domain) {
+            try {
+                const response = await fetch('/api/scope', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        target: domain
+                    })
+                });
+                
+                const result = await response.json();
+                console.log(`✅ Added ${domain} to authorized scope`);
+                
+                // Refresh scope display if we're on scope view
+                if (currentView === 'scope') {
+                    await loadScope();
+                }
+                
+                return result;
+            } catch (error) {
+                console.error(`❌ Failed to add ${domain} to scope:`, error);
+            }
+        }
+        
+        function showCookieEditor(domain, cookieString) {
+            document.getElementById('edit-domain').textContent = domain;
+            document.getElementById('cookie-editor-text').value = cookieString;
+            document.getElementById('cookie-editor').style.display = 'block';
+            renderCookieListFromText(cookieString);
+            resetMinimizeState();
+            // Load per-domain auth policy into advanced fields
+            loadAuthPolicy(domain);
+        }
+        
+        async function verifyOrRefreshCookie() {
+            const rawDomainText = (document.getElementById('edit-domain').textContent || '').trim();
+            let domain = rawDomainText;
+            let probeUrl = '';
+            // Normalize: if user pasted a full URL, extract hostname, but keep URL for path-scoped cookies
+            try {
+                if (/^https?:\/\//i.test(rawDomainText)) {
+                    const u = new URL(rawDomainText);
+                    domain = u.hostname;
+                    probeUrl = u.href;
+                } else {
+                    // Strip any accidental path parts
+                    domain = rawDomainText.replace(/^https?:\/\//i, '').replace(/\/.*/, '');
+                    probeUrl = `http://${domain}/`;
+                }
+            } catch (e) {
+                // Fallback to basic
+                domain = (rawDomainText || '').replace(/^https?:\/\//i, '').replace(/\/.*/, '');
+                probeUrl = `http://${domain}/`;
+            }
+            const cookieText = document.getElementById('cookie-editor-text').value;
+            
+            if (!domain || !cookieText) {
+                alert('Please enter cookies to verify');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/verify_cookie', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        domain: domain,
+                        url: probeUrl,
+                        cookie_string: cookieText
+                    })
+                });
+                if (!response.ok) {
+                    const txt = await response.text();
+                    throw new Error(`HTTP ${response.status} ${txt?.slice(0,120)}`);
+                }
+                const result = await response.json();
+                
+                if (result.success) {
+                    if (result.verified) {
+                        alert(`✅ Cookie verified successfully for ${domain}`);
+                        // Refresh evidence list for convenience
+                        loadEvidenceList();
+                    } else if (result.refreshed) {
+                        alert(`🔄 Cookie refreshed for ${domain}`);
+                        document.getElementById('cookie-editor-text').value = result.cookie_string;
+                    }
+                } else {
+                    alert(`❌ Cookie verification failed: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`❌ Network error: ${error.message}`);
+            }
+        }
+
+        async function autoRefreshSession() {
+            const domain = (document.getElementById('edit-domain')?.textContent || '').trim();
+            if (!domain) { alert('No domain selected'); return; }
+            const login = {
+                url: document.getElementById('login-url-input')?.value.trim(),
+                username: document.getElementById('login-username-input')?.value.trim(),
+                password: document.getElementById('login-password-input')?.value
+            };
+            try {
+                const r = await fetch('/api/auto_refresh_session', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain, login })
+                });
+                const d = await r.json();
+                if (!d.success) throw new Error(d.error || 'Refresh failed');
+                document.getElementById('cookie-editor-text').value = d.cookie_string || '';
+                alert('✅ Session refreshed and cookie updated');
+            } catch (e) { alert('❌ Auto-refresh failed: ' + e.message); }
+        }
+</script>
 
     <!-- Advanced Scanner Styling -->
     <style>
@@ -4134,3 +5537,4 @@
     </style>
 </body>
 </html>
+        

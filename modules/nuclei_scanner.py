@@ -7,6 +7,7 @@ import asyncio
 import subprocess
 import json
 import logging
+import aiohttp
 import tempfile
 from pathlib import Path
 from datetime import datetime
@@ -14,14 +15,17 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger("NucleiScanner")
 
+from asset_manager import VulnerabilityFinding
+
 class NucleiVulnerabilityScanner:
     def __init__(self, asset_manager, config: Dict):
         self.asset_manager = asset_manager
         self.config = config
         self.nuclei_path = "/home/michael/go/bin/nuclei"
         self.templates_path = self._get_nuclei_templates_path()
+        self.available = self.templates_path is not None
         
-        # Custom DVWA/injection-focused templates
+        # Priority security templates across vulnerability classes
         self.priority_templates = [
             "cves/",
             "vulnerabilities/",
@@ -80,12 +84,6 @@ class NucleiVulnerabilityScanner:
         try:
             # Run nuclei scan with aggressive settings
             vulnerabilities_found += await self._run_nuclei_scan(target_file, "AGGRESSIVE")
-            
-            # If DVWA detected, run specialized DVWA tests  
-            dvwa_assets = [a for a in assets if '192.168.1.42' in a.get('url', '')]
-            if dvwa_assets:
-                vulnerabilities_found += await self._run_dvwa_specific_tests(dvwa_assets)
-                
         finally:
             # Cleanup
             Path(target_file).unlink(missing_ok=True)
@@ -113,6 +111,15 @@ class NucleiVulnerabilityScanner:
                 "-rate-limit", "100",
                 "-timeout", "10",
                 "-retries", "2"
+            ])
+        elif intensity == "LONG":
+            # Broad coverage across many template categories
+            base_cmd.extend([
+                "-templates", f"{self.templates_path}" if self.templates_path else ".",
+                "-severity", "critical,high,medium,low,info",
+                "-rate-limit", "150",
+                "-timeout", "15",
+                "-retries", "3"
             ])
         
         vulnerabilities_found = 0
@@ -145,6 +152,88 @@ class NucleiVulnerabilityScanner:
             logger.error(f"Nuclei execution error: {e}")
             
         return vulnerabilities_found
+
+    async def run_long_scan(self, urls: List[str]) -> int:
+        """Run a long, broad Nuclei scan across provided URLs."""
+        if not urls:
+            return 0
+        # Fallback to minimal scanner if nuclei/templates are unavailable
+        if not self.available:
+            logger.warning("Nuclei not available or templates missing; running minimal HTTP checks instead")
+            return await self._fallback_minimal_scan(urls)
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            target_file = f.name
+            for u in urls:
+                f.write(u + "\n")
+        try:
+            return await self._run_nuclei_scan(target_file, intensity="LONG")
+        finally:
+            Path(target_file).unlink(missing_ok=True)
+
+    async def _fallback_minimal_scan(self, urls: List[str]) -> int:
+        """Minimal universal checks when Nuclei is unavailable (no templates).
+        Tests common exposures and weak security headers.
+        """
+        findings = 0
+        timeout = aiohttp.ClientTimeout(total=10)
+        headers = {"User-Agent": "ModScan-MinimalScanner/1.0"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            for base in urls[:200]:
+                try:
+                    # Quick HEAD/GET
+                    async with session.get(base, allow_redirects=True) as resp:
+                        hdrs = {k.lower(): v for k, v in resp.headers.items()}
+                        # Insecure transport
+                        if base.startswith('http://'):
+                            await self._store_minimal_finding(base, 'insecure_transport', 'Medium', 'Endpoint over HTTP without TLS')
+                            findings += 1
+                        # Missing security headers
+                        missing = []
+                        for h in ['content-security-policy', 'x-frame-options', 'strict-transport-security']:
+                            if h not in hdrs:
+                                missing.append(h)
+                        if missing:
+                            await self._store_minimal_finding(base, 'missing_security_headers', 'Low', f"Missing: {', '.join(missing)}")
+                            findings += 1
+                    # Sensitive files (limited)
+                    for p, vt, sev, evpat in [
+                        ('/.env', 'sensitive_file', 'High', 'APP_KEY'),
+                        ('/.git/HEAD', 'sensitive_file', 'High', 'refs/heads'),
+                        ('/phpinfo.php', 'information_disclosure', 'Medium', 'phpinfo()')
+                    ]:
+                        url = base.rstrip('/') + p
+                        try:
+                            async with session.get(url, allow_redirects=True) as r2:
+                                if r2.status == 200:
+                                    text = await r2.text()
+                                    if evpat.lower() in text.lower():
+                                        await self._store_minimal_finding(url, vt, sev, f"Evidence: {evpat}")
+                                        findings += 1
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+        return findings
+
+    async def _store_minimal_finding(self, url: str, vtype: str, severity: str, evidence: str):
+        try:
+            # Map url to asset_id
+            asset_id = await self._get_asset_id_by_url(url)
+            if not asset_id:
+                return
+            finding = VulnerabilityFinding(
+                url=url,
+                vuln_type=vtype.upper(),
+                severity=severity.capitalize(),
+                confidence=0.6,
+                payload='',
+                evidence=evidence,
+                discovered_at=datetime.now()
+            )
+            self.asset_manager.add_vulnerability_finding(finding, asset_id)
+        except Exception:
+            pass
     
     async def _process_nuclei_finding(self, finding: Dict) -> bool:
         """Process and store nuclei vulnerability finding"""
@@ -215,70 +304,7 @@ class NucleiVulnerabilityScanner:
         except Exception:
             return None
     
-    async def _run_dvwa_specific_tests(self, dvwa_assets: List[Dict]) -> int:
-        """Run DVWA-specific vulnerability tests"""
-        logger.info("🎯 DVWA DETECTED: Running specialized vulnerability tests")
-        
-        vulnerabilities_found = 0
-        
-        # DVWA-specific payloads for different vulnerabilities
-        dvwa_tests = [
-            {
-                'name': 'SQL Injection - Authentication Bypass',
-                'payload': "admin' OR '1'='1' #",
-                'parameter': 'username',
-                'type': 'SQL Injection'
-            },
-            {
-                'name': 'XSS - Script Injection',
-                'payload': '<script>alert("XSS")</script>',
-                'parameter': 'name',
-                'type': 'Cross-Site Scripting'
-            },
-            {
-                'name': 'Command Injection',
-                'payload': '; ls -la',
-                'parameter': 'ip',
-                'type': 'Command Injection'
-            }
-        ]
-        
-        for asset in dvwa_assets:
-            asset_url = asset.get('url', '')
-            asset_id = asset.get('id')
-            
-            for test in dvwa_tests:
-                try:
-                    # Create realistic vulnerability finding for DVWA
-                    with self.asset_manager._get_db() as db:
-                        db.execute("""
-                            INSERT INTO vulnerabilities 
-                            (asset_id, type, description, severity, evidence, payload, detected_at, confidence)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            asset_id,
-                            test['type'],
-                            f"DVWA {test['name']} vulnerability detected",
-                            'HIGH',
-                            json.dumps({
-                                'parameter': test['parameter'],
-                                'payload': test['payload'],
-                                'url': asset_url,
-                                'method': 'POST'
-                            }),
-                            test['payload'],
-                            datetime.now().isoformat(),
-                            0.95  # Very high confidence for DVWA
-                        ))
-                        db.commit()
-                        
-                    logger.info(f"🚨 DVWA VULNERABILITY: {test['type']} on {asset_url}")
-                    vulnerabilities_found += 1
-                    
-                except Exception as e:
-                    logger.error(f"Error storing DVWA vulnerability: {e}")
-        
-        return vulnerabilities_found
+    
 
 # Integration function for the main engine
 async def scan_with_nuclei(asset_manager, assets: List[Dict], config: Dict) -> int:

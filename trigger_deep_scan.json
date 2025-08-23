@@ -1,7 +1,7 @@
 {
     "trigger_time": "2025-08-14T17:08:00",
     "reason": "vulnerability_scanning_stalled", 
-    "priority_targets": ["192.168.1.42"],
+    "priority_targets": ["example.com"],
     "scan_config": {
         "mode": "aggressive_vulnerability_scan",
         "skip_basic_profiling": true,
