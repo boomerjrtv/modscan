@@ -48,6 +48,85 @@
 - **Specialty**: Exploit Chain Coordination
 - **Role**: Combines findings from all 4 hunters to create exploit chains
 - **Capabilities**:
+
+---
+
+## 📋 **UNIVERSAL FORM PARSER**
+
+### **Overview**
+The Universal Form Parser (`modules/universal_form_parser.py`) provides target-agnostic HTML form parsing for vulnerability scanning. It automatically adapts to any web application without requiring target-specific configurations.
+
+### **Key Features**
+- **Universal Parsing**: Works with any HTML form structure
+- **CSRF Token Detection**: Automatically identifies CSRF tokens using common patterns
+- **Multiple Input Types**: Supports text, password, hidden, checkbox, radio, select, textarea, file inputs
+- **URL Resolution**: Resolves relative form actions to absolute URLs
+- **Graceful Degradation**: Falls back to regex parsing when BeautifulSoup unavailable
+- **Malformed HTML Handling**: Robust to invalid or incomplete HTML
+
+### **API Functions**
+
+#### `parse_forms(html_content: str, base_url: Optional[str] = None) -> List[Dict]`
+Main parsing function that extracts all forms from HTML.
+
+**Returns form structure:**
+```python
+{
+    'action': 'https://example.com/submit',           # Resolved absolute URL
+    'method': 'POST',                                 # GET/POST/etc
+    'enctype': 'application/x-www-form-urlencoded',   # Form encoding
+    'inputs': {
+        'username': {'type': 'text', 'value': ''},
+        'password': {'type': 'password', 'value': ''},
+        'csrf_token': {'type': 'hidden', 'value': 'abc123', 'is_csrf': True},
+        'remember': {'type': 'checkbox', 'value': '1', 'checked': False},
+        'country': {'type': 'select', 'value': 'US', 'options': ['US', 'CA'], 'multiple': False},
+        'comments': {'type': 'textarea', 'value': 'Default text'}
+    }
+}
+```
+
+#### `get_testable_fields(form_inputs: Dict) -> Dict[str, List[str]]`
+Categorizes form fields for vulnerability testing.
+
+**Returns:**
+```python
+{
+    'testable': ['username', 'email', 'search'],     # Safe to test with payloads
+    'protected': ['csrf_token', 'submit_btn']        # Should preserve values
+}
+```
+
+#### `build_form_data(form_inputs: Dict, payload_data: Dict[str, str] = None) -> Dict[str, str]`
+Builds form submission data, preserving protected fields and applying payloads.
+
+### **Integration with Vulnerability Scanner**
+The scanner's `_parse_forms_with_values()` method now delegates to the universal parser:
+
+```python
+# OLD: Regex-based parsing (limited, brittle)
+forms = await self._parse_forms_with_values(html_content)
+
+# NEW: Universal parser (comprehensive, robust)  
+forms = await self._parse_forms_with_values(html_content, base_url)
+```
+
+**Benefits:**
+- ✅ **Universal**: Works on any web application
+- ✅ **CSRF-Aware**: Preserves authentication tokens
+- ✅ **Comprehensive**: Handles all input types and form structures
+- ✅ **Robust**: Gracefully handles malformed HTML
+- ✅ **Performance**: Size limits prevent DoS on large pages
+
+### **CSRF Detection Patterns**
+The parser automatically detects CSRF tokens using these patterns:
+- `csrf`, `_token`, `authenticity_token`, `request_verification_token`
+- `xsrf`, `__RequestVerificationToken`, `csrfmiddlewaretoken`
+- `anti_csrf`, `csrf_hash`, `csrf_test_name`, `form_token`, `security_token`
+
+Case-insensitive matching ensures detection across all platforms.
+
+### **Capabilities**:
   - Multi-step attack orchestration
   - Vulnerability correlation
   - Maximum impact exploitation
