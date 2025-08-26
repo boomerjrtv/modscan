@@ -77,8 +77,56 @@ class EnhancedVulnerabilityScanner:
             injection_findings = await self._test_parameter_injections(url, params)
             findings.extend(injection_findings)
         
+        # Store all findings in database  
+        if findings:
+            self._store_findings_in_database(url, findings)
+        
         logger.warning(f"🚨 VULN SCAN COMPLETE: Found {len(findings)} vulnerabilities in {url}")
         return findings
+    
+    def _store_findings_in_database(self, url: str, findings: List[VulnerabilityFinding]):
+        """Store vulnerability findings in database"""
+        try:
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            host = parsed_url.netloc
+            
+            asset_id = self.asset_manager.add_asset(url, host, "enhanced_vuln_scan")
+            
+            for finding in findings:
+                self.asset_manager.add_vulnerability_finding(finding, asset_id)
+                logger.info(f"✅ Stored {finding.vuln_type} ({finding.severity}) for {url}")
+        except Exception as e:
+            logger.error(f"Failed to store findings in database: {e}")
+    
+    async def _capture_vulnerability_screenshot(self, url: str, vuln_type: str, payload: str) -> str:
+        """Capture screenshot of vulnerability for PoC evidence"""
+        try:
+            import hashlib
+            from modules.screenshot_manager import ScreenshotManager
+            
+            # Create unique filename
+            hash_input = f"{url}_{vuln_type}_{payload}"
+            url_hash = hashlib.md5(hash_input.encode()).hexdigest()[:8]
+            screenshot_filename = f"vuln_{vuln_type.lower()}_{url_hash}.png"
+            
+            # Initialize screenshot manager
+            screenshot_manager = ScreenshotManager(self.asset_manager, self.config)
+            
+            # Construct URL with payload for screenshot
+            if '?' in url:
+                test_url = f"{url}&{payload}" if not payload.startswith('http') else url
+            else:
+                test_url = f"{url}?test_payload={payload}" if not payload.startswith('http') else url
+            
+            # Capture screenshot
+            screenshot_path = await screenshot_manager.capture_screenshot(test_url, screenshot_filename)
+            logger.info(f"📸 Captured vulnerability screenshot: {screenshot_path}")
+            return screenshot_path
+            
+        except Exception as e:
+            logger.debug(f"Screenshot capture failed: {e}")
+            return "screenshot_unavailable"
     
     def _extract_url_parameters(self, url: str) -> List[str]:
         """Extract existing parameters from URL for vulnerability testing"""
@@ -230,7 +278,7 @@ class EnhancedVulnerabilityScanner:
             if self.auth_cookie:
                 cmd.extend(['-H', f'Cookie: {self.auth_cookie}'])
             
-            result = await self._run_tool(cmd, timeout=90)
+            result = await self._run_tool(cmd, timeout=45)
             
             if result['success'] and result['output']:
                 for line in result['output'].split('\n'):
@@ -278,7 +326,7 @@ class EnhancedVulnerabilityScanner:
                 '--random-agent',  # Use random user agent
                 '--crawl', '1',  # Crawl one level for more targets
                 '--threads', '3',  # Balanced thread count
-                '--timeout', '30',  # Longer timeout for thorough testing
+                '--timeout', '15',  # Faster timeout for efficiency
                 '--retries', '2',  # Multiple retries for reliability
                 '--technique', 'BEUSTQ',  # All SQL injection techniques including stacked queries
                 '--no-cast',  # Skip casting for speed
@@ -302,7 +350,7 @@ class EnhancedVulnerabilityScanner:
                     cmd.extend(['-p', ','.join(test_params)])
             
             # Run SQLMap
-            result = await self._run_tool(cmd, timeout=90)
+            result = await self._run_tool(cmd, timeout=45)
             
             if result['success']:
                 # Universal SQLMap output parsing - works for ANY target
@@ -365,13 +413,16 @@ class EnhancedVulnerabilityScanner:
                         if payload_match:
                             payload = payload_match.group(1).strip()
                     
+                        # Capture screenshot for PoC
+                        screenshot_path = await self._capture_vulnerability_screenshot(url, inj_type, payload)
+                        
                         finding = VulnerabilityFinding(
                             url=url,
                             vuln_type='SQL_INJECTION',
                             severity='Critical',
                             confidence=0.95,
                             payload=payload,
-                            evidence=f"{inj_type} SQL injection in parameter '{affected_param}'. DBMS: {dbms_info}",
+                            evidence=f"{inj_type} SQL injection in parameter '{affected_param}'. DBMS: {dbms_info}. Screenshot: {screenshot_path}",
                             discovered_at=datetime.now(),
                             affected_parameter=affected_param,
                             impact_description=f"SQL injection allows database access via {inj_type} technique"
