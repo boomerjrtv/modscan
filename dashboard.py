@@ -2020,6 +2020,7 @@ def direct_url_scan():
                     env['MODSCAN_SKIP_PROCESS_GUARD'] = '1'
                     env['MODSCAN_DIRECT_URL_TESTING'] = '1'  # Skip discovery, test only provided URLs
                     env['MODSCAN_VULN_VERBOSE'] = '1'  # Show detailed Tier 3 progress
+                    env['MODSCAN_FORCE_REFRESH_EVERY_URL'] = '1'  # Strict targets: refresh auth per URL
                     
                     # Log environment variables for debugging
                     app.logger.info(f"🔧 Direct URL Testing - Setting env vars: MODSCAN_DIRECT_URL_TESTING=1, MODSCAN_AUTH_DOMAIN={first_domain}")

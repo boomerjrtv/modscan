@@ -261,6 +261,13 @@ class AuthManager:
         """Universal session management - validate and refresh if needed for any target"""
         try:
             cookie, policy = self.load_policy(domain)
+            # Optional override: always refresh before each URL (strict targets)
+            import os as _os
+            force_refresh = str(_os.environ.get('MODSCAN_FORCE_REFRESH_EVERY_URL', '0')).lower() in ('1','true','yes','on')
+            if force_refresh and policy and policy.get('login'):
+                new_cookie = await self.refresh_session(domain, policy)
+                if new_cookie and await self.validate_session(url, new_cookie):
+                    return new_cookie
             # Cookie lock mode: prefer locked cookie if provided
             lock_mode = str(self._env('MODSCAN_AUTH_LOCK_MODE', '0')).lower() in ('1','true','yes','on')
             locked = self.get_locked_cookie(domain) if lock_mode else None
