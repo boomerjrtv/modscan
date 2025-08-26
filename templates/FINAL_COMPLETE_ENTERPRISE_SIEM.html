@@ -3400,8 +3400,8 @@
                           ${isVerified ? `<span title="Verified: ${escapeHtml(verificationMethod)}" style="margin-left:6px; padding:2px 6px; font-size:10px; background:#10b981; color:white; border-radius:10px;">VERIFIED</span>` : ''}
                         </td>
                         <td>
-                            <a href="${escapeHtml(safeUrl)}" target="_blank" class="asset-url">
-                                ${truncate(safeUrl, 40)}
+                            <a href="${escapeHtml(safeUrl)}" target="_blank" class="asset-url" title="${escapeHtml(safeUrl)}" style="word-break: break-all; font-size: 11px;">
+                                ${safeUrl}
                             </a>
                         </td>
                         <td>
