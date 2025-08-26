@@ -359,6 +359,23 @@ class ModularVulnerabilityScanner:
                     import os as _os
                     if _os.environ.get('MODSCAN_DIRECT_URL_TESTING'):
                         logger.info("🧪 Direct URL Testing pipeline: Tier2 -> Tier3 -> Tier4 (no discovery/recon)")
+                        # Inline scan of exact URLs passed from dashboard (if provided)
+                        try:
+                            raw = _os.environ.get('MODSCAN_DIRECT_URLS')
+                            if raw:
+                                import json as _json
+                                try:
+                                    direct_list = _json.loads(raw)
+                                except Exception:
+                                    direct_list = [u.strip() for u in raw.replace('\r','\n').split('\n') if u.strip()]
+                                assets_inline = [{'id': -1, 'url': u, 'status_code': 200, 'tech_stack': ''} for u in direct_list if u.startswith('http')]
+                                if assets_inline:
+                                    logger.info(f"⚡ Direct: Inline Tier3 scan of {len(assets_inline)} user URLs…")
+                                    await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=8)
+                                    logger.info("✅ Direct: Inline Tier3 scan complete")
+                        except Exception as _dash:
+                            logger.warning(f"Direct: inline scan of user URLs failed: {_dash}")
+
                         # Tier 2
                         try:
                             await self._tier2_modular_profiling(session)
@@ -383,10 +400,7 @@ class ModularVulnerabilityScanner:
                         # Tier 3 with timeout watchdog so dashboard never looks stuck
                         try:
                             logger.info("➡️ Direct: Starting Tier3 vulnerability scanning…")
-                            await asyncio.wait_for(
-                                self._tier3_modular_vulnerability_scanning(session),
-                                timeout=60
-                            )
+                            await asyncio.wait_for(self._tier3_modular_vulnerability_scanning(session), timeout=60)
                             logger.info("✅ Direct: Tier3 completed")
                         except asyncio.TimeoutError:
                             logger.warning("⏰ Direct: Tier3 timed out after 60s — running emergency fallback on latest direct URLs")
@@ -658,7 +672,8 @@ class ModularVulnerabilityScanner:
             )
             
             total_vulns = sum(len(vulns) for vulns in vulnerability_results if vulns)
-            assets_scanned = len([r for r in vulnerability_results if r])
+            # Report attempted assets, not only those with findings
+            assets_scanned = len(ready_assets)
             
             if total_vulns > 0:
                 logger.warning(f"🚨 TIER 3: Found {total_vulns} vulnerabilities across {assets_scanned} assets")
