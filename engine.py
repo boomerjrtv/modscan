@@ -359,14 +359,40 @@ class ModularVulnerabilityScanner:
                     import os as _os
                     if _os.environ.get('MODSCAN_DIRECT_URL_TESTING'):
                         logger.info("🧪 Direct URL Testing pipeline: Tier2 -> Tier3 -> Tier4 (no discovery/recon)")
+                        # Tier 2
                         try:
                             await self._tier2_modular_profiling(session)
+                            logger.info("🧪 Direct: Tier2 completed; proceeding to Tier3…")
                         except Exception as _e2:
                             logger.warning(f"Tier 2 profiling error (direct): {_e2}")
+                        # Tier 3 with timeout watchdog so dashboard never looks stuck
                         try:
-                            await self._tier3_modular_vulnerability_scanning(session)
+                            logger.info("➡️ Direct: Starting Tier3 vulnerability scanning…")
+                            await asyncio.wait_for(
+                                self._tier3_modular_vulnerability_scanning(session),
+                                timeout=60
+                            )
+                            logger.info("✅ Direct: Tier3 completed")
+                        except asyncio.TimeoutError:
+                            logger.warning("⏰ Direct: Tier3 timed out after 60s — running emergency fallback on latest direct URLs")
+                            # Emergency minimal inline scan on last few direct URLs
+                            try:
+                                with self.asset_manager._get_db() as db:
+                                    rows = db.execute(
+                                        "SELECT url FROM assets WHERE title='Direct URL Test' ORDER BY id DESC LIMIT 5"
+                                    ).fetchall()
+                                urls = [r[0] for r in rows if r and r[0]]
+                                if urls:
+                                    assets = [{'id': -1, 'url': u, 'status_code': 200, 'tech_stack': ''} for u in urls]
+                                    await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets, session, semaphore_limit=8)
+                                    logger.info(f"✅ Direct: Emergency fallback scanned {len(urls)} URLs")
+                                else:
+                                    logger.info("✅ Direct: No URLs available for emergency fallback")
+                            except Exception as _ef:
+                                logger.warning(f"Direct: emergency fallback failed: {_ef}")
                         except Exception as _e3:
                             logger.warning(f"Tier 3 vuln scanning error (direct): {_e3}")
+                        # Tier 4 (optional)
                         try:
                             await self._tier4_multi_ai_pentesting(session)
                         except Exception as _e4:
