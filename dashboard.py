@@ -2015,6 +2015,8 @@ def direct_url_scan():
                 if first_domain:
                     # Set up environment for authenticated engine scan
                     env = os.environ.copy()
+                    # Ensure process guard is active
+                    env.pop('MODSCAN_SKIP_PROCESS_GUARD', None)
                     env['MODSCAN_AUTH_DOMAIN'] = first_domain
                     env['MODSCAN_TTL_HOURS'] = '0'  # Force fresh scan
                     env['MODSCAN_DIRECT_URL_TESTING'] = '1'  # Skip discovery, test only provided URLs
@@ -2032,6 +2034,8 @@ def direct_url_scan():
                     env['MODSCAN_SINGLE_SHOT'] = '1'
                     # Enable strict IDOR comparison
                     env['MODSCAN_IDOR_STRICT'] = '1'
+                    # Stabilize small targets: lower inline concurrency (can be adjusted later via UI)
+                    env['MODSCAN_INLINE_CONCURRENCY'] = '1'
                     
                     # Log environment variables for debugging
                     app.logger.info(f"🔧 Direct URL Testing - Setting env vars: MODSCAN_DIRECT_URL_TESTING=1, MODSCAN_AUTH_DOMAIN={first_domain}")

@@ -371,7 +371,12 @@ class ModularVulnerabilityScanner:
                                 assets_inline = [{'id': -1, 'url': u, 'status_code': 200, 'tech_stack': ''} for u in direct_list if u.startswith('http')]
                                 if assets_inline:
                                     logger.info(f"⚡ Direct: Inline Tier3 scan of {len(assets_inline)} user URLs…")
-                                    await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=8)
+                                    try:
+                                        import os as __os
+                                        conc = int(__os.environ.get('MODSCAN_INLINE_CONCURRENCY', '1'))
+                                    except Exception:
+                                        conc = 1
+                                    await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=max(1, conc))
                                     logger.info("✅ Direct: Inline Tier3 scan complete")
                         except Exception as _dash:
                             logger.warning(f"Direct: inline scan of user URLs failed: {_dash}")
@@ -392,7 +397,12 @@ class ModularVulnerabilityScanner:
                             if urls_inline:
                                 assets_inline = [{'id': -1, 'url': u, 'status_code': 200, 'tech_stack': ''} for u in urls_inline]
                                 logger.info(f"⚡ Direct: Inline Tier3 scan of {len(assets_inline)} URLs…")
-                                await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=3)
+                                try:
+                                    import os as __os
+                                    conc = int(__os.environ.get('MODSCAN_INLINE_CONCURRENCY', '1'))
+                                except Exception:
+                                    conc = 1
+                                await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=max(1, conc))
                                 logger.info("✅ Direct: Inline Tier3 scan complete")
                         except Exception as _inl:
                             logger.warning(f"Direct: inline scan failed: {_inl}")
