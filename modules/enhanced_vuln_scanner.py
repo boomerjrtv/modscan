@@ -308,15 +308,23 @@ class EnhancedVulnerabilityScanner:
                 # Universal SQLMap output parsing - works for ANY target
                 output_lower = result['output'].lower()
                 
-                # Multiple detection patterns for universal compatibility
+                # Enhanced detection patterns based on successful SQLMap output
                 vuln_indicators = [
                     'injection point',
                     'parameter appears to be',
-                    'payload was found to be',
+                    'payload was found to be', 
                     'injectable parameter',
                     'is vulnerable',
                     'parameter is injectable',
-                    'sqlmap identified the following injection point'
+                    'sqlmap identified the following injection point',
+                    # New patterns from successful detection
+                    'boolean-based blind',
+                    'error-based',
+                    'time-based blind', 
+                    'union query',
+                    'appears to be.*injectable',
+                    'back-end dbms is',
+                    'injection vulnerability has already been detected'
                 ]
                 
                 sqlmap_found_vuln = any(indicator in output_lower for indicator in vuln_indicators)
@@ -324,16 +332,60 @@ class EnhancedVulnerabilityScanner:
                 if sqlmap_found_vuln:
                     from datetime import datetime
                     
-                    # Extract payload information if available
-                    payload = "SQLMap detected injection"
-                    if 'payload:' in output_lower:
-                        payload_match = re.search(r'payload:\s*([^\n]+)', result['output'], re.IGNORECASE)
+                    # Extract detailed vulnerability information
+                    findings_list = []
+                    
+                    # Parse multiple injection techniques found
+                    injection_types = []
+                    if 'boolean-based blind' in output_lower:
+                        injection_types.append('Boolean-based blind')
+                    if 'error-based' in output_lower:
+                        injection_types.append('Error-based')  
+                    if 'time-based blind' in output_lower:
+                        injection_types.append('Time-based blind')
+                    if 'union query' in output_lower:
+                        injection_types.append('UNION query')
+                    
+                    # Extract parameter name
+                    param_match = re.search(r'parameter:\s*(\w+)\s*\(', result['output'], re.IGNORECASE)
+                    affected_param = param_match.group(1) if param_match else 'unknown'
+                    
+                    # Extract DBMS information
+                    dbms_info = "Unknown DBMS"
+                    dbms_match = re.search(r'back-end DBMS:\s*([^\n]+)', result['output'], re.IGNORECASE)
+                    if dbms_match:
+                        dbms_info = dbms_match.group(1).strip()
+                    
+                    # Create findings for each injection type
+                    for inj_type in injection_types or ['SQL Injection']:
+                        # Extract specific payload for this type
+                        payload = f"SQLMap detected {inj_type}"
+                        payload_pattern = rf'{inj_type}.*?payload:\s*([^\n]+)'
+                        payload_match = re.search(payload_pattern, result['output'], re.IGNORECASE | re.DOTALL)
                         if payload_match:
                             payload = payload_match.group(1).strip()
                     
-                    finding = VulnerabilityFinding(
-                        url=url,
-                        vuln_type='SQL_INJECTION',
+                        finding = VulnerabilityFinding(
+                            url=url,
+                            vuln_type='SQL_INJECTION',
+                            severity='Critical',
+                            confidence=0.95,
+                            payload=payload,
+                            evidence=f"{inj_type} SQL injection in parameter '{affected_param}'. DBMS: {dbms_info}",
+                            discovered_at=datetime.now(),
+                            affected_parameter=affected_param,
+                            impact_description=f"SQL injection allows database access via {inj_type} technique"
+                        )
+                        findings_list.append(finding)
+                    
+                    # If we found multiple techniques, return all findings
+                    if findings_list:
+                        findings.extend(findings_list)
+                    else:
+                        # Fallback single finding
+                        finding = VulnerabilityFinding(
+                            url=url,
+                            vuln_type='SQL_INJECTION',
                         severity='Critical',
                         confidence=0.95,
                         payload=payload,
