@@ -1757,10 +1757,26 @@ def get_vulnerability_details(vuln_id):
                 return jsonify({"error": "Vulnerability not found"}), 404
             
             vuln_dict = dict(vuln)
-            
+            # Structured verification records if present
+            try:
+                verify_rows = db.execute(
+                    "SELECT method, marker, details, screenshot_path, created_at, oob_event_id FROM vulnerability_verifications WHERE vulnerability_id=? ORDER BY id DESC",
+                    (vuln_id,)
+                ).fetchall()
+                vuln_dict['verifications'] = [
+                    {
+                        'method': r['method'],
+                        'marker': r['marker'],
+                        'details': r['details'],
+                        'screenshot_path': r['screenshot_path'],
+                        'created_at': r['created_at'],
+                        'oob_event_id': r['oob_event_id']
+                    } for r in verify_rows
+                ]
+            except Exception:
+                vuln_dict['verifications'] = []
             # Only show asset-specific screenshot, not random exploit screenshots
             vuln_dict['exploit_screenshots'] = []
-            
             return jsonify(vuln_dict)
     except Exception as e:
         app.logger.error(f"Error getting vulnerability details: {e}")
@@ -1805,6 +1821,51 @@ def index():
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
     return response
+
+@app.route('/api/oob/callback', methods=['GET', 'POST'])
+def oob_callback_ingest():
+    """Ingest OOB collaborator callback. Expects a 'marker' string.
+
+    Example: GET /api/oob/callback?marker=SSRF_1693078123
+    Stores a verification record referencing the best matching vulnerability.
+    """
+    try:
+        import time
+        marker = request.values.get('marker', '').strip()
+        method = request.values.get('method', 'oob_confirmed').strip()
+        extra = request.values.get('extra', '')
+        if not marker:
+            return jsonify({"success": False, "error": "marker required"}), 400
+        mgr = AssetManager()
+        mgr.ensure_verification_table()
+        vuln_id = None
+        with mgr._get_db() as db:
+            r = db.execute(
+                "SELECT vulnerability_id FROM vulnerability_verifications WHERE marker LIKE ? ORDER BY id DESC LIMIT 1",
+                (f"%{marker}%",)
+            ).fetchone()
+            if r:
+                vuln_id = r[0]
+            if not vuln_id:
+                r = db.execute(
+                    "SELECT id FROM vulnerabilities WHERE evidence LIKE ? ORDER BY detected_at DESC LIMIT 1",
+                    (f"%{marker}%",)
+                ).fetchone()
+                if r:
+                    vuln_id = r[0]
+            if vuln_id:
+                mgr.add_verification_record(
+                    vulnerability_id=vuln_id,
+                    method=method,
+                    marker=marker,
+                    details=f"OOB callback received: {marker} {(' | ' + extra) if extra else ''}",
+                    screenshot_path="",
+                    oob_event_id=str(int(time.time()))
+                )
+        return jsonify({"success": True, "matched_vulnerability_id": vuln_id})
+    except Exception as e:
+        app.logger.error(f"OOB ingest error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 def get_scope():
     """Return current DB-backed scope list with active flag."""

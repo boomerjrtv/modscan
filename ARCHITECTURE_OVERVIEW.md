@@ -133,6 +133,22 @@ Case-insensitive matching ensures detection across all platforms.
 
 ---
 
+## ✅ Verification Architecture (Universal)
+
+Every finding is validated with deterministic, target‑agnostic techniques and visible proof:
+
+- SQLi: visible UNION marker in response; payload capture; DBMS fingerprints.
+- XSS: reflected marker (<img onerror>); DOM XSS execution flag; screenshots.
+- Command Injection: echo marker output in response; screenshots.
+- LFI: `/etc/passwd` patterns; screenshots.
+- Open Redirect: 3xx Location verification; screenshots.
+- SSRF: OOB beacon to collaborator/blind_xss_domain; `/api/oob/callback` ingests confirmations.
+- IDOR: swap numeric identifiers and record `state_diff`; screenshots.
+- CSRF: missing CSRF token on form render; screenshots.
+
+Evidence includes `Verification: <method>` and `Screenshot: <path>`. Structured records are stored in `vulnerability_verifications` (method, marker, details, screenshot_path, timestamp). The dashboard shows a VERIFIED badge, supports re‑verification, and provides a Proof modal listing verification steps and PoC screenshots.
+
+
 ## 🌊 **SCANNING WORKFLOW DECISION TREE**
 
 ```

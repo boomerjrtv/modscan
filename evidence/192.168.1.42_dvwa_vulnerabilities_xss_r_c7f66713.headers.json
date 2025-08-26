@@ -1,0 +1,18 @@
+{
+  "url": "http://192.168.1.42/dvwa/vulnerabilities/xss_r/?name=test&Submit=Submit",
+  "status": 200,
+  "headers": {
+    "cache-control": "no-cache, must-revalidate",
+    "connection": "Keep-Alive",
+    "content-encoding": "gzip",
+    "content-length": "1458",
+    "content-type": "text/html;charset=utf-8",
+    "date": "Tue, 26 Aug 2025 21:01:58 GMT",
+    "expires": "Tue, 23 Jun 2009 12:00:00 GMT",
+    "keep-alive": "timeout=5, max=100",
+    "pragma": "no-cache",
+    "server": "Apache/2.4.62 (Debian)",
+    "vary": "Accept-Encoding",
+    "x-xss-protection": "0"
+  }
+}
