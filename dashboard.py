@@ -2021,6 +2021,12 @@ def direct_url_scan():
                     env['MODSCAN_DIRECT_URL_TESTING'] = '1'  # Skip discovery, test only provided URLs
                     env['MODSCAN_VULN_VERBOSE'] = '1'  # Show detailed Tier 3 progress
                     env['MODSCAN_FORCE_REFRESH_EVERY_URL'] = '1'  # Strict targets: refresh auth per URL
+                    # Pass the exact URLs the user submitted so the engine scans them first
+                    try:
+                        import json as _json
+                        env['MODSCAN_DIRECT_URLS'] = _json.dumps(urls)
+                    except Exception:
+                        env['MODSCAN_DIRECT_URLS'] = '\n'.join(urls)
                     
                     # Log environment variables for debugging
                     app.logger.info(f"🔧 Direct URL Testing - Setting env vars: MODSCAN_DIRECT_URL_TESTING=1, MODSCAN_AUTH_DOMAIN={first_domain}")
