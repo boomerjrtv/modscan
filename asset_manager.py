@@ -587,17 +587,20 @@ class AssetManager:
             return {"vulnerabilities": [], "total": 0}
 
     def add_asset(self, url, host, discovery_method):
-        """Adds a new asset to the database using field mappings."""
+        """Adds or updates an asset and RETURNS its ID (universal helper)."""
         try:
             with self._get_db() as db:
                 # Use field mappings for database columns
                 fields = self.get_asset_fields()
-                
+
                 # Check if asset already exists first
-                check_query = f"SELECT id FROM assets WHERE {fields['url']} = ?"
+                check_query = f"SELECT {fields['id']} AS id FROM assets WHERE {fields['url']} = ?"
                 existing = db.execute(check_query, (url,)).fetchone()
-                
+
+                asset_id = None
+
                 if existing:
+                    asset_id = existing["id"] if isinstance(existing, dict) or hasattr(existing, "keys") else existing[0]
                     # Update existing asset
                     update_query = f"""
                         UPDATE assets SET 
@@ -613,9 +616,10 @@ class AssetManager:
                         VALUES (?, ?, ?, ?, ?)
                     """
                     cursor = db.execute(insert_query, (url, host, discovery_method, time.strftime('%Y-%m-%d %H:%M:%S'), time.strftime('%Y-%m-%d %H:%M:%S')))
-                
+                    asset_id = cursor.lastrowid
+
                 db.commit()  # Explicitly commit the transaction
-                
+
                 # Log activity if new asset was actually added
                 if cursor.rowcount > 0:
                     try:
@@ -623,9 +627,12 @@ class AssetManager:
                         activity_logger.log_asset_discovered(url, discovery_method)
                     except Exception:
                         pass  # Don't fail asset addition if logging fails
-                        
+
+                return asset_id
+
         except Exception as e:
             print(f"Error adding asset {url}: {e}")
+            return None
 
     def get_assets(self, search_query='', page=1, per_page=25):
         """Retrieves assets from the database with search and pagination using field mappings."""
@@ -1291,7 +1298,7 @@ class AssetManager:
                     (asset_id, type, description, severity, evidence, payload, detected_at, confidence)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 '''
-                db.execute(query, (
+                cur = db.execute(query, (
                     asset_id,
                     finding.vuln_type,                                    # vuln_type -> type
                     finding.impact_description or finding.evidence,      # impact_description -> description
@@ -1301,9 +1308,81 @@ class AssetManager:
                     finding.discovered_at.isoformat() if isinstance(finding.discovered_at, datetime) else finding.discovered_at,
                     finding.confidence
                 ))
+                vuln_id = cur.lastrowid
                 print(f"✅ Added vulnerability: {finding.vuln_type} ({finding.severity}) for asset {asset_id}")
+                try:
+                    # Opportunistic structured verification logging from evidence
+                    self._maybe_store_verification_from_evidence(vuln_id, finding)
+                except Exception:
+                    pass
+                return vuln_id
         except Exception as e:
             print(f"Error adding vulnerability finding: {e}")
+            return None
+
+    def ensure_verification_table(self):
+        try:
+            with self._get_db() as db:
+                db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS vulnerability_verifications (
+                        id INTEGER PRIMARY KEY,
+                        vulnerability_id INTEGER,
+                        method TEXT,
+                        marker TEXT,
+                        details TEXT,
+                        screenshot_path TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        oob_event_id TEXT
+                    )
+                    """
+                )
+        except Exception as e:
+            print(f"Error ensuring verification table: {e}")
+
+    def add_verification_record(self, vulnerability_id: int, method: str, marker: str = "", details: str = "", screenshot_path: str = "", oob_event_id: str = ""):
+        try:
+            self.ensure_verification_table()
+            with self._get_db() as db:
+                db.execute(
+                    """
+                    INSERT INTO vulnerability_verifications (vulnerability_id, method, marker, details, screenshot_path, oob_event_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (vulnerability_id, method, marker, details, screenshot_path, oob_event_id)
+                )
+        except Exception as e:
+            print(f"Error adding verification record: {e}")
+
+    def _maybe_store_verification_from_evidence(self, vulnerability_id: int, finding: VulnerabilityFinding):
+        try:
+            ev = finding.evidence or ""
+            if "Verification:" not in ev:
+                return
+            # Extract method after 'Verification:' up to '|' or end
+            method = ev.split("Verification:", 1)[1].strip()
+            if '|' in method:
+                method = method.split('|', 1)[0].strip()
+            # Try to extract marker token text
+            marker = ""
+            for token in ["marker", "Marker", "MODSCAN", "XSS_", "CMD_", "SSRF_"]:
+                if token in ev:
+                    # crude capture
+                    try:
+                        part = ev.split(token, 1)[1]
+                        marker = token + part.split()[0]
+                        break
+                    except Exception:
+                        continue
+            self.add_verification_record(
+                vulnerability_id,
+                method=method,
+                marker=marker,
+                details=ev[:500],
+                screenshot_path=getattr(finding, 'screenshot_path', '') or ''
+            )
+        except Exception:
+            pass
     
     def add_vulnerability(self, vuln_data: dict):
         """
