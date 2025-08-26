@@ -2027,6 +2027,9 @@ def direct_url_scan():
                         env['MODSCAN_DIRECT_URLS'] = _json.dumps(urls)
                     except Exception:
                         env['MODSCAN_DIRECT_URLS'] = '\n'.join(urls)
+                    # Only scan the provided URLs; disable extra tools that add noise in direct mode
+                    env['MODSCAN_ONLY_DIRECT_URLS'] = '1'
+                    env['MODSCAN_DISABLE_NUCLEI'] = '1'
                     
                     # Log environment variables for debugging
                     app.logger.info(f"🔧 Direct URL Testing - Setting env vars: MODSCAN_DIRECT_URL_TESTING=1, MODSCAN_AUTH_DOMAIN={first_domain}")
