@@ -185,17 +185,25 @@ class ParallelVulnScanner:
     async def _store_universal_findings(self, url: str, findings: List[VulnerabilityFinding]):
         """Store findings universally for ANY target"""
         try:
-            asset_id = self.asset_manager.add_asset(url, 200)
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            host = parsed_url.netloc
+            asset_id = self.asset_manager.add_asset(url, host, "parallel_vuln_scan")
             for finding in findings:
                 self.asset_manager.add_vulnerability_finding(finding, asset_id)
+                logger.info(f"✅ Stored {finding.vuln_type} vulnerability for {url}")
         except Exception as e:
             logger.error(f"Failed to store findings: {e}")
     
     async def _store_single_finding(self, url: str, finding: VulnerabilityFinding):
         """Store a single finding"""
         try:
-            asset_id = self.asset_manager.add_asset(url, 200)
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            host = parsed_url.netloc
+            asset_id = self.asset_manager.add_asset(url, host, "ml_reflection_scan")
             self.asset_manager.add_vulnerability_finding(finding, asset_id)
+            logger.info(f"✅ Stored ML finding: {finding.vuln_type} for {url}")
         except Exception as e:
             logger.debug(f"Failed to store finding: {e}")
 
