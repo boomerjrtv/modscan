@@ -568,6 +568,13 @@ class ModularVulnerabilityScanner:
             except Exception as e:
                 logger.debug(f"ML prioritization skipped: {e}")
             logger.info(f"🚨 TIER 3: Modular vulnerability scanning {len(ready_assets)} assets")
+            try:
+                preview = ", ".join(a.get('url','') for a in ready_assets[:5])
+                if len(ready_assets) > 5:
+                    preview += ", …"
+                logger.info(f"🔬 TIER 3 preview: {preview}")
+            except Exception:
+                pass
             
             # Process vulnerabilities using VulnerabilityScanner module
             vulnerability_results = await self.vulnerability_scanner.scan_assets_for_vulnerabilities(

@@ -101,23 +101,32 @@ class DirectVulnScanner:
             return results
 
 async def main():
-    if len(sys.argv) < 2:
-        print("Usage:")
-        print("  python direct_vuln_scan.py --existing [limit]   # Scan existing assets from DB")
-        print("  python direct_vuln_scan.py <url1> [url2] ...    # Scan specific URLs")
-        print("Examples:")
-        print("  python direct_vuln_scan.py --existing 5")
-        print("  python direct_vuln_scan.py http://192.168.1.42/dvwa/vulnerabilities/sqli/")
-        sys.exit(1)
+    # Flexible inputs: argv, --file, or stdin
+    args = sys.argv[1:]
+    urls: List[str] = []
+    if not args:
+        data = sys.stdin.read()
+        if data:
+            urls = [u.strip() for u in data.replace('\r','\n').split('\n') if u.strip()]
+        else:
+            print("Usage:")
+            print("  python direct_vuln_scan.py --existing [limit]   # Scan existing assets from DB")
+            print("  python direct_vuln_scan.py --file urls.txt      # One URL per line")
+            print("  python direct_vuln_scan.py <url1> [url2] ...    # Scan specific URLs")
+            sys.exit(1)
+    elif args and args[0] == '--file' and len(args) > 1:
+        with open(args[1], 'r') as f:
+            urls = [l.strip() for l in f if l.strip()]
+    elif args and args[0] == '--existing':
+        limit = int(args[1]) if len(args) > 1 else 10
+        scanner = DirectVulnScanner()
+        await scanner.scan_existing_assets(limit)
+        return
+    else:
+        urls = [a for a in args if a.startswith('http')]
     
     scanner = DirectVulnScanner()
-    
-    if sys.argv[1] == "--existing":
-        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 10
-        await scanner.scan_existing_assets(limit)
-    else:
-        urls = sys.argv[1:]
-        await scanner.scan_urls_direct(urls)
+    await scanner.scan_urls_direct(urls)
 
 if __name__ == "__main__":
     asyncio.run(main())

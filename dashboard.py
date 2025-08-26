@@ -1858,6 +1858,189 @@ def scan_unauth():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/scan/direct', methods=['POST'])
+def direct_url_scan():
+    """Direct vulnerability testing on specific URLs"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "error": "No JSON data provided"}), 400
+            
+        urls = data.get('urls', [])
+        if isinstance(urls, str):
+            urls = [u.strip() for u in urls.strip().split('\n') if u.strip()]
+        
+        if not urls:
+            return jsonify({"success": False, "error": "No URLs provided"}), 400
+            
+        credentials = data.get('credentials', {})
+        locked_cookies = data.get('locked_cookies', '')
+        
+        # Process URLs and handle authentication
+        from urllib.parse import urlparse
+        import requests
+        
+        results = []
+        added_count = 0
+        
+        with sqlite3.connect(app.config['database_path']) as db:
+            for url in urls:
+                try:
+                    parsed = urlparse(url)
+                    domain = parsed.netloc
+                    base_url = f"{parsed.scheme}://{domain}"
+                    
+                    # Handle authentication if credentials provided
+                    session_cookies = ''
+                    if credentials and credentials.get('username') and credentials.get('password'):
+                        try:
+                            # Use provided login_url or fallback to base_url
+                            login_url = credentials.get('login_url', base_url)
+                            
+                            # Perform login using existing login function
+                            session = requests.Session()
+                            response = session.get(login_url, timeout=10, verify=False)
+                            if response.status_code == 200:
+                                # Look for CSRF token
+                                csrf_token = None
+                                if 'user_token' in response.text:
+                                    import re
+                                    token_match = re.search(r'name=["\']user_token["\'] value=["\']([^"\']+)["\']', response.text)
+                                    if token_match:
+                                        csrf_token = token_match.group(1)
+                                
+                                # Prepare login data
+                                login_data = {
+                                    'username': credentials['username'],
+                                    'password': credentials['password'],
+                                    'Login': 'Login'
+                                }
+                                
+                                if csrf_token:
+                                    login_data['user_token'] = csrf_token
+                                
+                                # Submit login
+                                login_response = session.post(login_url, data=login_data, timeout=10, verify=False)
+                                
+                                # Check for successful login indicators
+                                if (login_response.status_code == 200 and
+                                    ('welcome' in login_response.text.lower() or
+                                     'dashboard' in login_response.text.lower() or
+                                     'logout' in login_response.text.lower() or
+                                     'vulnerabilities' in login_response.text.lower())):
+                                    
+                                    # Extract cookies
+                                    cookies = {}
+                                    for cookie in session.cookies:
+                                        cookies[cookie.name] = cookie.value
+                                    
+                                    # Apply security level override for DVWA
+                                    if 'security' in cookies and 'dvwa' in login_url.lower():
+                                        cookies['security'] = 'low'  # Force security to low for testing
+                                    
+                                    session_cookies = '; '.join([f"{name}={value}" for name, value in cookies.items()])
+                                    results.append(f"✅ Logged in to {domain}")
+                                else:
+                                    results.append(f"⚠️ Login failed for {domain}")
+                            else:
+                                results.append(f"⚠️ Could not access login page for {domain}")
+                                
+                        except Exception as e:
+                            results.append(f"⚠️ Login error for {domain}: {str(e)}")
+                    
+                    # Apply locked cookies if provided
+                    if locked_cookies:
+                        # Parse and merge cookies
+                        if session_cookies:
+                            existing_dict = {}
+                            for cookie in session_cookies.split(';'):
+                                cookie = cookie.strip()
+                                if '=' in cookie:
+                                    name, value = cookie.split('=', 1)
+                                    existing_dict[name.strip()] = value.strip()
+                        else:
+                            existing_dict = {}
+                        
+                        # Apply locked cookies (override existing)
+                        for cookie in locked_cookies.split(';'):
+                            cookie = cookie.strip()
+                            if '=' in cookie:
+                                name, value = cookie.split('=', 1)
+                                existing_dict[name.strip()] = value.strip()
+                        
+                        session_cookies = '; '.join([f"{name}={value}" for name, value in existing_dict.items()])
+                        results.append(f"🔒 Applied locked cookies for {domain}")
+                    
+                    # Add as asset to database
+                    db.execute("""
+                        INSERT OR REPLACE INTO assets (url, host, discovered_at, status_code, title, tech_stack) 
+                        VALUES (?, ?, datetime('now'), NULL, 'Direct URL Test', 'Manual Entry')
+                    """, (url, domain))
+                    added_count += 1
+                    
+                    # Store cookies and auth policy in database if we have them
+                    if session_cookies:
+                        username = credentials.get('username', '') if credentials else ''
+                        password = credentials.get('password', '') if credentials else ''
+                        
+                        # Create auth policy for auto-refresh  
+                        auth_policy = {
+                            'auto_refresh': data.get('auto_refresh', False),
+                            'locked_cookies': locked_cookies,
+                            'login_url': credentials.get('login_url', f"{base_url}/login.php"),
+                            'username_field': 'username',
+                            'password_field': 'password'
+                        }
+                        
+                        # Store in cookies table
+                        db.execute("""
+                            INSERT OR REPLACE INTO cookies 
+                            (domain, cookie, persistent, auth_keys, policy, last_updated) 
+                            VALUES (?, ?, ?, ?, ?, datetime('now'))
+                        """, (domain, session_cookies, f'username:{username}', f'password:{password}', 
+                             json.dumps(auth_policy)))
+                    
+                except Exception as e:
+                    results.append(f"❌ Error processing {url}: {str(e)}")
+                    continue
+                    
+            db.commit()
+        
+        # After adding URLs, trigger authenticated vulnerability scanning
+        if added_count > 0:
+            try:
+                # Get the domain from the first URL for scanning
+                first_domain = urlparse(urls[0]).netloc if urls else None
+                
+                if first_domain:
+                    # Set up environment for authenticated engine scan
+                    env = os.environ.copy()
+                    env['MODSCAN_AUTH_DOMAIN'] = first_domain
+                    env['MODSCAN_TTL_HOURS'] = '0'  # Force fresh scan
+                    env['MODSCAN_SKIP_PROCESS_GUARD'] = '1'
+                    env['MODSCAN_DIRECT_URL_TESTING'] = '1'  # Skip discovery, test only provided URLs
+                    env['MODSCAN_VULN_VERBOSE'] = '1'  # Show detailed Tier 3 progress
+                    
+                    # Log environment variables for debugging
+                    app.logger.info(f"🔧 Direct URL Testing - Setting env vars: MODSCAN_DIRECT_URL_TESTING=1, MODSCAN_AUTH_DOMAIN={first_domain}")
+                    
+                    # Start the engine with authentication for this domain
+                    subprocess.Popen(['python3', 'engine.py'], env=env, cwd='/home/michael/recon-platform/modscan')
+                    results.append(f"🚀 Started authenticated vulnerability scanning for {first_domain}")
+            except Exception as e:
+                results.append(f"⚠️ Failed to start vulnerability scan: {str(e)}")
+            
+        return jsonify({
+            "success": True, 
+            "message": f"Added {added_count} URLs and started vulnerability testing",
+            "urls_added": added_count,
+            "auth_results": results
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Direct scan error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 def init_db_and_scope():
     with app.app_context():
         db = sqlite3.connect(app.config['database_path'])
