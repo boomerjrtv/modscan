@@ -421,10 +421,10 @@ class ModularVulnerabilityScanner:
                                 logger.warning(f"Direct: emergency fallback failed: {_ef}")
                         except Exception as _e3:
                             logger.warning(f"Tier 3 vuln scanning error (direct): {_e3}")
-                        # If dashboard requested only these URLs, skip the broader Tier3/Tier4 to avoid scanning everything
+                        # If dashboard requested only these URLs, stop after inline pass and one focused Tier3
                         if _os.environ.get('MODSCAN_ONLY_DIRECT_URLS'):
-                            logger.info("✅ Direct: Only user URLs requested — skipping broader Tier3/Tier4 this cycle")
-                            continue
+                            logger.info("✅ Direct: Only user URLs requested — stopping after direct scan")
+                            break
 
                         # Tier 4 (optional)
                         try:

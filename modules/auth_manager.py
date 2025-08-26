@@ -88,14 +88,40 @@ class AuthManager:
         return '; '.join(parts)
 
     def load_policy(self, domain: str) -> Tuple[Optional[str], Optional[Dict]]:
-        """Return (cookie_string, policy_dict) for domain from DB if present."""
+        """Return (cookie_string, policy_dict) for domain from DB if present.
+
+        Robust to how the key was saved (full URL vs host). Tries:
+        1) Exact key
+        2) Host-only key
+        3) Any row whose domain contains the host
+        Falls back to config/env login policy if none found.
+        """
         try:
             with self.asset_manager._get_db() as db:
+                import json
+                # 1) Exact key
                 row = db.execute("SELECT cookie, policy FROM cookies WHERE domain=?", (domain,)).fetchone()
+                # 2) Host-only key
+                if not row and domain:
+                    host = domain
+                    try:
+                        from urllib.parse import urlparse
+                        host = (urlparse(domain).hostname or domain)
+                    except Exception:
+                        host = domain
+                    row = db.execute("SELECT cookie, policy FROM cookies WHERE domain=?", (host,)).fetchone()
+                # 3) Contains host anywhere (last resort)
+                if not row and domain:
+                    try:
+                        from urllib.parse import urlparse
+                        host = (urlparse(domain).hostname or domain)
+                    except Exception:
+                        host = domain
+                    row = db.execute("SELECT cookie, policy FROM cookies WHERE domain LIKE ? ORDER BY last_updated DESC", (f"%{host}%",)).fetchone()
+
                 cookie = row[0] if row and len(row) > 0 else None
                 pol = None
                 if row and len(row) > 1 and row[1]:
-                    import json
                     try:
                         pol = json.loads(row[1])
                     except Exception:
@@ -182,10 +208,14 @@ class AuthManager:
             # Persist cookie back to DB (keep persistent merges to backend endpoints elsewhere)
             try:
                 with self.asset_manager._get_db() as db:
-                    db.execute(
-                        "INSERT INTO cookies(domain, cookie, last_updated) VALUES(?,?,datetime('now'))\n                         ON CONFLICT(domain) DO UPDATE SET cookie=excluded.cookie, last_updated=excluded.last_updated",
-                        (domain, new_cookie)
-                    )
+                    from urllib.parse import urlparse
+                    host = (urlparse(domain).hostname or domain) if '://' in domain else domain
+                    # Save under both the original domain key and host-only key for resilient lookups
+                    for key in {domain, host}:
+                        db.execute(
+                            "INSERT INTO cookies(domain, cookie, last_updated) VALUES(?,?,datetime('now'))\n                             ON CONFLICT(domain) DO UPDATE SET cookie=excluded.cookie, last_updated=excluded.last_updated",
+                            (key, new_cookie)
+                        )
                     db.commit()
             except Exception:
                 pass
