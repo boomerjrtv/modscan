@@ -13,6 +13,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import Dict, Optional
 
+# Use universal AuthManager (policy-driven) to refresh sessions
+try:
+    from .auth_manager import AuthManager
+except Exception:
+    AuthManager = None  # Fallback if not available; we will skip refresh
+
 logger = logging.getLogger("ScreenshotManager")
 
 class ScreenshotManager:
@@ -294,12 +300,18 @@ class ScreenshotManager:
                 '--disable-dev-shm-usage',
                 '--disable-extensions',
                 '--disable-plugins',
-                '--disable-images',  # Faster loading
                 '--disable-background-timer-throttling',
                 f'--window-size={self.window_size}',
                 f'--screenshot={screenshot_path}',
                 '--virtual-time-budget=10000',  # 10 second budget
             ]
+
+            # Optional: allow disabling images for speed via config
+            try:
+                if bool(self.config.get('screenshot_disable_images', False)):
+                    chrome_args.insert(8, '--disable-images')
+            except Exception:
+                pass
             
             # Keep unauthenticated fast path; authenticated handled by Playwright
             
@@ -352,14 +364,28 @@ class ScreenshotManager:
             # Load from DB cookies table if present
             try:
                 with self.asset_manager._get_db() as db:
-                    row = db.execute("SELECT cookie, policy FROM cookies WHERE domain=?", (host,)).fetchone()
-                    if row and (row[0] or row[1]):
+                    row = db.execute("SELECT cookie, persistent, auth_keys, policy FROM cookies WHERE domain=?", (host,)).fetchone()
+                    if row and (row[0] or row[3]):
                         if row[0]:
                             cookie_string = row[0]
-                        if row[1]:
+                        # include locked pairs and auth key names in cfg
+                        try:
+                            if row[1]:
+                                import json as _json
+                                pl = _json.loads(row[1])
+                                if isinstance(pl, list):
+                                    cfg['auth_persistent_pairs'] = [str(x) for x in pl]
+                            if row[2]:
+                                import json as _json
+                                aks = _json.loads(row[2])
+                                if isinstance(aks, list):
+                                    cfg['auth_keys'] = [str(x) for x in aks]
+                        except Exception:
+                            pass
+                        if row[3]:
                             import json
                             try:
-                                pol = json.loads(row[1]) if row[1] else None
+                                pol = json.loads(row[3]) if row[3] else None
                                 if isinstance(pol, dict):
                                     if pol.get('headers'):
                                         cfg['auth_headers'] = pol['headers']
@@ -382,76 +408,25 @@ class ScreenshotManager:
             return dict(self.config), self.config.get('auth_cookie'), self.config.get('auth_domain')
 
     async def _refresh_authentication(self, auth_domain: str) -> Optional[str]:
-        """Auto-refresh authentication by logging in to get fresh cookies"""
+        """Universal session refresh using policy-driven AuthManager.
+
+        - Loads policy from cookies table for the given domain
+        - Replays generic login with CSRF extraction
+        - Persists fresh cookie back to DB
+        """
         try:
-            import aiohttp
-            from bs4 import BeautifulSoup
-            
-            # DVWA login endpoint
-            login_url = f"http://{auth_domain}/dvwa/login.php"
-            
-            async with aiohttp.ClientSession() as session:
-                # Get login page and CSRF token
-                async with session.get(login_url) as resp:
-                    if resp.status != 200:
-                        return None
-                    html = await resp.text()
-                    
-                soup = BeautifulSoup(html, 'html.parser')
-                csrf_token = soup.find('input', {'name': 'user_token'})
-                if not csrf_token:
-                    return None
-                    
-                csrf_value = csrf_token.get('value')
-                
-                # Login with credentials
-                login_data = {
-                    'username': 'admin',
-                    'password': 'password',
-                    'Login': 'Login',
-                    'user_token': csrf_value
-                }
-                
-                async with session.post(login_url, data=login_data) as login_resp:
-                    if login_resp.status not in [200, 302]:
-                        return None
-                        
-                    # Get session cookies
-                    cookies = session.cookie_jar.filter_cookies(login_url)
-                    phpsessid = None
-                    
-                    for cookie in cookies.values():
-                        if cookie.key == 'PHPSESSID':
-                            phpsessid = cookie.value
-                            break
-                    
-                    if phpsessid:
-                        # Set security to low
-                        security_data = {'security': 'low', 'seclev_submit': 'Submit'}
-                        security_url = f"http://{auth_domain}/dvwa/security.php"
-                        await session.post(security_url, data=security_data)
-                        
-                        fresh_cookie = f"security=low; PHPSESSID={phpsessid}"
-                        
-                        # Update database with fresh cookie
-                        try:
-                            import sqlite3
-                            conn = sqlite3.connect('lean_recon.db')
-                            cur = conn.cursor()
-                            cur.execute('UPDATE cookies SET cookie = ? WHERE domain = ?', 
-                                      (fresh_cookie, auth_domain))
-                            conn.commit()
-                            conn.close()
-                            logger.debug(f"🔄 Refreshed authentication for {auth_domain}")
-                        except Exception:
-                            pass
-                            
-                        return fresh_cookie
-                        
+            if not AuthManager:
+                return None
+            am = AuthManager(self.asset_manager, self.config)
+            cookie, pol = am.load_policy(auth_domain)
+            if not pol or not (pol.get('login') and pol['login'].get('url')):
+                return None
+            # Use AuthManager to refresh session
+            new_cookie = await am.refresh_session(auth_domain, pol)
+            return new_cookie
         except Exception as e:
-            logger.debug(f"Failed to refresh authentication: {e}")
-            
-        return None
+            logger.debug(f"Failed to refresh authentication generically: {e}")
+            return None
 
     async def _take_screenshot_with_playwright(self, url: str, screenshot_path: Path, auth_cookie: Optional[str], auth_domain: Optional[str], effective_config: Optional[Dict]=None) -> bool:
         """Take authenticated screenshot using Playwright with universal cookie injection.
@@ -469,15 +444,11 @@ class ScreenshotManager:
             cfg = effective_config or self.config
             parsed = urlparse(url)
             hostname = parsed.hostname or ''
-            # Determine cookie domain scope: prefer provided auth_domain that matches hostname
-            scope_domain = None
-            if auth_domain and (hostname.endswith(auth_domain) or auth_domain in hostname):
-                # Ensure leading dot for subdomain-scoped cookies
-                scope_domain = auth_domain if auth_domain.startswith('.') else f".{auth_domain}"
-            else:
-                scope_domain = hostname if hostname.startswith('.') else f".{hostname}"
+            # Determine cookie scope URL including port when present
+            netloc = parsed.netloc or hostname
+            scope_url = f"{parsed.scheme or 'http'}://{netloc}"
 
-            # Auto-refresh authentication if we have an auth_domain  
+            # Auto-refresh authentication if we have an auth_domain (policy-driven)
             if auth_domain:
                 fresh_cookie = await self._refresh_authentication(auth_domain)
                 if fresh_cookie:
@@ -498,6 +469,23 @@ class ScreenshotManager:
                             cookie_map[k.strip()] = v.strip()
                 except Exception:
                     cookie_map = {}
+
+            # Enforce locked cookie pairs except declared auth keys
+            try:
+                locked = cfg.get('auth_persistent_pairs') or []
+                auth_names = set([str(x).strip() for x in (cfg.get('auth_keys') or []) if str(x).strip()])
+                for kv in locked:
+                    if isinstance(kv, str) and '=' in kv:
+                        k, v = kv.split('=', 1)
+                        k = k.strip(); v = v.strip()
+                        if not k or not v:
+                            continue
+                        if k in auth_names:
+                            cookie_map.setdefault(k, v)
+                        else:
+                            cookie_map[k] = v
+            except Exception:
+                pass
 
             if not cookie_map:
                 logger.debug("No auth cookies parsed; falling back to unauthenticated Chrome path")
@@ -591,7 +579,7 @@ Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
                         except Exception:
                             pass
 
-                # Convert to Playwright cookie objects
+                # Convert to Playwright cookie objects using url-based scoping (works for IPs)
                 pw_cookies = []
                 for name, value in cookie_map.items():
                     if not name:
@@ -599,7 +587,7 @@ Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
                     pw_cookies.append({
                         'name': name,
                         'value': value,
-                        'domain': scope_domain,
+                        'url': scope_url,
                         'path': '/',
                         'httpOnly': False,
                         'secure': parsed.scheme == 'https',

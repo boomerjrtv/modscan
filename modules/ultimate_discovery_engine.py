@@ -12,11 +12,12 @@ import logging
 import tempfile
 import os
 import re
+import shutil
 from pathlib import Path
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Tuple
 from urllib.parse import urljoin
 from datetime import datetime
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urlsplit
 
 # === MODSCAN TTL GUARD (auto-injected) ===
 try:
@@ -91,7 +92,190 @@ class UltimateDiscoveryEngine:
         
         # ML patterns for intelligent discovery
         self.ml_patterns = self._load_ml_patterns()
+
+    def _find_binary(self, name: str, config_key: Optional[str] = None, env_key: Optional[str] = None) -> Optional[str]:
+        """Locate a binary in a universal way without hardcoding paths.
+
+        Order: config.tools[key] -> env[env_key] -> shutil.which(name)
+        """
+        try:
+            # Config override
+            bin_path = None
+            if config_key and isinstance(self.config.get("tools"), dict):
+                bin_path = self.config["tools"].get(config_key)
+            # Env override
+            if not bin_path and env_key and os.environ.get(env_key):
+                bin_path = os.environ.get(env_key)
+            # PATH search
+            if not bin_path:
+                bin_path = shutil.which(name)
+            # Validate existence
+            if bin_path and os.path.exists(bin_path):
+                return bin_path
+        except Exception:
+            pass
+        return None
         
+    def _build_auth_headers_for_host(self, host: str) -> Dict[str, str]:
+        """Build latest auth headers for the given host from the cookies table.
+        - Pulls fresh cookie and policy
+        - Merges persistent cookies (e.g., security=low)
+        - Adds bearer/auth headers from policy when present
+        """
+        headers: Dict[str, str] = {}
+        try:
+            with self.asset_manager._get_db() as db:
+                cookie = persistent = policy = auth_keys = None
+                # 1) Exact match
+                row = db.execute(
+                    "SELECT cookie, persistent, auth_keys, policy FROM cookies WHERE domain=?",
+                    (host,)
+                ).fetchone()
+                # 2) Flexible match: choose best candidate with longest matching suffix
+                if not row:
+                    all_rows = db.execute(
+                        "SELECT domain, cookie, persistent, auth_keys, policy, last_updated FROM cookies"
+                    ).fetchall()
+                    best = None
+                    best_len = -1
+                    for r in all_rows:
+                        d = (r[0] or '').lower()
+                        if not d:
+                            continue
+                        if host.endswith(d) or d.endswith(host):
+                            if len(d) > best_len:
+                                best = r
+                                best_len = len(d)
+                    if best:
+                        cookie = best[1] or None
+                        persistent = best[2] or None
+                        auth_keys = best[3] or None
+                        policy = best[4] or None
+                else:
+                    cookie = row[0] or None
+                    persistent = row[1] or None
+                    auth_keys = row[2] or None
+                    policy = row[3] or None
+                # Merge persistent cookies if available
+                if cookie:
+                    cookie_map = {}
+                    try:
+                        for part in (cookie or '').split(';'):
+                            if '=' in part:
+                                k, v = part.strip().split('=', 1)
+                                cookie_map[k.strip()] = v.strip()
+                    except Exception:
+                        pass
+                    # Parse auth_keys list (names that are allowed to refresh and should not be overridden)
+                    auth_names = set()
+                    if auth_keys:
+                        import json as _json
+                        try:
+                            ak = _json.loads(auth_keys)
+                            if isinstance(ak, list):
+                                auth_names = {str(x).strip() for x in ak if str(x).strip()}
+                        except Exception:
+                            pass
+                    if persistent:
+                        import json as _json
+                        try:
+                            pers_list = _json.loads(persistent)
+                            if isinstance(pers_list, list):
+                                for kv in pers_list:
+                                    if isinstance(kv, str) and '=' in kv:
+                                        k, v = kv.split('=', 1)
+                                        k = k.strip(); v = v.strip()
+                                        if not k or not v:
+                                            continue
+                                        # If k is marked as auth, do NOT override; otherwise enforce locked value
+                                        if k in auth_names:
+                                            # Leave refreshed auth cookie value as-is
+                                            cookie_map.setdefault(k, v)
+                                        else:
+                                            cookie_map[k] = v
+                        except Exception:
+                            pass
+                    # Rebuild final cookie string
+                    if cookie_map:
+                        cookie = '; '.join([f"{k}={v}" for k, v in cookie_map.items()])
+                # Apply to headers
+                if cookie:
+                    headers['Cookie'] = cookie
+                    # Update engine-wide memory so subsequent calls reuse
+                    self.auth_cookie = cookie
+                # Merge additional policy headers/bearer
+                if policy:
+                    import json as _json
+                    try:
+                        pol = _json.loads(policy)
+                        if isinstance(pol, dict):
+                            if pol.get('headers') and isinstance(pol['headers'], dict):
+                                for k, v in pol['headers'].items():
+                                    headers[str(k)] = str(v)
+                            if pol.get('bearer'):
+                                headers['Authorization'] = f"Bearer {pol['bearer']}"
+                    except Exception:
+                        pass
+                # DEBUG: Log which cookies/header keys are being used (names only, not values)
+                try:
+                    cookie_names = []
+                    if headers.get('Cookie'):
+                        for p in [s.strip() for s in headers['Cookie'].split(';') if s.strip()]:
+                            if '=' in p:
+                                cookie_names.append(p.split('=', 1)[0])
+                    header_keys = [k for k in headers.keys() if k.lower() != 'cookie']
+                    # Highlight if a known persistent cookie was intended but missing
+                    missing_persist = []
+                    try:
+                        if persistent:
+                            import json as _json
+                            pers_list = _json.loads(persistent)
+                            names_only = []
+                            if isinstance(pers_list, list):
+                                for kv in pers_list:
+                                    if isinstance(kv, str) and '=' in kv:
+                                        names_only.append(kv.split('=',1)[0].strip())
+                            for name in names_only:
+                                if name and name not in cookie_names:
+                                    missing_persist.append(name)
+                    except Exception:
+                        pass
+                    if missing_persist:
+                        logger.info(f"[auth] {host}: cookies={cookie_names} headers={header_keys} (missing persistent {missing_persist})")
+                    else:
+                        logger.info(f"[auth] {host}: cookies={cookie_names} headers={header_keys}")
+                except Exception:
+                    pass
+        except Exception:
+            # Fall back to in-memory cookie if present
+            if self.auth_cookie:
+                headers['Cookie'] = self.auth_cookie
+        return headers
+
+    async def _refresh_cookie_if_login(self, host: str, html: str) -> Optional[str]:
+        """If page looks like login and a policy exists, refresh the cookie using AuthManager.
+
+        Returns a new cookie string or None.
+        """
+        try:
+            # Lazy import to avoid circulars
+            from .auth_manager import AuthManager
+            if not html:
+                return None
+            am = AuthManager(self.asset_manager, self.config)
+            if not am.looks_like_login(html):
+                return None
+            cookie, pol = am.load_policy(host)
+            if not pol or not (pol.get('login') and pol['login'].get('url')):
+                return None
+            new_cookie = await am.refresh_session(host, pol)
+            if new_cookie:
+                self.auth_cookie = new_cookie
+                return new_cookie
+        except Exception:
+            return None
+        return None
+
     def _load_ml_patterns(self) -> Dict:
         """Load ML-trained patterns for intelligent discovery"""
         return {
@@ -126,8 +310,9 @@ class UltimateDiscoveryEngine:
         discovered_urls.update(seclists_urls)
         logger.info(f"⚡ Fast SecLists: {len(seclists_urls)} URLs discovered")
         
-        # SECONDARY: Authenticated crawling if available
-        if self.auth_cookie and (self.auth_domain == domain):
+        # SECONDARY: Authenticated crawling if available (use freshest DB cookie/policy)
+        auth_headers_probe = self._build_auth_headers_for_host(domain)
+        if auth_headers_probe.get('Cookie'):
             same_domain_seeds = self._existing_urls_for_domain(domain)
             crawled_urls = await self._auth_smart_crawl(domain, extra_seeds=same_domain_seeds)
             discovered_urls.update(crawled_urls)
@@ -139,18 +324,7 @@ class UltimateDiscoveryEngine:
             discovered_urls.update(historical_urls)
             logger.info(f"📚 Historical: {len(historical_urls)} URLs from GAU/Wayback")
 
-        # HIGH-PRIORITY universal app paths that must be tested early (helps DVWA/demo apps)
-        try:
-            priority_paths = [
-                '/dvwa/', '/dvwa',
-                '/vulnerabilities/', '/vulnerabilities',
-                '/setup.php', '/login.php', '/security.php',
-            ]
-            for p in priority_paths:
-                discovered_urls.add(f"http://{domain}{p}")
-                discovered_urls.add(f"https://{domain}{p}")
-        except Exception:
-            pass
+        # Avoid target-specific priority paths; rely on SecLists + smart crawling
         
         final_urls = list(discovered_urls)
         logger.info(f"🎯 DISCOVERY COMPLETE: {len(final_urls)} total URLs for {domain}")
@@ -163,24 +337,32 @@ class UltimateDiscoveryEngine:
     async def _fast_seclists_discovery(self, domain: str) -> Set[str]:
         """FAST SecLists directory brute-force with recursion and high concurrency"""
         urls = set()
-        
+
         try:
             # Use existing intelligent SecListsManager for smart wordlist selection
             wordlists = await self._get_intelligent_seclists(domain)
             if not wordlists:
                 logger.warning("No SecLists found, using fallback paths")
                 return await self._fallback_discovery(domain)
-            
+
             # Base URLs to test
             base_urls = [f"https://{domain}", f"http://{domain}"]
-            
-            # Use ffuf for fast, recursive directory enumeration
+
+            # Use ffuf for fast, recursive directory enumeration if available
+            ffuf_bin = self._find_binary('ffuf', config_key='ffuf_path', env_key='FFUF_PATH')
             for base_url in base_urls:
                 try:
-                    ffuf_results = await self._run_ffuf_fast(base_url, wordlists)
-                    urls.update(ffuf_results)
-                    logger.info(f"⚡ ffuf on {base_url}: {len(ffuf_results)} paths found")
-                    
+                    ffuf_results: Set[str] = set()
+                    if ffuf_bin:
+                        ffuf_results = await self._run_ffuf_fast(base_url, wordlists, ffuf_bin)
+                        urls.update(ffuf_results)
+                        logger.info(f"⚡ ffuf on {base_url}: {len(ffuf_results)} paths found")
+                    else:
+                        logger.debug("ffuf not found in PATH; using internal async enumerator with recursion")
+                        ffuf_results = await self._parallel_recursive_bruteforce(base_url, wordlists, max_depth=3)
+                        urls.update(ffuf_results)
+                        logger.info(f"⚡ Internal recursive brute on {base_url}: {len(ffuf_results)} paths found")
+
                     # Stop after first successful base URL to avoid duplicates
                     if ffuf_results:
                         break
@@ -219,27 +401,131 @@ class UltimateDiscoveryEngine:
                 'is_internal': self._is_internal_ip(domain)
             }
             
-            # Get intelligent wordlists based on target analysis
-            directory_words = seclists_manager.get_intelligent_wordlist(target_info, 'directories', limit=5000)
-            file_words = seclists_manager.get_intelligent_wordlist(target_info, 'files', limit=3000)
-            admin_words = seclists_manager.get_intelligent_wordlist(target_info, 'admin_paths', limit=2000)
-            api_words = seclists_manager.get_intelligent_wordlist(target_info, 'api_endpoints', limit=1000)
+            # Get intelligent wordlists based on target analysis (comprehensive limits)
+            directory_words = seclists_manager.get_intelligent_wordlist(target_info, 'directories', limit=120000)
+            file_words = seclists_manager.get_intelligent_wordlist(target_info, 'files', limit=30000)
+            admin_words = seclists_manager.get_intelligent_wordlist(target_info, 'admin_paths', limit=20000)
+            api_words = seclists_manager.get_intelligent_wordlist(target_info, 'api_endpoints', limit=20000)
+            # UNIVERSAL AUGMENTATION: also reuse SecLists subdomain tokens as potential directory names  
+            # Process subdomain tokens in chunks to avoid memory issues with massive wordlists
+            subdomain_tokens = seclists_manager.wordlists.get('subdomains', [])
             
-            # Combine all intelligent wordlists
-            all_words = directory_words + file_words + admin_words + api_words
+            # Efficiently process subdomain tokens in chunks to avoid hang on massive lists
+            subdomain_paths = []
+            chunk_size = 10000  # Process 10K at a time
+            total_subdomains = len(subdomain_tokens)
+            logger.info(f"🔄 Processing {total_subdomains} subdomain tokens in chunks of {chunk_size}")
             
-            # Remove duplicates and format as paths
-            unique_paths = list(set(['/' + word.lstrip('/') for word in all_words if word]))
+            for i in range(0, min(total_subdomains, 50000), chunk_size):  # Cap at 50K for performance
+                chunk = subdomain_tokens[i:i + chunk_size]
+                chunk_paths = ['/' + t for t in chunk if t and len(t) <= 18 and t.isalnum()]
+                subdomain_paths.extend(chunk_paths)
+                
+                # Log progress for large chunks
+                if i % 50000 == 0 and i > 0:
+                    logger.info(f"📊 Processed {i}/{min(total_subdomains, 50000)} subdomain tokens")
+            
+            logger.info(f"✅ Converted {len(subdomain_paths)} subdomain tokens to directory paths")
+            
+            # UNIVERSAL AUGMENTATION: scrape target-visible keywords (HTML, links, robots, 404 page)
+            scraped_tokens = await self._scrape_target_keywords(domain)
+            scraped_paths = ['/' + t for t in scraped_tokens if t]
+
+            # Combine all intelligent wordlists efficiently
+            logger.info(f"📊 Combining wordlists: {len(directory_words)} dirs, {len(file_words)} files, {len(admin_words)} admin, {len(api_words)} api, {len(scraped_paths)} scraped, {len(subdomain_paths)} subdomain-derived")
+            all_words = directory_words + file_words + admin_words + api_words + scraped_paths + subdomain_paths
+            
+            # Remove duplicates and normalize paths properly
+            normalized_paths = set()
+            for word in all_words:
+                if word and isinstance(word, str):
+                    # Clean and normalize the path
+                    path = word.strip()
+                    if path:
+                        # Ensure single leading slash
+                        if not path.startswith('/'):
+                            path = '/' + path
+                        # Remove double slashes and normalize
+                        path = re.sub(r'/+', '/', path)
+                        # Remove trailing slash unless it's root
+                        if len(path) > 1 and path.endswith('/'):
+                            path = path.rstrip('/')
+                        normalized_paths.add(path)
+            
+            unique_paths = list(normalized_paths)
             
             logger.info(f"🧠 Intelligent SecLists: {len(unique_paths)} paths selected for {domain}")
             logger.info(f"   📁 Directories: {len(directory_words)}, 📄 Files: {len(file_words)}")
             logger.info(f"   🔐 Admin: {len(admin_words)}, 🔌 API: {len(api_words)}")
+            logger.info(f"   🧩 Scraped tokens: {len(scraped_tokens)}")
             
             return unique_paths
             
         except Exception as e:
             logger.warning(f"Intelligent SecLists failed: {e}")
             return []
+
+    async def _scrape_target_keywords(self, domain: str) -> List[str]:
+        """Scrape same-origin pages to extract meaningful tokens for directory enumeration.
+
+        Universal approach:
+        - GET http/https root, robots.txt, and a random 404 path
+        - Extract path segments from href/src/action
+        - Extract alnum tokens 3+ chars from titles, meta, visible text
+        - Weight by frequency and return deduped top-N tokens
+        """
+        tokens: Dict[str, int] = {}
+        def add(tok: str):
+            t = (tok or '').strip('/').strip()
+            if not t:
+                return
+            if len(t) < 3:
+                return
+            if any(c in t for c in ' \t\r\n\"\'<>'):  # keep simple
+                return
+            tokens[t.lower()] = tokens.get(t.lower(), 0) + 1
+
+        timeout = aiohttp.ClientTimeout(total=6, connect=2)
+        headers = self._build_auth_headers_for_host(domain)
+        urls = [f"http://{domain}/", f"https://{domain}/"]
+        rnd = f"/__modscan_probe_{int(asyncio.get_event_loop().time()*1000)}__"
+        urls += [f"http://{domain}/robots.txt", f"https://{domain}/robots.txt", f"http://{domain}{rnd}", f"https://{domain}{rnd}"]
+
+        for u in urls:
+            try:
+                async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                    async with session.get(u, allow_redirects=True) as resp:
+                        txt = await resp.text(errors='ignore')
+                        base = str(resp.url)
+                        # Pull href/src/action paths
+                        for m in re.findall(r"(?:href|src|action)=[\"']([^\"'#>\s]+)", txt, re.I):
+                            try:
+                                absu = urljoin(base, m)
+                                sp = urlsplit(absu)
+                                if sp.netloc and sp.netloc.split(':')[0] == domain:
+                                    # add each path segment
+                                    for seg in [p for p in sp.path.split('/') if p]:
+                                        add(seg)
+                            except Exception:
+                                continue
+                        # Titles/meta/visible-ish words
+                        for w in re.findall(r"[A-Za-z0-9_\-]{3,}", txt):
+                            add(w)
+                        # robots rules
+                        if u.endswith('robots.txt'):
+                            for line in txt.splitlines():
+                                s = line.strip()
+                                if not s or s.startswith('#'):
+                                    continue
+                                if s.lower().startswith(('allow:', 'disallow:')):
+                                    path = s.split(':', 1)[1].strip()
+                                    for seg in [p for p in path.split('/') if p]:
+                                        add(seg)
+            except Exception:
+                continue
+        # Rank high to low; cap to keep large but sane
+        ranked = sorted(tokens.items(), key=lambda kv: kv[1], reverse=True)
+        return [k for k, _ in ranked[:5000]]
     
     async def _detect_technologies(self, domain: str) -> List[str]:
         """Quick technology detection for intelligent wordlist selection"""
@@ -363,7 +649,7 @@ class UltimateDiscoveryEngine:
         logger.info(f"⚡ MASSIVE SecLists loaded: {len(final_paths)} paths for ultra-fast discovery")
         return final_paths
     
-    async def _run_ffuf_fast(self, base_url: str, wordlist_paths: List[str]) -> Set[str]:
+    async def _run_ffuf_fast(self, base_url: str, wordlist_paths: List[str], ffuf_bin: str) -> Set[str]:
         """Run ffuf with high concurrency and recursion for fast discovery"""
         urls = set()
         
@@ -376,17 +662,29 @@ class UltimateDiscoveryEngine:
             # Create temporary wordlist file
             with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
                 for path in wordlist_paths:
-                    f.write(path + '\n')
+                    # ffuf expects token after FUZZ; avoid leading '/'
+                    token = path.lstrip('/')
+                    if token:
+                        f.write(token + '\n')
                 temp_wordlist = f.name
+            logger.info(f"🧾 ffuf wordlist prepared with {len(wordlist_paths)} entries for {base_url}")
             
-            # Authentication headers
+            # Authentication headers (fresh from DB for this host)
+            from urllib.parse import urlsplit
+            host = (urlsplit(base_url).netloc or '').split(':')[0]
+            auth_headers = self._build_auth_headers_for_host(host)
             headers = []
-            if self.auth_cookie and self.auth_domain in base_url:
-                headers = ["-H", f"Cookie: {self.auth_cookie}"]
+            for hk, hv in auth_headers.items():
+                if hk.lower() == 'cookie':
+                    headers += ["-H", f"Cookie: {hv}"]
+                elif hk.lower() == 'authorization':
+                    headers += ["-H", f"Authorization: {hv}"]
+                else:
+                    headers += ["-H", f"{hk}: {hv}"]
             
             # ffuf command for maximum speed and recursion
             cmd = [
-                "/home/michael/go/bin/ffuf",
+                ffuf_bin,
                 "-u", f"{base_url}/FUZZ",
                 "-w", temp_wordlist,
                 "-recursion",
@@ -437,16 +735,16 @@ class UltimateDiscoveryEngine:
             logger.error(f"ffuf execution failed: {e}")
             
         return urls
-    
+
     async def _parallel_wordlist_test(self, base_url: str, paths: List[str]) -> Set[str]:
         """Parallel async testing as ffuf fallback"""
         urls = set()
         
         try:
             # Headers for authentication
-            headers = {}
-            if self.auth_cookie and self.auth_domain in base_url:
-                headers["Cookie"] = self.auth_cookie
+            from urllib.parse import urlsplit
+            host = (urlsplit(base_url).netloc or '').split(':')[0]
+            headers = self._build_auth_headers_for_host(host)
             
             timeout = aiohttp.ClientTimeout(total=5, connect=2)
             connector = aiohttp.TCPConnector(limit=100)
@@ -461,7 +759,7 @@ class UltimateDiscoveryEngine:
                     tasks = []
                     
                     for path in chunk:
-                        url = base_url.rstrip('/') + path
+                        url = base_url.rstrip('/') + (path if path.startswith('/') else '/' + path)
                         task = self._test_url_async(session, url, semaphore)
                         tasks.append(task)
                     
@@ -469,7 +767,8 @@ class UltimateDiscoveryEngine:
                     
                     for j, result in enumerate(results):
                         if result is True:
-                            found_url = base_url.rstrip('/') + chunk[j]
+                            token = chunk[j]
+                            found_url = base_url.rstrip('/') + (token if token.startswith('/') else '/' + token)
                             urls.add(found_url)
                     
                     logger.info(f"⚡ Parallel chunk {i//chunk_size + 1}: {sum(1 for r in results if r is True)} found")
@@ -478,32 +777,156 @@ class UltimateDiscoveryEngine:
             logger.error(f"Parallel wordlist test failed: {e}")
             
         return urls
+
+    async def _parallel_recursive_bruteforce(self, base_url: str, all_paths: List[str], max_depth: int = 2, max_fanout: int = 5000) -> Set[str]:
+        """Internal async recursive directory brute-force.
+
+        - Starts from base_url and an initial list of candidate paths
+        - Recurses into likely directories up to max_depth using pruned candidate set
+        - Universal: no target-specific assumptions
+        """
+        discovered: Set[str] = set()
+        visited: Set[str] = set()
+
+        # Helper to decide if token looks like a directory
+        def is_dir_token(token: str) -> bool:
+            t = token.strip('/')
+            if not t:
+                return False
+            # Treat tokens with an extension as files
+            if '.' in t and not t.endswith('.'):
+                return False
+            return True
+
+        # Level 0: probe initial paths
+        initial = all_paths[:max_fanout]
+        first_pass = await self._parallel_wordlist_test(base_url, initial)
+        discovered.update(first_pass)
+
+        # Build queue of directory bases to recurse into
+        dir_bases: List[str] = []
+        for url in list(first_pass):
+            try:
+                sp = urlsplit(url)
+                # Keep only plausible directories
+                if not sp.path or sp.path.endswith('/'):
+                    dir_bases.append(f"{sp.scheme}://{sp.netloc}{sp.path.rstrip('/')}")
+                else:
+                    # If no extension, consider parent as directory
+                    if '/' in sp.path:
+                        last = sp.path.rsplit('/', 1)[-1]
+                        if is_dir_token(last):
+                            dir_bases.append(f"{sp.scheme}://{sp.netloc}{sp.path}")
+            except Exception:
+                continue
+
+        # Next levels
+        for depth in range(1, max_depth + 1):
+            if not dir_bases:
+                break
+            next_dirs: List[str] = []
+            # Prune candidates for deeper scans
+            # Favor shorter, directory-like tokens to control breadth
+            dir_like = [p for p in all_paths if is_dir_token(p)]
+            dir_like = dir_like[: max(2000, int(max_fanout/2))]
+            for base in dir_bases[:50]:
+                if base in visited:
+                    continue
+                visited.add(base)
+                # Scan a subset under this base
+                results = await self._parallel_wordlist_test(base, dir_like)
+                discovered.update(results)
+                # Append newly found deeper directories as potential bases
+                for u in list(results):
+                    try:
+                        sp = urlsplit(u)
+                        if sp.path and (sp.path.endswith('/') or is_dir_token(sp.path.rsplit('/', 1)[-1])):
+                            base_dir = f"{sp.scheme}://{sp.netloc}{sp.path.rstrip('/')}"
+                            if base_dir not in visited:
+                                next_dirs.append(base_dir)
+                    except Exception:
+                        continue
+            dir_bases = next_dirs
+
+        return discovered
     
     async def _test_url_async(self, session: aiohttp.ClientSession, url: str, semaphore: asyncio.Semaphore) -> bool:
-        """Test single URL with semaphore"""
+        """Test single URL with semaphore and authentication"""
         async with semaphore:
             try:
-                async with session.get(url) as resp:
+                # Use authentication headers if available for the domain
+                headers = self._build_auth_headers_for_host(urlparse(url).hostname or '')
+                async with session.get(url, headers=headers, timeout=10) as resp:
                     return resp.status in [200, 201, 202, 204, 301, 302, 307, 401, 403]
             except:
                 return False
     
     async def _fallback_discovery(self, domain: str) -> Set[str]:
-        """Fallback discovery when SecLists not available"""
-        fallback_paths = [
-            "/", "/admin/", "/api/", "/login/", "/dashboard/", "/panel/", "/config/",
-            "/setup/", "/install/", "/phpinfo.php", "/test/", "/dev/", "/backup/",
-            "/uploads/", "/files/", "/assets/", "/vulnerabilities/", "/dvwa/",
-            "/index.php", "/admin.php", "/login.php", "/config.php", "/info.php"
-        ]
-        
-        urls = set()
-        for base_url in [f"https://{domain}", f"http://{domain}"]:
-            parallel_results = await self._parallel_wordlist_test(base_url, fallback_paths)
-            urls.update(parallel_results)
-            if parallel_results:
-                break
-                
+        """Fallback discovery when SecLists are unavailable, without hardcoded paths.
+
+        Approach: request root and robots.txt, extract same-origin links and rules,
+        and probe them quickly using current auth headers.
+        """
+        urls: Set[str] = set()
+        candidates: Set[str] = set()
+
+        base_urls = [f"https://{domain}", f"http://{domain}"]
+        timeout = aiohttp.ClientTimeout(total=6, connect=2)
+        headers = self._build_auth_headers_for_host(domain)
+
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            for base in base_urls:
+                try:
+                    # Root mining
+                    async with session.get(base + "/", allow_redirects=True) as resp:
+                        if resp.status < 400:
+                            text = await resp.text()
+                            for m in re.findall(r"(?:href|src)=[\"']([^\"'#>\s]+)", text, re.I):
+                                try:
+                                    absolute = urljoin(str(resp.url), m)
+                                    if urlparse(absolute).netloc.split(':')[0] == domain:
+                                        candidates.add(absolute)
+                                except Exception:
+                                    continue
+                    # robots.txt
+                    async with session.get(base + "/robots.txt", allow_redirects=True) as rbot:
+                        if rbot.status < 400:
+                            body = await rbot.text()
+                            for line in body.splitlines():
+                                s = line.strip()
+                                if not s or s.startswith('#'):
+                                    continue
+                                if s.lower().startswith(('allow:', 'disallow:')):
+                                    try:
+                                        path = s.split(':', 1)[1].strip()
+                                        if path:
+                                            candidates.add(urljoin(base, path))
+                                    except Exception:
+                                        continue
+                except Exception:
+                    continue
+
+        # Quick probe
+        if not candidates:
+            return urls
+
+        sem = asyncio.Semaphore(100)
+        async def probe(u: str) -> Optional[str]:
+            async with sem:
+                try:
+                    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as sess:
+                        async with sess.get(u, allow_redirects=True) as r:
+                            if r.status in [200, 201, 202, 204, 301, 302, 307, 401, 403]:
+                                return str(r.url)
+                except Exception:
+                    return None
+            return None
+
+        tasks = [probe(u) for u in list(candidates)[:300]]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, str):
+                urls.add(r)
         return urls
 
     def _existing_urls_for_domain(self, domain: str, limit: int = 200) -> List[str]:
@@ -531,7 +954,7 @@ class UltimateDiscoveryEngine:
         """Lightweight authenticated same-origin crawl using provided cookie."""
         urls = set()
         try:
-            headers = {"Cookie": self.auth_cookie} if self.auth_cookie else {}
+            headers = self._build_auth_headers_for_host(domain)
             base_urls = [f"http://{domain}/", f"https://{domain}/"]
             if extra_seeds:
                 base_urls.extend(extra_seeds[:100])
@@ -548,6 +971,20 @@ class UltimateDiscoveryEngine:
                             if resp.status >= 400:
                                 continue
                             text = await resp.text()
+                            # If we got a login page and have a policy, refresh cookie and retry once
+                            try:
+                                from urllib.parse import urlparse as _urlparse
+                                host = (_urlparse(current).netloc or '').split(':')[0]
+                                new_cookie = await self._refresh_cookie_if_login(host, text)
+                                if new_cookie:
+                                    # Rebuild session headers with new cookie
+                                    headers = self._build_auth_headers_for_host(domain)
+                                    async with session.get(current, allow_redirects=True, headers=headers) as r2:
+                                        if r2.status >= 400:
+                                            continue
+                                        text = await r2.text()
+                            except Exception:
+                                pass
                             urls.add(str(resp.url))
                             # Extract same-origin links (very simple regex)
                             for m in re.findall(r"href=['\"][^'\"]+", text, re.I):
@@ -1045,7 +1482,6 @@ class UltimateDiscoveryEngine:
             'admin_panels': False,
             'cms_system': False,
             'ecommerce': False,
-            'vulnerability_lab': False,
             'web_framework': False
         }
         
@@ -1072,77 +1508,39 @@ class UltimateDiscoveryEngine:
         if any(admin in url_text for admin in ['/admin', '/panel', '/dashboard', '/manage']):
             patterns['admin_panels'] = True
             
-        # Generic lab pattern detection (avoid brand-specific names)
-        if '/vulnerabilities/' in url_text or '/security.php' in url_text:
-            patterns['vulnerability_lab'] = True
-            
         return patterns
     
     async def _generate_universal_paths(self, app_patterns: Dict[str, bool], domain: str) -> List[str]:
-        """Generate universal paths based on detected application patterns"""
-        paths = set()
-        
-        # ALWAYS test these universal paths regardless of detected patterns
-        universal_core = [
-            '/', '/admin/', '/api/', '/login/', '/dashboard/', '/panel/',
-            '/config/', '/setup/', '/install/', '/phpinfo.php', '/info.php',
-            '/test/', '/dev/', '/backup/', '/uploads/', '/files/', '/assets/',
-            '/static/', '/js/', '/css/', '/images/', '/media/'
-        ]
-        paths.update(universal_core)
-        
-        # Add paths based on detected patterns
-        if app_patterns.get('php_app'):
-            php_paths = [
-                '/index.php', '/config.php', '/admin.php', '/login.php',
-                '/phpinfo.php', '/test.php', '/info.php', '/db.php'
-            ]
-            paths.update(php_paths)
-            
-        if app_patterns.get('wordpress'):
-            wp_paths = [
-                '/wp-admin/', '/wp-content/', '/wp-includes/', '/wp-login.php',
-                '/wp-config.php', '/wp-admin/admin.php', '/xmlrpc.php'
-            ]
-            paths.update(wp_paths)
-            
-        if app_patterns.get('api_endpoints'):
-            api_paths = [
-                '/api/v1/', '/api/v2/', '/rest/', '/graphql/', '/soap/',
-                '/api/users/', '/api/admin/', '/api/config/', '/api/docs/'
-            ]
-            paths.update(api_paths)
-            
-        if app_patterns.get('vulnerability_lab'):
-            # Generic vulnerability lab indicators only (no brand-specific paths)
-            vuln_paths = [
-                '/vulnerabilities/', '/login.php', '/setup.php', '/security.php',
-                '/instructions.php'
-            ]
-            paths.update(vuln_paths)
-            
-            # Add comprehensive vulnerability testing paths (generic names)
-            vuln_types = [
-                'sqli', 'sqli_blind', 'xss_r', 'xss_s', 'xss_d', 'csrf',
-                'exec', 'fi', 'lfi', 'rfi', 'upload', 'brute', 'captcha',
-                'weak_id', 'csp', 'javascript', 'open_redirect', 'api',
-                'cryptography', 'command_injection', 'path_traversal'
-            ]
-            
-            for vuln_type in vuln_types:
-                paths.add(f'/vulnerabilities/{vuln_type}/')
-                paths.add(f'/vulnerabilities/{vuln_type}')
-                paths.add(f'/{vuln_type}/')
-                paths.add(f'/{vuln_type}')
-        
-        if app_patterns.get('admin_panels'):
-            admin_paths = [
-                '/admin/index.php', '/admin/login.php', '/admin/config.php',
-                '/administrator/', '/manage/', '/control/', '/cp/'
-            ]
-            paths.update(admin_paths)
-            
-        return list(paths)
+        """Generate candidate paths using SecLists intelligently (no hardcoded paths)."""
+        try:
+            from .seclists_manager import SecListsManager
+            slm = SecListsManager(self.asset_manager, {})
+            await slm.initialize()
+            target_info = {
+                'domain': domain,
+                'technologies': []
+            }
+            words = []
+            words.extend(slm.get_intelligent_wordlist(target_info, 'directories', limit=1500))
+            words.extend(slm.get_intelligent_wordlist(target_info, 'files', limit=800))
+            words.extend(slm.get_intelligent_wordlist(target_info, 'admin_paths', limit=400))
+            words.extend(slm.get_intelligent_wordlist(target_info, 'api_endpoints', limit=400))
+            # Normalize
+            norm = []
+            for w in words:
+                w = (w or '').strip()
+                if not w:
+                    continue
+                if not w.startswith('/'):
+                    w = '/' + w
+                if '..' in w:
+                    continue
+                norm.append(w)
+            # Dedupe and cap
+            norm = list(dict.fromkeys(norm))[:4000]
+            return norm
+        except Exception:
+            return []
     
     async def _test_universal_path(self, session: aiohttp.ClientSession, url: str) -> str:
         """Test if a universal path is accessible"""
@@ -1242,6 +1640,17 @@ class UltimateDiscoveryEngine:
             import subprocess
             import os
             
+            ffuf_bin = self._find_binary('ffuf', config_key='ffuf_path', env_key='FFUF_PATH')
+            if not ffuf_bin:
+                logger.debug("ffuf not found; skipping external recursive ffuf and falling back to internal")
+                # Fall back to internal recursive if binary missing
+                combined: List[str] = []
+                for _, paths in (wordlists or {}).items():
+                    combined.extend(paths)
+                for base in base_urls[:5]:
+                    urls.update(await self._parallel_recursive_bruteforce(base, combined, max_depth=3))
+                return urls
+
             # Create temporary wordlist file combining all intelligent wordlists
             all_paths = set()
             for wordlist_name, paths in wordlists.items():
@@ -1254,9 +1663,9 @@ class UltimateDiscoveryEngine:
             with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as temp_wordlist:
                 for path in sorted(all_paths):
                     # Ensure paths start with /
-                    if not path.startswith('/'):
-                        path = '/' + path
-                    temp_wordlist.write(path + '\n')
+                    token = path.lstrip('/')
+                    if token:
+                        temp_wordlist.write(token + '\n')
                 temp_wordlist_path = temp_wordlist.name
             
             try:
@@ -1266,7 +1675,7 @@ class UltimateDiscoveryEngine:
                     
                     # ffuf command with recursion
                     cmd = [
-                        "/home/michael/go/bin/ffuf",
+                        ffuf_bin,
                         "-u", f"{base_url}/FUZZ",
                         "-w", temp_wordlist_path,
                         "-recursion",
@@ -1335,78 +1744,21 @@ class UltimateDiscoveryEngine:
         return urls
     
     def _select_intelligent_wordlists(self, tech_stack: List[str], url_patterns: Dict) -> Dict[str, List[str]]:
-        """Select intelligent SecLists wordlists based on technology and patterns"""
-        wordlists = {}
-        
-        # Load actual SecLists wordlists
+        """Select SecLists wordlists based on technology and observed patterns (no hardcoded paths).
+
+        Returns a dict of category -> list(paths) where each list originates from SecLists.
+        """
+        selected: Dict[str, List[str]] = {}
         seclists_paths = self._load_seclists_wordlists()
-        
-        # Always include common directories from SecLists
-        if 'directories' in seclists_paths:
-            wordlists['directories'] = seclists_paths['directories']
-        else:
-            # Fallback hardcoded list
-            wordlists['common'] = [
-                '/admin', '/api', '/login', '/dashboard', '/config', '/backup',
-                '/test', '/dev', '/staging', '/docs', '/help', '/support',
-                '/upload', '/uploads', '/files', '/assets', '/static', '/public',
-                '/vulnerabilities', '/setup', '/security', '/database'
-            ]
-        
-        # Technology-specific wordlists
-        if 'php' in tech_stack:
-            wordlists['php'] = [
-                '/phpmyadmin', '/phpinfo.php', '/wp-admin', '/wp-content',
-                '/includes', '/inc', '/lib', '/config.php', '/database.php',
-                '/setup.php', '/install.php', '/upgrade.php'
-            ]
-            
-        if 'wordpress' in tech_stack or any('wp-' in tech for tech in tech_stack):
-            wordlists['wordpress'] = [
-                '/wp-admin', '/wp-content', '/wp-includes', '/wp-json',
-                '/wp-config.php', '/wp-login.php', '/xmlrpc.php',
-                '/wp-content/uploads', '/wp-content/themes', '/wp-content/plugins'
-            ]
-            
-        if 'nodejs' in tech_stack or 'node' in tech_stack:
-            wordlists['nodejs'] = [
-                '/node_modules', '/.env', '/package.json', '/server.js',
-                '/app.js', '/index.js', '/dist', '/build', '/src'
-            ]
-            
-        if 'python' in tech_stack or 'django' in tech_stack:
-            wordlists['python'] = [
-                '/admin', '/api', '/static', '/media', '/django-admin',
-                '/settings.py', '/manage.py', '/requirements.txt', '/.env'
-            ]
-            
-        if 'java' in tech_stack:
-            wordlists['java'] = [
-                '/WEB-INF', '/META-INF', '/servlet', '/struts',
-                '/spring', '/admin', '/manager', '/console'
-            ]
-            
-        # Pattern-based additions
-        if url_patterns.get('api_endpoints', 0) > 5:
-            wordlists['api_extended'] = [
-                '/api/v1', '/api/v2', '/api/docs', '/swagger',
-                '/graphql', '/rest', '/api/admin', '/api/users'
-            ]
-            
-        if url_patterns.get('admin_paths', 0) > 3:
-            wordlists['admin_extended'] = [
-                '/admin/login', '/admin/panel', '/admin/dashboard',
-                '/administrator', '/manage', '/control', '/cpanel'
-            ]
-            
-        # Sensitive files and directories
-        wordlists['sensitive'] = [
-            '/.git', '/.env', '/.aws', '/.ssh', '/backup.zip',
-            '/database.sql', '/config.json', '/secrets.yaml',
-            '/.htaccess', '/.htpasswd', '/robots.txt', '/sitemap.xml'
-        ]
-        
-        return wordlists
+
+        # Always include core SecLists categories when available
+        for cat in ('directories', 'files', 'admin_paths', 'api_endpoints'):
+            if cat in seclists_paths:
+                selected[cat] = seclists_paths[cat]
+
+        # Optionally refine by tech_stack: keep it category-level only (no custom path strings)
+        # This keeps selection universal and backed entirely by SecLists content.
+        return selected
     
     async def _ai_select_intelligent_wordlists(self, tech_stack: List[str], url_patterns: Dict, domain: str) -> Dict[str, List[str]]:
         """Use AI to intelligently select the best wordlists for the target"""

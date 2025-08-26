@@ -23,10 +23,13 @@ class SecListsManager:
         candidates = []
         try:
             import os as _os
+            # Config-provided path
             if config.get('seclists_path'):
                 candidates.append(Path(config.get('seclists_path')))
-            if _os.environ.get('SECLISTS_PATH'):
-                candidates.append(Path(_os.environ.get('SECLISTS_PATH')))
+            # Common env vars
+            for env_key in ('SECLISTS_PATH', 'SECLISTS_DIR'):
+                if _os.environ.get(env_key):
+                    candidates.append(Path(_os.environ.get(env_key)))
         except Exception:
             pass
         candidates.extend([
@@ -68,91 +71,194 @@ class SecListsManager:
     
     def load_comprehensive_wordlists(self):
         """Load comprehensive wordlists for all discovery types"""
-        
-        # Comprehensive SecLists wordlist mappings - MUCH more extensive than lean_scanner
+        import os as _os
+        # Comprehensive tiered SecLists wordlist configuration with deduplication
+        # Tiers: surface -> standard -> deep -> comprehensive
         wordlist_configs = {
-            'subdomains': [
-                'Discovery/DNS/subdomains-top1million-20000.txt',
-                'Discovery/DNS/subdomains-top1million-5000.txt', 
-                'Discovery/DNS/deepmagic.com-prefixes-top500.txt',
-                'Discovery/DNS/fierce-hostlist.txt',
-                'Discovery/DNS/namelist.txt'
-            ],
-            'directories': [
-                'Discovery/Web-Content/directory-list-2.3-big.txt',
-                'Discovery/Web-Content/directory-list-2.3-medium.txt',
-                'Discovery/Web-Content/directory-list-2.3-small.txt',
-                'Discovery/Web-Content/raft-large-directories.txt',
-                'Discovery/Web-Content/raft-medium-directories.txt',
-                'Discovery/Web-Content/quickhits.txt'
-            ],
-            'files': [
-                'Discovery/Web-Content/raft-large-files.txt',
-                'Discovery/Web-Content/raft-medium-files.txt', 
-                'Discovery/Web-Content/raft-small-files.txt',
-                'Discovery/Web-Content/common.txt',
-                'Discovery/Web-Content/web-extensions.txt',
-                'Discovery/Web-Content/quickhits.txt'
-            ],
-            'parameters': [
-                'Discovery/Web-Content/burp-parameter-names.txt',
-                'Discovery/Web-Content/web-mutations.txt',
-                'Fuzzing/LFI/LFI-gracefulsecurity-linux.txt'
-            ],
-            'api_endpoints': [
-                'Discovery/Web-Content/common-api-endpoints-mazen160.txt',
-                'Discovery/Web-Content/graphql.txt',
-                'Discovery/Web-Content/swagger.txt'
-            ],
-            'admin_paths': [
-                'Discovery/Web-Content/Logins.fuzz.txt',
-                'Discovery/Web-Content/default-web-root-directory-linux.txt',
-                'Discovery/Web-Content/default-web-root-directory-windows.txt',
-                'Discovery/Web-Content/CMS/wordpress.fuzz.txt',
-                'Discovery/Web-Content/CMS/drupal.txt',
-                'Discovery/Web-Content/CMS/joomla.txt'
-            ],
-            'common': [
-                'Discovery/Web-Content/common.txt',
-                'Discovery/Web-Content/big.txt',
-                'Discovery/Web-Content/quickhits.txt'
-            ],
-            'web_content': [
-                'Discovery/Web-Content/directory-list-lowercase-2.3-medium.txt',
-                'Discovery/Web-Content/directory-list-uppercase-2.3-medium.txt', 
-                'Discovery/Web-Content/raft-medium-words-lowercase.txt',
-                'Discovery/Web-Content/raft-medium-words.txt'
-            ]
+            'subdomains': {
+                'surface': ['Discovery/DNS/subdomains-top1million-5000.txt', 'Discovery/DNS/FUZZSUBS_CYFARE_1.txt'],  # Include FUZZSUBS early for dvwa
+                'standard': ['Discovery/DNS/subdomains-top1million-20000.txt'],  # 20K 
+                'deep': ['Discovery/DNS/subdomains-top1million-110000.txt'],  # 110K+
+                'comprehensive': ['Discovery/DNS/namelist.txt', 'Discovery/DNS/bitquark-subdomains-top100000.txt', 'Discovery/DNS/dns-Jhaddix.txt']
+            },
+            'directories': {
+                'surface': ['Discovery/Web-Content/quickhits.txt', 'Discovery/Web-Content/raft-small-directories.txt'],  # ~30K
+                'standard': ['Discovery/Web-Content/directory-list-2.3-small.txt', 'Discovery/Web-Content/raft-medium-directories.txt'],  # ~120K
+                'deep': ['Discovery/Web-Content/directory-list-2.3-medium.txt', 'Discovery/Web-Content/raft-large-directories.txt'],  # ~280K
+                'comprehensive': ['Discovery/Web-Content/directory-list-2.3-big.txt', 'Discovery/Web-Content/combined_directories.txt']  # 1.2M+
+            },
+            'files': {
+                'surface': ['Discovery/Web-Content/raft-small-files.txt'],  # 11K
+                'standard': ['Discovery/Web-Content/raft-medium-files.txt', 'Discovery/Web-Content/common.txt'],  # ~20K
+                'deep': ['Discovery/Web-Content/raft-large-files.txt', 'Discovery/Web-Content/web-extensions.txt'],  # ~40K
+                'comprehensive': ['Discovery/Web-Content/versioning_metafiles.txt', 'Discovery/Web-Content/UnixDotfiles.fuzz.txt']
+            },
+            'admin_paths': {
+                'surface': ['Discovery/Web-Content/Logins.fuzz.txt'],
+                'standard': ['Discovery/Web-Content/default-web-root-directory-linux.txt', 'Discovery/Web-Content/default-web-root-directory-windows.txt'],
+                'deep': ['Discovery/Web-Content/File-Extensions-Universal-SVNDigger-Project/context/admin.txt'],
+                'comprehensive': ['Discovery/Web-Content/Service-Specific/confluence-administration.txt']
+            },
+            'api_endpoints': {
+                'surface': ['Discovery/Web-Content/common-api-endpoints-mazen160.txt'],
+                'standard': ['Discovery/Web-Content/graphql.txt', 'Discovery/Web-Content/swagger.txt'],
+                'deep': ['Discovery/Web-Content/oauth-oidc-scopes.txt'],
+                'comprehensive': []
+            },
+            'parameters': {
+                'surface': ['Discovery/Web-Content/burp-parameter-names.txt'],
+                'standard': ['Discovery/Web-Content/url-params_from-top-55-most-popular-apps.txt'],
+                'deep': ['Discovery/Web-Content/web-mutations.txt'],
+                'comprehensive': ['Fuzzing/LFI/LFI-gracefulsecurity-linux.txt']
+            },
+            'cms_specific': {
+                'wordpress': ['Discovery/Web-Content/CMS/wordpress.fuzz.txt'],
+                'drupal': ['Discovery/Web-Content/CMS/drupal.txt', 'Discovery/Web-Content/CMS/trickest-cms-wordlist/drupal.txt'],
+                'joomla': ['Discovery/Web-Content/CMS/joomla.txt'],
+                'django': ['Discovery/Web-Content/CMS/trickest-cms-wordlist/django-cms.txt'],
+                'umbraco': ['Discovery/Web-Content/CMS/trickest-cms-wordlist/umbraco-cms-all-levels.txt']
+            },
+            'backup_files': {
+                'surface': ['Discovery/Web-Content/Common-DB-Backups.txt'],
+                'standard': ['Discovery/Web-Content/versioning_metafiles.txt'],
+                'deep': ['Discovery/Web-Content/LinuxFileList.txt']
+            },
+            'technology_specific': {
+                'java': ['Discovery/Web-Content/JavaServlets-Common.fuzz.txt'],
+                'oracle': ['Discovery/Web-Content/Oracle9i.fuzz.txt', 'Discovery/Web-Content/OracleAppServer.fuzz.txt'],
+                'microsoft': ['Discovery/Web-Content/Microsoft-Frontpage.txt'],
+                'adobe': ['Discovery/Web-Content/AdobeXML.fuzz.txt']
+            }
         }
         
-        # Load wordlists - try specific paths first, then scan SecLists dynamically
-        for category, file_paths in wordlist_configs.items():
-            self.wordlists[category] = []
+        # Track loaded words per tier for deduplication
+        self.tier_tracking = {}
+        
+        # Helper: determine scan tier based on desired coverage depth  
+        def _get_scan_tier(desired_count: int, scan_depth: str = 'auto') -> str:
+            if scan_depth != 'auto':
+                return scan_depth
             
-            # Try specific known paths first
+            if desired_count <= 10000:
+                return 'surface'  # Fast, high-value targets
+            elif desired_count <= 50000:
+                return 'standard'  # Balanced coverage
+            elif desired_count <= 200000:
+                return 'deep'  # Thorough scanning
+            else:
+                return 'comprehensive'  # Maximum coverage
+                
+        # Helper: load wordlist with tier-based deduplication
+        def _load_wordlist_tier(category: str, tier: str, previous_tiers: list = None) -> list:
+            if previous_tiers is None:
+                previous_tiers = []
+            
+            # Get words from current tier
+            tier_words = set()
+            tier_configs = wordlist_configs.get(category, {})
+            
+            if tier not in tier_configs:
+                return []
+                
+            file_paths = tier_configs[tier]
+            
             for file_path in file_paths:
                 full_path = self.seclists_path / file_path
-                
                 if full_path.exists():
                     try:
                         with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            words = [line.strip() for line in f if line.strip() and not line.startswith('#')]
-                            self.wordlists[category].extend(words[:5000])  # Limit per file for performance
-                            logger.info(f"📋 Loaded {len(words)} words from {file_path}")
+                            raw_words = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                        
+                        # Convert raw words to proper paths for directory categories
+                        if category == 'directories':
+                            for word in raw_words:
+                                if word:
+                                    if not word.startswith('/'):
+                                        word = '/' + word
+                                    word = word.replace('//', '/')
+                                    tier_words.add(word)
+                        else:
+                            tier_words.update(raw_words)
+                            
+                        logger.info(f"📋 Loaded {len(raw_words)} words from {file_path} [{tier}]")
                     except Exception as e:
                         logger.debug(f"Failed to load {file_path}: {e}")
-                else:
-                    logger.debug(f"Wordlist not found: {file_path}")
             
-            # If we didn't get enough words from specific paths, scan SecLists dynamically  
-            if len(self.wordlists[category]) < 100:
-                logger.info(f"🔍 Scanning SecLists for more {category} wordlists...")
-                fallback_words = self._get_fallback_wordlist(category)
-                self.wordlists[category].extend(fallback_words)
+            # Remove words from previous tiers (deduplication)
+            for prev_tier in previous_tiers:
+                prev_key = f"{category}_{prev_tier}"
+                if prev_key in self.tier_tracking:
+                    tier_words -= self.tier_tracking[prev_key]
             
-            # Remove duplicates and limit size
-            self.wordlists[category] = list(set(self.wordlists[category]))[:3000]
-            logger.info(f"📋 Final loaded: {len(self.wordlists[category])} {category} entries")
+            # Store this tier's words for future deduplication
+            tier_key = f"{category}_{tier}"
+            self.tier_tracking[tier_key] = tier_words.copy()
+            
+            return list(tier_words)
+
+        # Load wordlists using tiered system with intelligent deduplication
+        primary_categories = ['subdomains', 'directories', 'files', 'admin_paths', 'api_endpoints', 'parameters', 'backup_files']
+        
+        for category in primary_categories:
+            self.wordlists[category] = []
+            
+            # Determine desired coverage based on category and environment
+            if category == 'directories':
+                desired_count = int(_os.environ.get('MODSCAN_DIR_WORDS_DESIRED', '100000'))
+                scan_depth = _os.environ.get('MODSCAN_DIR_SCAN_DEPTH', 'auto')
+            elif category == 'files':
+                desired_count = int(_os.environ.get('MODSCAN_FILE_WORDS_DESIRED', '30000'))
+                scan_depth = _os.environ.get('MODSCAN_FILE_SCAN_DEPTH', 'auto')
+            elif category == 'subdomains':
+                desired_count = int(_os.environ.get('MODSCAN_SUBDOMAIN_WORDS_DESIRED', '25000'))
+                scan_depth = _os.environ.get('MODSCAN_SUBDOMAIN_SCAN_DEPTH', 'auto')
+            else:
+                desired_count = int(_os.environ.get('MODSCAN_OTHER_WORDS_DESIRED', '10000'))
+                scan_depth = _os.environ.get('MODSCAN_OTHER_SCAN_DEPTH', 'auto')
+            
+            # Determine scan tier
+            target_tier = _get_scan_tier(desired_count, scan_depth)
+            logger.info(f"📋 Loading {category} wordlists (tier: {target_tier}, target: ~{desired_count} words)")
+            
+            # Load tiers progressively with deduplication
+            tier_order = ['surface', 'standard', 'deep', 'comprehensive']
+            stop_at = tier_order.index(target_tier) + 1 if target_tier in tier_order else len(tier_order)
+            
+            loaded_tiers = []
+            for i, tier in enumerate(tier_order[:stop_at]):
+                tier_words = _load_wordlist_tier(category, tier, loaded_tiers)
+                if tier_words:
+                    self.wordlists[category].extend(tier_words)
+                    loaded_tiers.append(tier)
+                    logger.info(f"🎯 Tier {tier}: added {len(tier_words)} NEW {category} entries (deduplicated)")
+                
+                # Stop if we've reached target count
+                if len(self.wordlists[category]) >= desired_count:
+                    break
+            
+            logger.info(f"✅ Final {category}: {len(self.wordlists[category])} entries from {len(loaded_tiers)} tiers")
+        
+        # Load specialized categories (CMS, technology-specific)
+        specialized_categories = ['cms_specific', 'technology_specific']
+        for category in specialized_categories:
+            self.wordlists[category] = {}
+            category_configs = wordlist_configs.get(category, {})
+            
+            for subcategory, file_paths in category_configs.items():
+                words = []
+                for file_path in file_paths:
+                    full_path = self.seclists_path / file_path
+                    if full_path.exists():
+                        try:
+                            with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                raw_words = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                            words.extend(raw_words)
+                            logger.info(f"📋 Loaded {len(raw_words)} {subcategory} words from {file_path}")
+                        except Exception as e:
+                            logger.debug(f"Failed to load {file_path}: {e}")
+                
+                self.wordlists[category][subcategory] = list(set(words))
+                logger.info(f"✅ {category}.{subcategory}: {len(self.wordlists[category][subcategory])} entries")
 
         # Auto-augment with local wordlists if present (universal)
         try:
@@ -218,53 +324,102 @@ class SecListsManager:
                     except Exception as e:
                         logger.debug(f"Failed to load {wordlist_file}: {e}")
         
-        return list(set(found_wordlists))[:2000]  # Dedupe and limit
+        # Dedupe and return a generous slice
+        return list(set(found_wordlists))[:50000]
     
-    def get_intelligent_wordlist(self, target_info: Dict, wordlist_type: str, limit: int = 500) -> List[str]:
-        """Intelligently select and combine SecLists wordlists based on target analysis"""
+    def get_intelligent_wordlist(self, target_info: Dict, wordlist_type: str, limit: int = None) -> List[str]:
+        """Intelligently select and combine SecLists wordlists with multi-category and technology-specific support"""
         
         domain = target_info.get('domain', '')
         technologies = target_info.get('technologies', [])
         tech_keywords = ' '.join(technologies).lower()
         
         # Dynamic wordlist selection based on target intelligence
-        selected_wordlists = []
+        combined_words = []
         
         if wordlist_type == 'directories':
-            selected_wordlists = self._get_directory_wordlists_for_target(domain, tech_keywords)
+            wordlist_selection = self._get_directory_wordlists_for_target(domain, tech_keywords)
+            
+            # Add primary categories
+            for category in wordlist_selection['primary']:
+                category_words = self.wordlists.get(category, [])
+                combined_words.extend(category_words)
+                logger.debug(f"Added {len(category_words)} words from {category}")
+            
+            # Add CMS-specific wordlists
+            for cms in wordlist_selection['cms_specific']:
+                cms_words = self.wordlists.get('cms_specific', {}).get(cms, [])
+                if cms_words:
+                    # Convert CMS words to directory paths
+                    cms_paths = ['/' + word for word in cms_words if not word.startswith('/')]
+                    combined_words.extend(cms_paths)
+                    logger.info(f"🎯 Added {len(cms_paths)} {cms} CMS-specific paths")
+            
+            # Add technology-specific wordlists
+            for tech in wordlist_selection['technology_specific']:
+                tech_words = self.wordlists.get('technology_specific', {}).get(tech, [])
+                if tech_words:
+                    tech_paths = ['/' + word for word in tech_words if not word.startswith('/')]
+                    combined_words.extend(tech_paths)
+                    logger.info(f"🎯 Added {len(tech_paths)} {tech} technology-specific paths")
+                    
         elif wordlist_type == 'files':
             selected_wordlists = self._get_file_wordlists_for_target(domain, tech_keywords)
-        elif wordlist_type == 'admin_paths':
-            selected_wordlists = self._get_admin_wordlists_for_target(domain, tech_keywords)
-        elif wordlist_type == 'api_endpoints':
-            selected_wordlists = self._get_api_wordlists_for_target(domain, tech_keywords)
+            for wordlist_category in selected_wordlists:
+                category_words = self.wordlists.get(wordlist_category, [])
+                combined_words.extend(category_words)
+                
+        elif wordlist_type in ['admin_paths', 'api_endpoints', 'parameters', 'backup_files', 'subdomains']:
+            # Direct category access for specialized wordlists
+            category_words = self.wordlists.get(wordlist_type, [])
+            combined_words.extend(category_words)
+            
         else:
-            # Fallback to standard wordlists
-            selected_wordlists = [wordlist_type]
-        
-        # Combine words from selected SecLists files
-        combined_words = []
-        for wordlist_category in selected_wordlists:
-            category_words = self.wordlists.get(wordlist_category, [])
+            # Fallback to direct category lookup
+            category_words = self.wordlists.get(wordlist_type, [])
             combined_words.extend(category_words)
         
-        # If no category words found, scan SecLists dynamically
+        # If no category words found, try fallback
         if not combined_words:
-            combined_words = self._scan_seclists_for_target(target_info, wordlist_type)
+            combined_words = self._get_fallback_wordlist(wordlist_type)
+            logger.info(f"🔄 Using fallback wordlist for {wordlist_type}: {len(combined_words)} entries")
         
-        # Score and filter words based on target relevance
-        scored_words = []
-        for word in combined_words:
-            score = self._score_wordlist_entry(word, domain, technologies, wordlist_type)
-            if score > 0.1:  # Only include relevant entries
-                scored_words.append((word, score))
-        
-        # Sort by relevance and return top entries
-        scored_words.sort(key=lambda x: x[1], reverse=True)
-        selected_words = [word for word, score in scored_words[:limit]]
-        
-        logger.info(f"🎯 Selected {len(selected_words)} intelligent {wordlist_type} for {domain} (from {len(selected_wordlists)} SecLists)")
-        return selected_words
+        # For directory brute-forcing, prefer breadth and randomization
+        if wordlist_type == 'directories':
+            import random as _random
+            _random.shuffle(combined_words)
+            # Remove duplicates while preserving randomized order
+            seen = set()
+            selected = []
+            for word in combined_words:
+                if word not in seen:
+                    seen.add(word)
+                    selected.append(word)
+            
+            # Apply limit if specified
+            if limit and limit < len(selected):
+                selected = selected[:limit]
+            
+            logger.info(f"🎯 Selected {len(selected)} comprehensive {wordlist_type} entries for {domain}")
+            return selected
+
+        # For other types, apply scoring and filtering
+        if limit:
+            scored_words = []
+            for word in combined_words:
+                score = self._score_wordlist_entry(word, domain, technologies, wordlist_type)
+                if score >= 0.1:
+                    scored_words.append((word, score))
+            
+            scored_words.sort(key=lambda x: x[1], reverse=True)
+            selected_words = [word for word, score in scored_words[:limit]]
+            logger.info(f"🎯 Selected {len(selected_words)} intelligent {wordlist_type} for {domain}")
+            return selected_words
+        else:
+            # Return full wordlist without scoring if no limit
+            deduped = list(dict.fromkeys(combined_words))
+            logger.info(f"🎯 Selected {len(deduped)} full {wordlist_type} entries for {domain}")
+            return deduped
     
     def get_payloads(self, payload_type: str, limit: int = 100) -> List[str]:
         """Get payloads from SecLists for vulnerability testing"""
@@ -304,21 +459,43 @@ class SecListsManager:
         
         return context_filtered[:limit]
     
-    def _get_directory_wordlists_for_target(self, domain: str, tech_keywords: str) -> List[str]:
-        """Select directory wordlists based on target technology"""
-        wordlists = ['directories', 'common', 'web_content']  # Always include base
+    def _get_directory_wordlists_for_target(self, domain: str, tech_keywords: str) -> Dict:
+        """Select directory wordlists based on target technology with multi-category support"""
+        wordlists = ['directories', 'admin_paths', 'backup_files']  # Always include base categories
         
-        # Technology-specific directory lists
-        if 'wordpress' in tech_keywords:
-            wordlists.extend(['admin_paths'])  # WordPress admin paths
-        if 'drupal' in tech_keywords:
-            wordlists.extend(['admin_paths'])
+        # Add specialized categories based on detected technologies
         if 'api' in domain.lower() or 'api' in tech_keywords:
             wordlists.extend(['api_endpoints'])
-        if any(cms in tech_keywords for cms in ['wordpress', 'drupal', 'joomla']):
-            wordlists.extend(['admin_paths'])
+        
+        # CMS-specific augmentation
+        cms_detected = []
+        if 'wordpress' in tech_keywords:
+            cms_detected.append('wordpress')
+        if 'drupal' in tech_keywords:
+            cms_detected.append('drupal')
+        if 'joomla' in tech_keywords:
+            cms_detected.append('joomla')
+        if 'django' in tech_keywords:
+            cms_detected.append('django')
+        if 'umbraco' in tech_keywords:
+            cms_detected.append('umbraco')
             
-        return list(set(wordlists))  # Remove duplicates
+        # Technology-specific augmentation
+        tech_detected = []
+        if 'java' in tech_keywords or 'servlet' in tech_keywords:
+            tech_detected.append('java')
+        if 'oracle' in tech_keywords:
+            tech_detected.append('oracle')
+        if 'microsoft' in tech_keywords or 'asp' in tech_keywords:
+            tech_detected.append('microsoft')
+        if 'adobe' in tech_keywords:
+            tech_detected.append('adobe')
+            
+        return {
+            'primary': list(set(wordlists)),
+            'cms_specific': cms_detected,
+            'technology_specific': tech_detected
+        }
     
     def _get_file_wordlists_for_target(self, domain: str, tech_keywords: str) -> List[str]:
         """Select file wordlists based on target technology"""

@@ -1,0 +1,1610 @@
+[2025-08-25T14:32:03] OpenAI Codex v0.23.0 (research preview)
+--------
+workdir: /home/michael/recon-platform/modscan/.code/branches/code-codex-implement-universal,-target-agnostic
+model: gpt-5
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: medium
+reasoning summaries: auto
+--------
+[2025-08-25T14:32:03] User instructions:
+Context: Repo path: /home/michael/recon-platform/modscan. Branch: playwright-backend. Python project; tests via pytest. The environment has network restrictions; do not attempt installs. BeautifulSoup may or may not be present; implement a fallback. Avoid target-specific logic; keep universal. Focus on modules/vulnerability_scanner.py integration points and add new module modules/universal_form_parser.py.
+
+Agent: Implement a universal, target-agnostic HTML form parsing utility and integrate it into the ModScan vulnerability scanner. This improves universal form handling (including CSRF tokens) across all targets without any target-specific logic, in line with the platform’s principles.
+
+Context summary of this repo (key parts):
+- Language: Python 3.10+, async-heavy. Headless browser automation via Playwright. Massive SecLists-backed discovery engine.
+- Core files to be aware of:
+  - engine.py: Orchestrates scanning and discovery.
+  - modules/ultimate_discovery_engine.py: Universal discovery engine leveraging SecLists and async HTTP.
+  - modules/vulnerability_scanner.py: Main vulnerability testing logic. Currently has regex-based form parsing in `_parse_forms_with_values` and relies on that in `_test_form_xss` and `_test_form_sqli`.
+  - modules/auth_manager.py: Policy-driven universal auth and CSRF token refresh.
+  - modules/screenshot_manager.py: Evidence capture with Chrome/Playwright and cookie injection.
+  - modules/multi_ai_pentester_team.py: Multi-agent testing pipeline; optional BrowserExecutor.
+  - asset_manager.py: Centralized data structures and DB ops (e.g., VulnerabilityFinding, assets, cookies, logging).
+  - tests/: pytest-based tests; includes smoke tests; some tests may be outdated.
+
+Why this task: Vulnerability scanning depends on robust, universal form parsing that correctly extracts action, method, inputs (text/hidden/checkbox/radio/password/textarea/select), and CSRF tokens without target assumptions. Current implementation uses brittle regex and misses many cases. We want a universal parser with graceful degradation (works even without bs4/lxml installed) and plug it into scanner methods for XSS/SQLi testing.
+
+Your objectives:
+1) Implement `modules/universal_form_parser.py` with a `parse_forms(html: str, base_url: Optional[str] = None) -> List[Dict]` API. Requirements:
+   - Extract: action (absolute if base_url provided), method (default GET), enctype, and inputs map with:
+     - name, type (text/password/hidden/checkbox/radio/submit/button/file/email/search/number/url/textarea/select), value(s), checked/selected flags.
+     - For `<select>` return current value(s) and all options for future use.
+     - For `<textarea>` capture text content as value.
+   - CSRF token detection: Identify likely CSRF fields by common name patterns (csrf, _token, authenticity_token, request_verification_token, xsrf, __RequestVerificationToken, etc.). Do not hardcode app-specific names; use generic patterns.
+   - Use BeautifulSoup (bs4+html.parser) if available; otherwise implement a safe fallback using html.parser or regex with best effort. No network or extra installs required.
+   - Be robust to malformed HTML, nested forms, missing names, inputs without values, and duplicated names. Deduplicate by name but preserve multiple values via lists where applicable.
+   - Return structure example:
+     {
+       'action': 'https://example.com/login',
+       'method': 'POST',
+       'enctype': 'application/x-www-form-urlencoded',
+       'inputs': {
+          'username': {'type': 'text', 'value': ''},
+          'password': {'type': 'password', 'value': ''},
+          '__RequestVerificationToken': {'type':'hidden','value':'abc','is_csrf': True},
+          'remember': {'type': 'checkbox','value': 'on','checked': False},
+          'color': {'type': 'select','value': 'red','options': ['red','blue']}
+       }
+     }
+
+2) Integrate the parser:
+   - Replace/route `VulnerabilityScanner._parse_forms_with_values` to call your new `parse_forms` and adapt callers (`_test_form_xss`, `_test_form_sqli`, related helpers) to consume the normalized structure. Preserve existing behavior where feasible, but prefer correctness and universality.
+   - Ensure CSRF/hidden fields are preserved when constructing submissions. Honor method/action resolution and absolute URL building (use provided base_url when action is relative).
+
+3) Add tests:
+   - `tests/test_universal_form_parser.py` with diverse HTML fixtures: inputs, checkboxes/radios, selects (single/multi), textareas, hidden/CSRF tokens, relative/absolute actions, malformed HTML. Validate parser output structure and key fields.
+   - `tests/test_scanner_form_integration.py` with small unit tests (no network) that feed HTML to `_parse_forms_with_values` (now calling your parser) and verify selection of testable fields vs protected fields (CSRF/hidden preserved) for both XSS and SQLi code paths.
+
+4) Backwards-compatibility & style:
+   - Keep method names in `VulnerabilityScanner` stable; only change internal implementation to call the new module.
+   - No target-specific assumptions. No app-specific paths. Keep everything universal and pattern-based.
+   - Ensure no reliance on external network or packages beyond what’s already available; optional bs4 import only if present.
+
+5) Validation:
+   - Run pytest and ensure new tests pass. Update/adjust existing tests only if they are incompatible with the universal approach, and document the reason in the test docstring.
+   - Provide a short README snippet (add to ARCHITECTURE_OVERVIEW.md end or a new docs/DEV_NOTES.md) explaining the parser API and how scanner uses it.
+
+Acceptance criteria:
+- New file `modules/universal_form_parser.py` implements robust parser with graceful fallback.
+- `modules/vulnerability_scanner.py`’s form parsing now delegates to the new parser and handles CSRF/hidden fields universally.
+- New tests added pass locally. Existing test suite still passes (or is minimally/justifiably adjusted).
+- No target-specific logic or hardcoded app paths introduced.
+
+Notes:
+- Work within the existing async patterns; parsing itself can be sync.
+- Be careful with performance: avoid O(N^2) where possible, and cap pathological cases (e.g., extremely large pages) via simple guards (e.g., slice html to first few MB for parsing).
+- Keep evidence capture and exploitation logic untouched; only form parsing and its direct consumers.
+
+Please create a new branch/worktree and proceed. Deliver: code changes + tests + a concise summary in your result.
+
+Desired output: New universal form parser module + integration + passing tests + short summary
+
+Files to consider: modules/vulnerability_scanner.py, modules/auth_manager.py, modules/ultimate_discovery_engine.py, ARCHITECTURE_OVERVIEW.md
+[2025-08-25T14:32:16] codex
+
+I’m going to scan the repo to locate the scanner and related files, then open vulnerability_scanner.py to plan the integration.
+[2025-08-25T14:32:19] exec bash -lc 'ls -la && git status --porcelain=v1 -b && rg -n "class VulnerabilityScanner|_parse_forms_with_values|_test_form_xss|_test_form_sqli|ARCHITECTURE_OVERVIEW|universal_form_parser|ultimate_discovery_engine|auth_manager|multi_ai_pentester_team|screenshot_manager" -S || true' in /home/michael/recon-platform/modscan/.code/branches/code-codex-implement-universal,-target-agnostic
+[2025-08-25T14:32:19] bash -lc 'ls -la && git status --porcelain=v1 -b && rg -n "class VulnerabilityScanner|_parse_forms_with_values|_test_form_xss|_test_form_sqli|ARCHITECTURE_OVERVIEW|universal_form_parser|ultimate_discovery_engine|auth_manager|multi_ai_pentester_team|screenshot_manager" -S || true' succeeded in 58ms:
+total 440
+drwxrwxr-x 12 michael michael   4096 Aug 25 09:32 .
+drwxrwxr-x  5 michael michael   4096 Aug 25 09:32 ..
+-rw-rw-r--  1 michael michael    108 Aug 25 09:32 .git
+drwxrwxr-x  3 michael michael   4096 Aug 25 09:32 .github
+-rw-rw-r--  1 michael michael    850 Aug 25 09:32 .gitignore
+-rw-rw-r--  1 michael michael    133 Aug 25 09:32 .modscan_exclude.txt
+-rw-rw-r--  1 michael michael   4526 Aug 25 09:32 AGENTS.md
+-rw-rw-r--  1 michael michael   7924 Aug 25 09:32 ARCHITECTURE_OVERVIEW.md
+-rw-rw-r--  1 michael michael  11835 Aug 25 09:32 CLAUDE.md
+-rw-rw-r--  1 michael michael  11356 Aug 25 09:32 OPENAI.md
+-rw-rw-r--  1 michael michael   5864 Aug 25 09:32 activity_logger.py
+-rw-rw-r--  1 michael michael   6047 Aug 25 09:32 api_schema.py
+-rw-rw-r--  1 michael michael  73813 Aug 25 09:32 asset_manager.py
+-rw-rw-r--  1 michael michael   5762 Aug 25 09:32 asset_mapping.json
+-rw-rw-r--  1 michael michael   2566 Aug 25 09:32 config.example.json
+-rw-rw-r--  1 michael michael    483 Aug 25 09:32 conftest.py
+-rw-rw-r--  1 michael michael 129161 Aug 25 09:32 dashboard.py
+drwxrwxr-x  2 michael michael   4096 Aug 25 09:32 data
+-rw-rw-r--  1 michael michael  38656 Aug 25 09:32 engine.py
+[2025-08-25T14:32:19] tokens used: 3144
+[2025-08-25T14:32:20] exec bash -lc "sed -n '1100,1230p' modules/vulnerability_scanner.py" in /home/michael/recon-platform/modscan/.code/branches/code-codex-implement-universal,-target-agnostic
+[2025-08-25T14:32:20] bash -lc "sed -n '1100,1230p' modules/vulnerability_scanner.py" succeeded in 46ms:
+                '<script>alert("XSS")</script>',
+                '"><script>alert("XSS")</script>',
+                "'><script>alert('XSS')</script>",
+                '<img src=x onerror=alert("XSS")>',
+                '<svg onload=alert("XSS")>',
+                'javascript:alert("XSS")',
+                '"><svg/onload=alert(/XSS/)>',
+                '"><iframe src=javascript:alert("XSS")>'
+            ]
+            
+            # Test each parameter
+            for param_name in params:
+                original_value = params[param_name][0] if params[param_name] else ''
+                
+                for payload in xss_payloads:
+                    # Create test parameters
+                    test_params = params.copy()
+                    test_params[param_name] = [payload]
+                    
+                    # Build test URL
+[2025-08-25T14:32:20] tokens used: 2602
+[2025-08-25T14:32:21] exec bash -lc "sed -n '1230,1710p' modules/vulnerability_scanner.py" in /home/michael/recon-platform/modscan/.code/branches/code-codex-implement-universal,-target-agnostic
+[2025-08-25T14:32:21] bash -lc "sed -n '1230,1710p' modules/vulnerability_scanner.py" succeeded in 47ms:
+            
+            # Extract ALL input fields with proper attribute parsing
+            input_fields = {}
+            
+            # More comprehensive input pattern that handles various attribute orders
+            input_pattern = r'<input([^>]*?)/?>'
+            input_matches = re.findall(input_pattern, form_content, re.IGNORECASE)
+            
+            for input_attrs in input_matches:
+                # Parse individual attributes
+                name_match = re.search(r'name=["\']?([^"\'>\s]+)', input_attrs, re.IGNORECASE)
+                value_match = re.search(r'value=["\']?([^"\'>\s]*)', input_attrs, re.IGNORECASE)
+                type_match = re.search(r'type=["\']?([^"\'>\s]+)', input_attrs, re.IGNORECASE)
+                
+                if name_match:
+                    name = name_match.group(1)
+                    value = value_match.group(1) if value_match else ''
+                    input_type = type_match.group(1).lower() if type_match else 'text'
+                    
+                    input_fields[name] = {
+[2025-08-25T14:32:21] tokens used: 1551
+
+[2025-08-25T14:32:24] thinking
+
+**Updating form parsing**
+
+I'm looking at the long file, and right now, the form parsing is done using regex, which only handles input fields but not selects or textareas. I need to add the universal_form_parser module and modify the existing method to utilize it. I also have to update the code for building protected fields to include CSRF handling. Additionally, I’ll import the new parsing function and review existing tests to ensure everything's covered.
+[2025-08-25T14:32:25] exec bash -lc 'ls -la tests && rg -n "form|xss|sqli|universal_form_parser|vulnerability_scanner" tests -S || true' in /home/michael/recon-platform/modscan/.code/branches/code-codex-implement-universal,-target-agnostic
+[2025-08-25T14:32:25] bash -lc 'ls -la tests && rg -n "form|xss|sqli|universal_form_parser|vulnerability_scanner" tests -S || true' succeeded in 51ms:
+total 16
+drwxrwxr-x  2 michael michael 4096 Aug 25 09:32 .
+drwxrwxr-x 12 michael michael 4096 Aug 25 09:32 ..
+-rw-rw-r--  1 michael michael 1285 Aug 25 09:32 test_run_coro.py
+-rw-rw-r--  1 michael michael  260 Aug 25 09:32 test_smoke.py
+tests/test_run_coro.py:18:# Load vulnerability_scanner module directly to avoid heavy package imports
+tests/test_run_coro.py:20:module_path = os.path.join(repo_root, "modules", "vulnerability_scanner.py")
+tests/test_run_coro.py:21:spec = importlib.util.spec_from_file_location("vulnerability_scanner", module_path)
+[2025-08-25T14:32:25] tokens used: 2477
+
+[2025-08-25T14:32:27] thinking
+
+**Planning test additions**
+
+I need to add new test files and also modify the ARCHITECTURE_OVERVIEW.md document. Let’s check the top of the vulnerability_scanner for the class and imports to make sure I have everything I need for these updates. I’m curious if there are any dependencies I should be aware of. As I go through this, I'll ensure that my changes are clear and well-documented for anyone else who might look at it later.
+[2025-08-25T14:32:29] exec bash -lc "sed -n '1,140p' modules/vulnerability_scanner.py" in /home/michael/recon-platform/modscan/.code/branches/code-codex-implement-universal,-target-agnostic
+[2025-08-25T14:32:29] bash -lc "sed -n '1,140p' modules/vulnerability_scanner.py" succeeded in 48ms:
+from pathlib import Path
+import requests
+import json
+
+# --- Async helper to run coroutines safely both inside and outside a running loop ---
+from typing import Any
+
+def _run_coro(coro) -> Any:
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    if loop.is_running():
+        # If we're already inside an event loop, schedule the coroutine and
+        # return the created task to allow the caller to await or manage it.
+        return asyncio.ensure_future(coro)
+
+    # If no loop is running, execute the coroutine to completion and return
+    # the result. The previous implementation mistakenly called _run_coro
+[2025-08-25T14:32:29] tokens used: 317
+[2025-08-25T14:32:30] exec bash -lc "sed -n '1400,1710p' modules/vulnerability_scanner.py" in /home/michael/recon-platform/modscan/.code/branches/code-codex-implement-universal,-target-agnostic
+[2025-08-25T14:32:30] bash -lc "sed -n '1400,1710p' modules/vulnerability_scanner.py" succeeded in 48ms:
+                # Submit form with XSS payload
+                async with session.post(form_url, data=form_data, timeout=15, headers=self._get_auth_headers(form_url)) as response:
+                    response_text = await response.text()
+                    
+                    # Check if payload is reflected without encoding
+                    if payload in response_text and '<script>' in response_text:
+                        findings.append(VulnerabilityFinding(
+                            url=form_url,
+                            vuln_type='xss-reflected',
+                            severity='HIGH',
+                            confidence=0.85,
+                            payload=payload,
+                            evidence=f'Reflected XSS in form field - XSS payload reflected in response',
+                            discovered_at=datetime.now(),
+                            affected_parameter='form_field'
+                        ))
+                        logger.info(f"✅ XSS FOUND: {form_url}")
+                        break  # Found XSS, no need to test more payloads
+                        
+            except Exception as e:
+[2025-08-25T14:32:30] tokens used: 1420
+
+[2025-08-25T14:32:40] thinking
+
+**Evaluating checkbox/radio structure**
+
+I'm considering how to handle checkboxes and radio buttons. If there are multiple with the same name, each should have a value attribute, and the default is "on". For checkboxes allowing multiple selections, I think I'll represent them as a structure that includes type, value, and checked flags. The structure might store the type ('checkbox' or 'radio'), the current value(s), and include options for better clarity. Ensuring we capture checked flags is essential, even though the spec could be clearer.
+**Structuring checkbox/radio inputs**
+
+I'm planning to set the 'value' to a list of checked values and include an 'options' list for all possible values. For checkbox groups, I might use an 'inputs' key with 'multiple': True. The "checked" flag would be set to True if there's only one checked input, and otherwise, I might omit it or adjust it. For selects, I'll need to parse options, setting 'multiple' if applicable and determining current values based on selected attributes. I'll store 'value' either as a string or list.
+**Designing textarea and CSRF handling**
+
+I'm thinking about how to set up the textarea properly by defining its type as 'textarea' and including the text content as its value. For CSRF tokens, I'll create a pattern to identify likely names by compiling common terms and normalizing them to lower case. I'll also watch for the ASP.NET token specifically. Additionally, I need to manage the method defaults and properly join URLs using `urllib.parse`. I’ll update the `vulnerability_scanner` to integrate these features as well as accommodate the keys for enctype without breaking anything.
+**Updating input fields for testing**
+
+I'm realizing that input_fields are currently treated as mappings from strings to their corresponding 'value' and 'type' within the XSS test. My new parser will need to handle situations where 'value' could be a list, especially for selects. I'll adapt the detection logic to consider various input types like text, email, and password. Also, for CSRF detection, I’ll make sure to account for 'is_csrf' flags. This means updating how we handle inputs and modifying the SQL injection testing function accordingly. Now, I need to look at the _test_form_sqli code for these adjustments.
+[2025-08-25T14:32:52] codex
+**Structuring checkbox/radio inputs**
+
+I'm planning to set the 'value' to a list of checked values and include an 'options' list for all possible values. For checkbox groups, I might use an 'inputs' key with 'multiple': True. The "checked" flag would be set to True if there's only one checked input, and otherwise, I might omit it or adjust it. For selects, I'll need to parse options, setting 'multiple' if applicable and determining current values based on selected attributes. I'll store 'value' either as a string or list.
+[2025-08-25T14:32:52] codex
+**Designing textarea and CSRF handling**
+
+I'm thinking about how to set up the textarea properly by defining its type as 'textarea' and including the text content as its value. For CSRF tokens, I'll create a pattern to identify likely names by compiling common terms and normalizing them to lower case. I'll also watch for the ASP.NET token specifically. Additionally, I need to manage the method defaults and properly join URLs using `urllib.parse`. I’ll update the `vulnerability_scanner` to integrate these features as well as accommodate the keys for enctype without breaking anything.
+[2025-08-25T14:32:52] codex
+**Updating input fields for testing**
+
+I'm realizing that input_fields are currently treated as mappings from strings to their corresponding 'value' and 'type' within the XSS test. My new parser will need to handle situations where 'value' could be a list, especially for selects. I'll adapt the detection logic to consider various input types like text, email, and password. Also, for CSRF detection, I’ll make sure to account for 'is_csrf' flags. This means updating how we handle inputs and modifying the SQL injection testing function accordingly. Now, I need to look at the _test_form_sqli code for these adjustments.
+[2025-08-25T14:32:53] exec bash -lc "sed -n '1600,1710p' modules/vulnerability_scanner.py" in /home/michael/recon-platform/modscan/.code/branches/code-codex-implement-universal,-target-agnostic
+[2025-08-25T14:32:53] bash -lc "sed -n '1600,1710p' modules/vulnerability_scanner.py" succeeded in 48ms:
+                        if len(response_text) < 500 and ('error' in response_text.lower() or 'exception' in response_text.lower()):
+                            # Test with a normal value to compare
+                            normal_params = params.copy()
+                            normal_params[param_name] = ['1']  # Normal numeric value
+                            normal_url = f"{base_url}?{urlencode(normal_params, doseq=True)}"
+                            
+                            async with session.get(normal_url, timeout=30, headers=self._get_auth_headers(normal_url)) as normal_response:
+                                normal_text = await normal_response.text()
+                                
+                                # If normal response is significantly longer, we found boolean blind SQLi
+                                if len(normal_text) > len(response_text) + 1000:
+                                    findings.append(VulnerabilityFinding(
+                                        url=test_url,
+                                        vuln_type='sql-injection-blind-boolean',
+                                        severity='High',
+                                        confidence=0.80,
+                                        payload=payload,
+                                        evidence=f'Boolean-based Blind SQL Injection in GET parameter {param_name} - Error response ({len(response_text)} chars) vs normal response ({len(normal_text)} chars): {response_text[:50]}',
+                                        discovered_at=datetime.now(),
+                                        affected_parameter=param_name
+[2025-08-25T14:32:53] tokens used: 3500
+[2025-08-25T14:32:54] exec bash -lc "sed -n '1710,2070p' modules/vulnerability_scanner.py" in /home/michael/recon-platform/modscan/.code/branches/code-codex-implement-universal,-target-agnostic
+[2025-08-25T14:32:54] bash -lc "sed -n '1710,2070p' modules/vulnerability_scanner.py" succeeded in 48ms:
+                    # Set SQL injection payload for the field being tested
+                    form_data[field_name] = payload
+                    
+                    # Determine form URL
+                    if action_url.startswith('http'):
+                        form_url = action_url
+                    else:
+                        from urllib.parse import urljoin
+                        form_url = urljoin(base_url, action_url)
+                    
+                    # Measure response time for timing attacks
+                    import time
+                    start_time = time.time()
+                    
+                    # Submit form
+                    if method.upper() == 'POST':
+                        async with session.post(form_url, data=form_data, timeout=30, headers=self._get_auth_headers(form_url)) as response:
+                            response_text = await response.text()
+                            response_status = response.status
+                    else:
+[2025-08-25T14:32:54] tokens used: 1405
+
+[2025-08-25T14:33:26] thinking
+
+**Modifying the vulnerability scanner**
+
+I’m looking at how the vulnerability_scanner will call parse_forms without the base_url, which is good! But the _parse_forms_with_values method is currently async while parse_forms is synchronous. I’m thinking we can just return awaited when we call it, keeping it simple. I'll import parse_forms at the beginning of the method to avoid heavy imports. 
+
+Next, I’ll modify how we handle input fields in our tests, ensuring compatibility with our new structure. We also need to preserve CSRF protections by checking for the 'is_csrf' flag and adjusting our conditions for checkboxes and testable fields.
+**Adjusting form data handling**
+
+In handling the 'select' fields, setting them to 'test' isn’t allowed; however, they can still be included in GET/POST requests while the server may ignore invalid options. The requirement indicates that we should honor the current values and preserve tokens. I’ll ensure that for non-targeted fields, we set `form_data[fname]` to `field_data.get('value')`, not "test." This way, required fields remain intact.
+
+In the `_test_form_inputs_xss_enhanced` method, I’ll modify it so that when building form_data, rather than setting 'test' for all other fields, we'll iterate over the fields that don’t require protection and set their original values. For checkboxes or radios, I'll add those to form_data to ensure proper encoding.
+**Implementing aiohttp adjustments**
+
+I’m looking at how to utilize `aiohttp` for POST requests, where the data can be mapped to a string or a list, and this library supports sequences. For multiple select options, I’ll ensure that the 'value' can be a list. If the value is None or an empty string, I’m planning to set 'test' as a fallback for types like 'password' or 'text'.
+
+I’ll create a helper function to maintain minimal code while adapting loops accordingly. In the SQL injection test, I'll default existing values to 'test' for the baseline data. I want to ensure that `protected_fields` only includes values from `input_fields`, and I'll store them accordingly. Lastly, in our test file, we'll add several test cases for different form scenarios.
+**Setting up parse_forms assertions**
+
+I need to call `parse_forms(html, base_url)` and set up some assertions. First, I expect one form with an absolute action, method POST, and inputs that include 'username', 'password', '__RequestVerificationToken', 'remember', 'color', and 'bio'.
+
+For the 'remember' field, which is a checkbox, I’ll ensure its value is an empty list, with options being 'on' or 'yes.' The 'color' field should have its options list match its values, selecting 'red' when appropriate. The 'bio' should be a textarea with the correct content.
+
+Next, I'll check that '__RequestVerificationToken' has `is_csrf` set to True. I'll also ensure radios and multiple checkbox duplicates are combined. We need to handle malformed HTML gracefully, and I want to create tests that simulate the absence of the BeautifulSoup library using monkeypatching for the parser. This way, we'll ensure our testing is robust!
+**Conducting integration tests for the scanner**
+
+I’m setting things up to test `VulnerabilityScanner._parse_forms_with_values` and ensure it returns the correct structure. The integration tests suggest running unit tests that feed HTML to this method and verify the selection of testable vs. protected fields for both XSS and SQL injection paths.
+
+I’ll instantiate a `VulnerabilityScanner` with a minimal asset_manager and config. Since `_parse_forms_with_values` is async, I'll construct the scanner while importing the necessary modules. For testing, I’ll ensure that I focus on verifying the logic for selecting fields without making actual network calls, and I can mock network interactions when necessary. The plan is to assert the correct identification of testable and protected fields based on provided HTML inputs. Finally, I’ll update the architecture overview documentation with details about the parser and API.
+[2025-08-25T14:34:02] codex
+**Adjusting form data handling**
+
+In handling the 'select' fields, setting them to 'test' isn’t allowed; however, they can still be included in GET/POST requests while the server may ignore invalid options. The requirement indicates that we should honor the current values and preserve tokens. I’ll ensure that for non-targeted fields, we set `form_data[fname]` to `field_data.get('value')`, not "test." This way, required fields remain intact.
+
+In the `_test_form_inputs_xss_enhanced` method, I’ll modify it so that when building form_data, rather than setting 'test' for all other fields, we'll iterate over the fields that don’t require protection and set their original values. For checkboxes or radios, I'll add those to form_data to ensure proper encoding.
+[2025-08-25T14:34:02] codex
+**Implementing aiohttp adjustments**
+
+I’m looking at how to utilize `aiohttp` for POST requests, where the data can be mapped to a string or a list, and this library supports sequences. For multiple select options, I’ll ensure that the 'value' can be a list. If the value is None or an empty string, I’m planning to set 'test' as a fallback for types like 'password' or 'text'.
+
+I’ll create a helper function to maintain minimal code while adapting loops accordingly. In the SQL injection test, I'll default existing values to 'test' for the baseline data. I want to ensure that `protected_fields` only includes values from `input_fields`, and I'll store them accordingly. Lastly, in our test file, we'll add several test cases for different form scenarios.
+[2025-08-25T14:34:02] codex
+**Setting up parse_forms assertions**
+
+I need to call `parse_forms(html, base_url)` and set up some assertions. First, I expect one form with an absolute action, method POST, and inputs that include 'username', 'password', '__RequestVerificationToken', 'remember', 'color', and 'bio'.
+
+For the 'remember' field, which is a checkbox, I’ll ensure its value is an empty list, with options being 'on' or 'yes.' The 'color' field should have its options list match its values, selecting 'red' when appropriate. The 'bio' should be a textarea with the correct content.
+
+Next, I'll check that '__RequestVerificationToken' has `is_csrf` set to True. I'll also ensure radios and multiple checkbox duplicates are combined. We need to handle malformed HTML gracefully, and I want to create tests that simulate the absence of the BeautifulSoup library using monkeypatching for the parser. This way, we'll ensure our testing is robust!
+[2025-08-25T14:34:02] codex
+**Conducting integration tests for the scanner**
+
+I’m setting things up to test `VulnerabilityScanner._parse_forms_with_values` and ensure it returns the correct structure. The integration tests suggest running unit tests that feed HTML to this method and verify the selection of testable vs. protected fields for both XSS and SQL injection paths.
+
+I’ll instantiate a `VulnerabilityScanner` with a minimal asset_manager and config. Since `_parse_forms_with_values` is async, I'll construct the scanner while importing the necessary modules. For testing, I’ll ensure that I focus on verifying the logic for selecting fields without making actual network calls, and I can mock network interactions when necessary. The plan is to assert the correct identification of testable and protected fields based on provided HTML inputs. Finally, I’ll update the architecture overview documentation with details about the parser and API.
+[2025-08-25T14:34:02] codex
+
+Next, I’ll add the universal form parser module, integrate it into vulnerability_scanner._parse_forms_with_values, and write tests to cover parsing and selection logic.
+[2025-08-25T14:35:15] tokens used: 8588
+[2025-08-25T14:35:47] codex
+
+I can’t write to the filesystem in this read‑only environment, so I’m providing a complete, ready-to-apply patch (new module, integration changes, and tests). You can apply this in your repo by saving these changes, or running them through your usual patch workflow.
+
+Proposed changes overview
+- Add modules/universal_form_parser.py: Universal, target-agnostic form parser with bs4-first and regex fallback.
+- Integrate parser in modules/vulnerability_scanner.py:
+  - Route _parse_forms_with_values to the new parse_forms.
+  - Update XSS/SQLi form testing to preserve CSRF/hidden fields and reuse existing values.
+- Add tests:
+  - tests/test_universal_form_parser.py for diverse parsing cases and fallback.
+  - tests/test_scanner_form_integration.py for scanner integration and classification of protected vs testable fields (no network).
+- Update ARCHITECTURE_OVERVIEW.md with a short section on the parser API and scanner integration.
+
+Unified patch (apply to repo root)
+*** Begin Patch
+*** Add File: modules/universal_form_parser.py
++"""
++Universal, target-agnostic HTML form parser for ModScan.
++
++Goals:
++- Robust extraction of forms across arbitrary HTML without target-specific logic.
++- Capture action, method, enctype, and a normalized inputs map.
++- Handle input, select (single/multiple), and textarea elements.
++- Detect likely CSRF tokens using generic name-based patterns.
++- Gracefully degrade if BeautifulSoup is unavailable using a regex/html.parser fallback.
++
++API:
++    parse_forms(html: str, base_url: Optional[str] = None) -> List[Dict]
++
++Return structure example:
++    {
++      'action': 'https://example.com/login',
++      'method': 'POST',
++      'enctype': 'application/x-www-form-urlencoded',
++      'inputs': {
++         'username': {'type': 'text', 'value': ''},
++         'password': {'type': 'password', 'value': ''},
++         '__RequestVerificationToken': {'type':'hidden','value':'abc','is_csrf': True},
++         'remember': {'type': 'checkbox', 'value': [], 'options': ['on']},
++         'color': {'type': 'select', 'value': 'red', 'options': ['red','blue']}
++      }
++    }
++
++Notes:
++- For checkbox/radio groups, values are aggregated under a single name with:
++  {'type': 'checkbox'|'radio', 'value': [checked_values], 'options': [all_values]}
++- For <select multiple>, 'value' is a list of selected values.
++- For <select>, 'options' holds a flat list of option values (text if no value attr).
++- CSRF detection is generic by field name (csrf, xsrf, _token, authenticity_token, requestverificationtoken, etc.).
++"""
++
++from typing import List, Dict, Optional, Any
++from urllib.parse import urljoin
++import re
++
++try:
++    from bs4 import BeautifulSoup  # type: ignore
++except Exception:  # bs4 may not be installed; fallback mode will be used
++    BeautifulSoup = None  # type: ignore
++
++MAX_HTML = 2_000_000  # Simple guard against pathological pages
++
++_CSRF_NAME_PATTERN = re.compile(
++    r"csrf|xsrf|_token|authenticity|requestverification|__requestverificationtoken",
++    re.IGNORECASE,
++)
++
++
++def _is_csrf_field(name: Optional[str]) -> bool:
++    if not name:
++        return False
++    # Normalize by removing common separators for broader matching
++    norm = re.sub(r"[^a-z]", "", name.lower())
++    return bool(_CSRF_NAME_PATTERN.search(norm))
++
++
++def _finalize_action(action: Optional[str], base_url: Optional[str]) -> str:
++    action = (action or "").strip()
++    if not base_url:
++        return action
++    if not action:
++        return base_url
++    return urljoin(base_url, action)
++
++
++def parse_forms(html: str, base_url: Optional[str] = None) -> List[Dict[str, Any]]:
++    """Parse HTML and return a list of normalized form dicts.
++
++    - Uses BeautifulSoup if available; otherwise, a robust regex fallback.
++    - Never performs network operations or target-specific assumptions.
++    """
++    if not isinstance(html, str):
++        html = str(html)
++    if len(html) > MAX_HTML:
++        html = html[:MAX_HTML]
++
++    if BeautifulSoup is not None:
++        try:
++            return _parse_with_bs4(html, base_url)
++        except Exception:
++            # Fall back if BS4 chokes on malformed HTML
++            pass
++    return _parse_with_fallback(html, base_url)
++
++
++def _parse_with_bs4(html: str, base_url: Optional[str]) -> List[Dict[str, Any]]:
++    soup = BeautifulSoup(html, "html.parser")  # type: ignore
++    results: List[Dict[str, Any]] = []
++    for form in soup.find_all("form"):
++        action = _finalize_action(form.get("action"), base_url)
++        method = (form.get("method") or "GET").upper()
++        enctype = (form.get("enctype") or "application/x-www-form-urlencoded").strip()
++
++        inputs: Dict[str, Any] = {}
++
++        # Iterate over all input/select/textarea descendants
++        for el in form.find_all(["input", "select", "textarea"]):
++            tag = el.name.lower()
++            name = el.get("name")
++            if not name:
++                continue  # skip unnamed controls
++
++            if tag == "input":
++                itype = (el.get("type") or "text").lower()
++                raw_val = el.get("value")
++                is_csrf = _is_csrf_field(name)
++
++                if itype in ("checkbox", "radio"):
++                    val = raw_val if raw_val is not None else "on"
++                    item = inputs.get(name)
++                    if not item:
++                        item = {"type": itype, "value": [], "options": [], "is_csrf": is_csrf}
++                        inputs[name] = item
++                    # Track all options
++                    if val not in item["options"]:
++                        item["options"].append(val)
++                    # Track checked values
++                    if el.has_attr("checked"):
++                        if val not in item["value"]:
++                            item["value"].append(val)
++                    # Provide a summarizing boolean checked flag for simple UIs
++                    item["checked"] = bool(item["value"])  # True if any checked
++                else:
++                    # Single value input
++                    if name not in inputs:
++                        inputs[name] = {
++                            "type": itype,
++                            "value": raw_val if raw_val is not None else "",
++                            "is_csrf": is_csrf,
++                        }
++                    # First one wins for duplicate text inputs; later duplicates ignored
++
++            elif tag == "textarea":
++                is_csrf = _is_csrf_field(name)
++                value = el.text if el.text is not None else ""
++                if name not in inputs:
++                    inputs[name] = {"type": "textarea", "value": value, "is_csrf": is_csrf}
++
++            elif tag == "select":
++                is_csrf = _is_csrf_field(name)
++                multiple = el.has_attr("multiple")
++                options: List[str] = []
++                selected: List[str] = []
++                for opt in el.find_all("option"):
++                    opt_val = opt.get("value")
++                    if opt_val is None:
++                        opt_val = (opt.text or "").strip()
++                    options.append(opt_val)
++                    if opt.has_attr("selected"):
++                        selected.append(opt_val)
++                if multiple:
++                    value: Any = selected
++                else:
++                    value = selected[0] if selected else (options[0] if options else "")
++                if name not in inputs:
++                    item = {
++                        "type": "select",
++                        "value": value,
++                        "options": options,
++                        "multiple": multiple,
++                        "is_csrf": is_csrf,
++                    }
++                    # Also expose selected options list for clarity
++                    item["selected_options"] = list(selected)
++                    inputs[name] = item
++
++        results.append({
++            "action": action,
++            "method": method,
++            "enctype": enctype,
++            "inputs": inputs,
++        })
++
++    return results
++
++
++# --- Fallback parser (regex-based, best-effort) ---
++
++_ATTR_RE = re.compile(r"(\\w[\\w:\\-]*)\\s*=\\s*(?:'([^']*)'|\\\"([^\\\"]*)\\\"|([^\\s'\\\">]+))")
++
++
++def _parse_attrs(attr_text: str) -> Dict[str, str]:
++    attrs: Dict[str, str] = {}
++    for m in _ATTR_RE.finditer(attr_text or ""):
++        key = m.group(1).lower()
++        val = m.group(2) or m.group(3) or m.group(4) or ""
++        attrs[key] = val
++    return attrs
++
++
++def _parse_with_fallback(html: str, base_url: Optional[str]) -> List[Dict[str, Any]]:
++    results: List[Dict[str, Any]] = []
++    # Find forms and their contents
++    for fm in re.finditer(r"(?is)<form\\b([^>]*)>(.*?)</form>", html):
++        form_attr_txt = fm.group(1) or ""
++        form_inner = fm.group(2) or ""
++        fattrs = _parse_attrs(form_attr_txt)
++
++        action = _finalize_action(fattrs.get("action"), base_url)
++        method = (fattrs.get("method") or "GET").upper()
++        enctype = (fattrs.get("enctype") or "application/x-www-form-urlencoded").strip()
++
++        inputs: Dict[str, Any] = {}
++
++        # Inputs
++        for im in re.finditer(r"(?is)<input\\b([^>]*)>", form_inner):
++            iattrs = _parse_attrs(im.group(1) or "")
++            name = iattrs.get("name")
++            if not name:
++                continue
++            itype = (iattrs.get("type") or "text").lower()
++            raw_val = iattrs.get("value")
++            is_csrf = _is_csrf_field(name)
++            checked = re.search(r"(?is)\\bchecked\\b", im.group(1) or "") is not None
++
++            if itype in ("checkbox", "radio"):
++                val = raw_val if raw_val is not None else "on"
++                item = inputs.get(name)
++                if not item:
++                    item = {"type": itype, "value": [], "options": [], "is_csrf": is_csrf}
++                    inputs[name] = item
++                if val not in item["options"]:
++                    item["options"].append(val)
++                if checked and val not in item["value"]:
++                    item["value"].append(val)
++                item["checked"] = bool(item["value"])  # summarizing flag
++            else:
++                if name not in inputs:
++                    inputs[name] = {"type": itype, "value": raw_val or "", "is_csrf": is_csrf}
++
++        # Textareas
++        for tm in re.finditer(r"(?is)<textarea\\b([^>]*)>(.*?)</textarea>", form_inner):
++            tattrs = _parse_attrs(tm.group(1) or "")
++            name = tattrs.get("name")
++            if not name:
++                continue
++            value = (tm.group(2) or "")
++            is_csrf = _is_csrf_field(name)
++            if name not in inputs:
++                inputs[name] = {"type": "textarea", "value": value, "is_csrf": is_csrf}
++
++        # Selects
++        for sm in re.finditer(r"(?is)<select\\b([^>]*)>(.*?)</select>", form_inner):
++            sattrs = _parse_attrs(sm.group(1) or "")
++            name = sattrs.get("name")
++            if not name:
++                continue
++            multiple = "multiple" in (sm.group(1) or "").lower()
++            options: List[str] = []
++            selected: List[str] = []
++            for om in re.finditer(r"(?is)<option\\b([^>]*)>(.*?)</option>", sm.group(2) or ""):
++                oattrs = _parse_attrs(om.group(1) or "")
++                val = oattrs.get("value")
++                if val is None:
++                    val = (om.group(2) or "").strip()
++                options.append(val)
++                if re.search(r"(?is)\\bselected\\b", om.group(1) or ""):
++                    selected.append(val)
++            value: Any
++            if multiple:
++                value = selected
++            else:
++                value = selected[0] if selected else (options[0] if options else "")
++            is_csrf = _is_csrf_field(name)
++            if name not in inputs:
++                item = {
++                    "type": "select",
++                    "value": value,
++                    "options": options,
++                    "multiple": multiple,
++                    "is_csrf": is_csrf,
++                }
++                item["selected_options"] = list(selected)
++                inputs[name] = item
++
++        results.append({
++            "action": action,
++            "method": method,
++            "enctype": enctype,
++            "inputs": inputs,
++        })
++
++    return results
++
+*** End Patch
+*** Begin Patch
+*** Update File: modules/vulnerability_scanner.py
+@@
+ import hashlib
+ import os
+ import importlib.util
+ import shlex
+ import tempfile
+ from datetime import datetime
+ from typing import List, Dict, Optional
+ from dataclasses import dataclass
+ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
+ 
+ # CRITICAL: Import centralized VulnerabilityFinding from asset_manager
+ from asset_manager import VulnerabilityFinding
+ from .auth_manager import AuthManager
++from .universal_form_parser import parse_forms
+@@
+     async def _parse_forms_with_values(self, html_content: str) -> List[Dict]:
+-        """Parse forms and extract ALL input fields with their values"""
+-        import re
+-        
+-        forms = []
+-        
+-        # Find all forms with their content - improved regex
+-        form_pattern = r'<form[^>]*>(.*?)</form>'
+-        form_matches = re.findall(form_pattern, html_content, re.IGNORECASE | re.DOTALL)
+-        
+-        # Also find form attributes separately
+-        form_attr_pattern = r'<form([^>]*)>'
+-        form_attr_matches = re.findall(form_attr_pattern, html_content, re.IGNORECASE)
+-        
+-        for i, form_content in enumerate(form_matches):
+-            # Parse form attributes
+-            action = ''
+-            method = 'GET'
+-            
+-            if i < len(form_attr_matches):
+-                form_attrs = form_attr_matches[i]
+-                
+-                # Extract action
+-                action_match = re.search(r'action=["\\']?([^"\\'>\\s]+)', form_attrs, re.IGNORECASE)
+-                if action_match:
+-                    action = action_match.group(1)
+-                
+-                # Extract method
+-                method_match = re.search(r'method=["\\']?([^"\\'>\\s]+)', form_attrs, re.IGNORECASE)
+-                if method_match:
+-                    method = method_match.group(1).upper()
+-            
+-            # Extract ALL input fields with proper attribute parsing
+-            input_fields = {}
+-            
+-            # More comprehensive input pattern that handles various attribute orders
+-            input_pattern = r'<input([^>]*?)/?>'
+-            input_matches = re.findall(input_pattern, form_content, re.IGNORECASE)
+-            
+-            for input_attrs in input_matches:
+-                # Parse individual attributes
+-                name_match = re.search(r'name=["\\']?([^"\\'>\\s]+)', input_attrs, re.IGNORECASE)
+-                value_match = re.search(r'value=["\\']?([^"\\'>\\s]*)', input_attrs, re.IGNORECASE)
+-                type_match = re.search(r'type=["\\']?([^"\\'>\\s]+)', input_attrs, re.IGNORECASE)
+-                
+-                if name_match:
+-                    name = name_match.group(1)
+-                    value = value_match.group(1) if value_match else ''
+-                    input_type = type_match.group(1).lower() if type_match else 'text'
+-                    
+-                    input_fields[name] = {
+-                        'value': value,
+-                        'type': input_type
+-                    }
+-            
+-            forms.append({
+-                'action': action,
+-                'method': method,
+-                'inputs': input_fields
+-            })
+-            
+-        return forms
++        """Parse forms and extract ALL input fields with their values.
++
++        Delegates to the universal parser with graceful fallback (bs4 -> regex).
++        """
++        try:
++            return parse_forms(html_content, base_url=None)
++        except Exception:
++            # Absolute last resort: preserve prior behavior if parser fails catastrophically
++            return []
+@@
+-        # Identify testable fields (not hidden, not CSRF tokens, not buttons)
++        # Identify testable fields (not hidden, not CSRF tokens, not buttons)
+         testable_fields = []
+         protected_fields = {}
+         
+-        for field_name, field_data in input_fields.items():
+-            field_type = field_data['type']
+-            field_value = field_data['value']
+-            
+-            # Preserve hidden fields, CSRF tokens, and buttons
+-            if field_type in ['hidden', 'submit', 'button'] or 'token' in field_name.lower() or 'csrf' in field_name.lower():
+-                protected_fields[field_name] = field_value
+-            elif field_type in ['text', 'email', 'search', 'password', '']:
+-                testable_fields.append(field_name)
++        for field_name, field_data in input_fields.items():
++            field_type = (field_data.get('type') or '').lower()
++            field_value = field_data.get('value')
++            # Preserve hidden fields, CSRF tokens, and buttons
++            if field_data.get('is_csrf') or field_type in ['hidden', 'submit', 'button']:
++                protected_fields[field_name] = field_value
++            else:
++                # Reasonable form field types to fuzz for XSS
++                if field_type in ['text', 'email', 'search', 'password', 'textarea', 'number', 'url', 'select', '']:
++                    testable_fields.append(field_name)
+@@
+-                    # Build form data preserving all protected fields
+-                    form_data = protected_fields.copy()
+-                    
+-                    # Set normal values for other fields
+-                    for fname, fdata in input_fields.items():
+-                        if fname not in protected_fields and fname != field_name:
+-                            if 'password' in fname.lower():
+-                                form_data[fname] = 'test'
+-                            else:
+-                                form_data[fname] = 'test'
++                    # Build form data preserving all protected fields
++                    form_data: Dict[str, Any] = {}
++                    for k, v in protected_fields.items():
++                        form_data[k] = v
++                    # Set existing values for other fields (fallback to simple defaults)
++                    for fname, fdata in input_fields.items():
++                        if fname in protected_fields or fname == field_name:
++                            continue
++                        ftype = (fdata.get('type') or '').lower()
++                        val = fdata.get('value')
++                        if (val is None or (isinstance(val, str) and val == '')) and ftype in ['text', 'email', 'search', 'password', 'textarea', 'number', 'url']:
++                            if 'password' in fname.lower():
++                                val = 'test'
++                            elif 'user' in fname.lower():
++                                val = 'admin'
++                            else:
++                                val = 'test'
++                        form_data[fname] = val
+                     
+                     # Set XSS payload for the field being tested
+                     form_data[field_name] = payload
+@@
+-        # Identify testable fields and preserve protected ones
++        # Identify testable fields and preserve protected ones
+         testable_fields = []
+         protected_fields = {}
+         
+-        for field_name, field_data in input_fields.items():
+-            field_type = field_data['type']
+-            field_value = field_data['value']
+-            
+-            # Preserve hidden fields, CSRF tokens, and buttons
+-            if field_type in ['hidden', 'submit', 'button'] or 'token' in field_name.lower() or 'csrf' in field_name.lower():
+-                protected_fields[field_name] = field_value
+-            else:
+-                testable_fields.append(field_name)
++        for field_name, field_data in input_fields.items():
++            field_type = (field_data.get('type') or '').lower()
++            field_value = field_data.get('value')
++            # Preserve hidden fields, CSRF tokens, and buttons
++            if field_data.get('is_csrf') or field_type in ['hidden', 'submit', 'button']:
++                protected_fields[field_name] = field_value
++            else:
++                testable_fields.append(field_name)
+@@
+-                    # Build form data preserving all protected fields
+-                    form_data = protected_fields.copy()
+-                    
+-                    # Set normal values for other fields
+-                    for fname, fdata in input_fields.items():
+-                        if fname not in protected_fields and fname != field_name:
+-                            if 'password' in fname.lower():
+-                                form_data[fname] = 'test'
+-                            elif 'username' in fname.lower() or 'user' in fname.lower():
+-                                form_data[fname] = 'admin'
+-                            else:
+-                                form_data[fname] = 'test'
++                    # Build form data preserving all protected fields
++                    form_data: Dict[str, Any] = {}
++                    for k, v in protected_fields.items():
++                        form_data[k] = v
++                    # Set existing values for other fields (fallback to simple defaults)
++                    for fname, fdata in input_fields.items():
++                        if fname in protected_fields or fname == field_name:
++                            continue
++                        ftype = (fdata.get('type') or '').lower()
++                        val = fdata.get('value')
++                        if (val is None or (isinstance(val, str) and val == '')) and ftype in ['text', 'email', 'search', 'password', 'textarea', 'number', 'url']:
++                            if 'password' in fname.lower():
++                                val = 'test'
++                            elif 'username' in fname.lower() or 'user' in fname.lower():
++                                val = 'admin'
++                            else:
++                                val = 'test'
++                        form_data[fname] = val
+*** End Patch
+*** Begin Patch
+*** Add File: tests/test_universal_form_parser.py
++import types
++import importlib
++import sys
++
++import pytest
++
++
++def test_parse_basic_form_with_csrf_and_select(tmp_path):
++    from modules.universal_form_parser import parse_forms
++    html = """
++    <html><body>
++      <form action="/login" method="post">
++        <input type="text" name="username" value="">
++        <input type="password" name="password">
++        <input type="hidden" name="__RequestVerificationToken" value="abc123">
++        <input type="checkbox" name="remember" value="on">
++        <select name="color">
++            <option value="red" selected>Red</option>
++            <option value="blue">Blue</option>
++        </select>
++        <textarea name="bio">hello</textarea>
++        <input type="submit" value="Login">
++      </form>
++    </body></html>
++    """
++    forms = parse_forms(html, base_url="https://example.com/path/page")
++    assert len(forms) == 1
++    f = forms[0]
++    assert f["action"] == "https://example.com/login"
++    assert f["method"] == "POST"
++    assert f["enctype"] == "application/x-www-form-urlencoded"
++    inp = f["inputs"]
++    assert "username" in inp and inp["username"]["type"] == "text"
++    assert "password" in inp and inp["password"]["type"] == "password"
++    assert "__RequestVerificationToken" in inp
++    assert inp["__RequestVerificationToken"]["type"] == "hidden"
++    assert inp["__RequestVerificationToken"].get("is_csrf") is True
+[2025-08-25T14:37:47] stream error: stream disconnected before completion: Transport error: error decoding response body; retrying 1/5 in 186ms…
+
+[2025-08-25T14:37:55] thinking
+
+**Updating vulnerability scanner**
+
+I need to modify vulnerability_scanner.py. First, I’ll add an import line for parse_forms. Then, I’ll replace the _parse_forms_with_values method to call parse_forms(html_content) while keeping it async.
+
+Next, I want to update the testing methods to use the is_csrf field and retain other values instead of just 'test'. I’ll remove the regex and update selection loops for XSS by adjusting how I build form_data, ensuring to use the right default values or lists where needed.
+**Finalizing code updates**
+
+I need to make sure to keep the base_url argument in the method unchanged, especially for the SQLi integration. The selection and building logic will remain the same.
+
+Now, I’ll create tests in tests/test_universal_form_parser.py, importing the module and using pytest. I also want to add tests/test_scanner_form_integration.py to use scanner._parse_forms_with_values for form parsing.
+
+Since the scanner still relies on the old regex, I need to include patches for the new parser, even if I can't apply them immediately. Then, I'll provide a summary and include all patches in a unified format for future application.
+**Writing network-free tests**
+
+I need to ensure the tests don’t involve any networking, and they won't. Let’s get started with the test code. 
+
+For the first test, I'll define a function to parse a basic form without forcing a fallback. I'll assert that the parsed form returns the correct action URL and method.
+
+The second test will cover radio buttons and multiple checkboxes, asserting that selected values are accurately captured.
+
+The third test will evaluate malformed forms to ensure they are still processed correctly. Finally, I’ll prepare for the integration tests without requiring network access.
+**Setting up the asset manager test**
+
+I need to create a dummy asset_manager, a simple object since the AuthManager requires it along with config. Thankfully, we don’t have to supply any additional info. 
+
+I’ll provide an HTML string for testing and use asyncio to run the scanner._parse_forms_with_values. I noticed that existing tests use the _run_coro helper, but that’s defined at the top of the vulnerability_scanner.
+
+Instead, I can use pytest.mark.asyncio for async testing or simply run it using asyncio.get_event_loop(). I'll write a simple synchronous test using asyncio.new_event_loop() to check the forms structure and assert the content.
+**Finalizing the test updates and patches**
+
+I need to make sure the tests don’t depend on bs4 being present, so I’ll write accordingly. Next, I’ll update ARCHITECTURE_OVERVIEW.md to include a description of the new parser module, the API, and how the scanner utilizes it.
+
+I’ll prepare the final content with three file patches, following specific output rules and using headers and bullets for clarity. Inside, I’ll provide code sections with file paths and contents, along with instructions on how to apply the patches and run pytest. I must mention that I'm unable to write files due to read-only restrictions. Lastly, I'll keep everything concise and readable.
+[2025-08-25T14:38:10] codex
+**Finalizing code updates**
+
+I need to make sure to keep the base_url argument in the method unchanged, especially for the SQLi integration. The selection and building logic will remain the same.
+
+Now, I’ll create tests in tests/test_universal_form_parser.py, importing the module and using pytest. I also want to add tests/test_scanner_form_integration.py to use scanner._parse_forms_with_values for form parsing.
+
+Since the scanner still relies on the old regex, I need to include patches for the new parser, even if I can't apply them immediately. Then, I'll provide a summary and include all patches in a unified format for future application.
+[2025-08-25T14:38:10] codex
+**Writing network-free tests**
+
+I need to ensure the tests don’t involve any networking, and they won't. Let’s get started with the test code. 
+
+For the first test, I'll define a function to parse a basic form without forcing a fallback. I'll assert that the parsed form returns the correct action URL and method.
+
+The second test will cover radio buttons and multiple checkboxes, asserting that selected values are accurately captured.
+
+The third test will evaluate malformed forms to ensure they are still processed correctly. Finally, I’ll prepare for the integration tests without requiring network access.
+[2025-08-25T14:38:10] codex
+**Setting up the asset manager test**
+
+I need to create a dummy asset_manager, a simple object since the AuthManager requires it along with config. Thankfully, we don’t have to supply any additional info. 
+
+I’ll provide an HTML string for testing and use asyncio to run the scanner._parse_forms_with_values. I noticed that existing tests use the _run_coro helper, but that’s defined at the top of the vulnerability_scanner.
+
+Instead, I can use pytest.mark.asyncio for async testing or simply run it using asyncio.get_event_loop(). I'll write a simple synchronous test using asyncio.new_event_loop() to check the forms structure and assert the content.
+[2025-08-25T14:38:10] codex
+**Finalizing the test updates and patches**
+
+I need to make sure the tests don’t depend on bs4 being present, so I’ll write accordingly. Next, I’ll update ARCHITECTURE_OVERVIEW.md to include a description of the new parser module, the API, and how the scanner utilizes it.
+
+I’ll prepare the final content with three file patches, following specific output rules and using headers and bullets for clarity. Inside, I’ll provide code sections with file paths and contents, along with instructions on how to apply the patches and run pytest. I must mention that I'm unable to write files due to read-only restrictions. Lastly, I'll keep everything concise and readable.
+**Plan Update**
+- Added a new universal form parser module and tests.
+- Routed VulnerabilityScanner form parsing to the new parser.
+- Preserved CSRF/hidden fields, expanded input support, and added fallback parsing.
+- Appended a short architecture blurb about the parser API.
+
+Below are the patch-ready file additions/changes. I couldn’t write to your repo due to read-only mode, so please apply these diffs and run tests locally.
+
+**New Module**
+- Purpose: Universal, target-agnostic HTML form parsing with BS4 (if available) and robust fallback.
+- API: `parse_forms(html: str, base_url: Optional[str] = None) -> List[Dict]`
+
+File: modules/universal_form_parser.py
+```
+"""
+Universal, target-agnostic HTML form parser for ModScan.
+
+Goals:
+- Robust extraction of forms across arbitrary HTML without target-specific logic.
+- Capture action, method, enctype, and a normalized inputs map.
+- Handle input, select (single/multiple), and textarea elements.
+- Detect likely CSRF tokens using generic name-based patterns.
+- Gracefully degrade if BeautifulSoup is unavailable using a regex/html.parser fallback.
+
+API:
+    parse_forms(html: str, base_url: Optional[str] = None) -> List[Dict]
+
+Return structure example:
+    {
+      'action': 'https://example.com/login',
+      'method': 'POST',
+      'enctype': 'application/x-www-form-urlencoded',
+      'inputs': {
+         'username': {'type': 'text', 'value': ''},
+         'password': {'type': 'password', 'value': ''},
+         '__RequestVerificationToken': {'type':'hidden','value':'abc','is_csrf': True},
+         'remember': {'type': 'checkbox', 'value': [], 'options': ['on']},
+         'color': {'type': 'select', 'value': 'red', 'options': ['red','blue']}
+      }
+    }
+
+Notes:
+- For checkbox/radio groups, values are aggregated under a single name with:
+  {'type': 'checkbox'|'radio', 'value': [checked_values], 'options': [all_values]}
+- For <select multiple>, 'value' is a list of selected values.
+- For <select>, 'options' holds a flat list of option values (text if no value attr).
+- CSRF detection is generic by field name (csrf, xsrf, _token, authenticity_token, requestverificationtoken, etc.).
+"""
+
+from typing import List, Dict, Optional, Any
+from urllib.parse import urljoin
+import re
+
+try:
+    from bs4 import BeautifulSoup  # type: ignore
+except Exception:  # bs4 may not be installed; fallback mode will be used
+    BeautifulSoup = None  # type: ignore
+
+MAX_HTML = 2_000_000  # Simple guard against pathological pages
+
+
+_CSRF_NAME_PATTERN = re.compile(
+    r"csrf|xsrf|_token|authenticity|requestverification|__requestverificationtoken",
+    re.IGNORECASE,
+)
+
+
+def _is_csrf_field(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    # Normalize by removing common separators for broader matching
+    norm = re.sub(r"[^a-z]", "", name.lower())
+    return bool(_CSRF_NAME_PATTERN.search(norm))
+
+
+def _finalize_action(action: Optional[str], base_url: Optional[str]) -> str:
+    action = (action or "").strip()
+    if not base_url:
+        return action
+    if not action:
+        return base_url
+    return urljoin(base_url, action)
+
+
+def parse_forms(html: str, base_url: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Parse HTML and return a list of normalized form dicts.
+
+    - Uses BeautifulSoup if available; otherwise, a robust regex fallback.
+    - Never performs network operations or target-specific assumptions.
+    """
+    if not isinstance(html, str):
+        html = str(html)
+    if len(html) > MAX_HTML:
+        html = html[:MAX_HTML]
+
+    if BeautifulSoup is not None:
+        try:
+            return _parse_with_bs4(html, base_url)
+        except Exception:
+            # Fall back if BS4 chokes on malformed HTML
+            pass
+    return _parse_with_fallback(html, base_url)
+
+
+def _parse_with_bs4(html: str, base_url: Optional[str]) -> List[Dict[str, Any]]:
+    soup = BeautifulSoup(html, "html.parser")  # type: ignore
+    results: List[Dict[str, Any]] = []
+    for form in soup.find_all("form"):
+        action = _finalize_action(form.get("action"), base_url)
+        method = (form.get("method") or "GET").upper()
+        enctype = (form.get("enctype") or "application/x-www-form-urlencoded").strip()
+
+        inputs: Dict[str, Any] = {}
+
+        # Iterate over all input/select/textarea descendants
+        for el in form.find_all(["input", "select", "textarea"]):
+            tag = el.name.lower()
+            name = el.get("name")
+            if not name:
+                continue  # skip unnamed controls
+
+            if tag == "input":
+                itype = (el.get("type") or "text").lower()
+                raw_val = el.get("value")
+                is_csrf = _is_csrf_field(name)
+
+                if itype in ("checkbox", "radio"):
+                    val = raw_val if raw_val is not None else "on"
+                    item = inputs.get(name)
+                    if not item:
+                        item = {"type": itype, "value": [], "options": [], "is_csrf": is_csrf}
+                        inputs[name] = item
+                    # Track all options
+                    if val not in item["options"]:
+                        item["options"].append(val)
+                    # Track checked values
+                    if el.has_attr("checked"):
+                        if val not in item["value"]:
+                            item["value"].append(val)
+                    # Provide a summarizing boolean checked flag for simple UIs
+                    item["checked"] = bool(item["value"])  # True if any checked
+                else:
+                    # Single value input
+                    if name not in inputs:
+                        inputs[name] = {
+                            "type": itype,
+                            "value": raw_val if raw_val is not None else "",
+                            "is_csrf": is_csrf,
+                        }
+                    # First one wins for duplicate text inputs; later duplicates ignored
+
+            elif tag == "textarea":
+                is_csrf = _is_csrf_field(name)
+                value = el.text if el.text is not None else ""
+                if name not in inputs:
+                    inputs[name] = {"type": "textarea", "value": value, "is_csrf": is_csrf}
+
+            elif tag == "select":
+                is_csrf = _is_csrf_field(name)
+                multiple = el.has_attr("multiple")
+                options: List[str] = []
+                selected: List[str] = []
+                for opt in el.find_all("option"):
+                    opt_val = opt.get("value")
+                    if opt_val is None:
+                        opt_val = (opt.text or "").strip()
+                    options.append(opt_val)
+                    if opt.has_attr("selected"):
+                        selected.append(opt_val)
+                if multiple:
+                    value: Any = selected
+                else:
+                    value = selected[0] if selected else (options[0] if options else "")
+                if name not in inputs:
+                    item = {
+                        "type": "select",
+                        "value": value,
+                        "options": options,
+                        "multiple": multiple,
+                        "is_csrf": is_csrf,
+                    }
+                    # Also expose selected options list for clarity
+                    item["selected_options"] = list(selected)
+                    inputs[name] = item
+
+        results.append({
+            "action": action,
+            "method": method,
+            "enctype": enctype,
+            "inputs": inputs,
+        })
+
+    return results
+
+
+# --- Fallback parser (regex-based, best-effort) ---
+
+_ATTR_RE = re.compile(r"(\w[\w:\-]*)\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^\s'\">]+))")
+
+
+def _parse_attrs(attr_text: str) -> Dict[str, str]:
+    attrs: Dict[str, str] = {}
+    for m in _ATTR_RE.finditer(attr_text or ""):
+        key = m.group(1).lower()
+        val = m.group(2) or m.group(3) or m.group(4) or ""
+        attrs[key] = val
+    return attrs
+
+
+def _parse_with_fallback(html: str, base_url: Optional[str]) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    # Find forms and their contents
+    for fm in re.finditer(r"(?is)<form\b([^>]*)>(.*?)</form>", html):
+        form_attr_txt = fm.group(1) or ""
+        form_inner = fm.group(2) or ""
+        fattrs = _parse_attrs(form_attr_txt)
+
+        action = _finalize_action(fattrs.get("action"), base_url)
+        method = (fattrs.get("method") or "GET").upper()
+        enctype = (fattrs.get("enctype") or "application/x-www-form-urlencoded").strip()
+
+        inputs: Dict[str, Any] = {}
+
+        # Inputs
+        for im in re.finditer(r"(?is)<input\b([^>]*)>", form_inner):
+            iattrs = _parse_attrs(im.group(1) or "")
+            name = iattrs.get("name")
+            if not name:
+                continue
+            itype = (iattrs.get("type") or "text").lower()
+            raw_val = iattrs.get("value")
+            is_csrf = _is_csrf_field(name)
+            checked = re.search(r"(?is)\bchecked\b", im.group(1) or "") is not None
+
+            if itype in ("checkbox", "radio"):
+                val = raw_val if raw_val is not None else "on"
+                item = inputs.get(name)
+                if not item:
+                    item = {"type": itype, "value": [], "options": [], "is_csrf": is_csrf}
+                    inputs[name] = item
+                if val not in item["options"]:
+                    item["options"].append(val)
+                if checked and val not in item["value"]:
+                    item["value"].append(val)
+                item["checked"] = bool(item["value"])  # summarizing flag
+            else:
+                if name not in inputs:
+                    inputs[name] = {"type": itype, "value": raw_val or "", "is_csrf": is_csrf}
+
+        # Textareas
+        for tm in re.finditer(r"(?is)<textarea\b([^>]*)>(.*?)</textarea>", form_inner):
+            tattrs = _parse_attrs(tm.group(1) or "")
+            name = tattrs.get("name")
+            if not name:
+                continue
+            value = (tm.group(2) or "")
+            is_csrf = _is_csrf_field(name)
+            if name not in inputs:
+                inputs[name] = {"type": "textarea", "value": value, "is_csrf": is_csrf}
+
+        # Selects
+        for sm in re.finditer(r"(?is)<select\b([^>]*)>(.*?)</select>", form_inner):
+            sattrs = _parse_attrs(sm.group(1) or "")
+            name = sattrs.get("name")
+            if not name:
+                continue
+            multiple = "multiple" in (sm.group(1) or "").lower()
+            options: List[str] = []
+            selected: List[str] = []
+            for om in re.finditer(r"(?is)<option\b([^>]*)>(.*?)</option>", sm.group(2) or ""):
+                oattrs = _parse_attrs(om.group(1) or "")
+                val = oattrs.get("value")
+                if val is None:
+                    val = (om.group(2) or "").strip()
+                options.append(val)
+                if re.search(r"(?is)\bselected\b", om.group(1) or ""):
+                    selected.append(val)
+            value: Any
+            if multiple:
+                value = selected
+            else:
+                value = selected[0] if selected else (options[0] if options else "")
+            is_csrf = _is_csrf_field(name)
+            if name not in inputs:
+                item = {
+                    "type": "select",
+                    "value": value,
+                    "options": options,
+                    "multiple": multiple,
+                    "is_csrf": is_csrf,
+                }
+                item["selected_options"] = list(selected)
+                inputs[name] = item
+
+        results.append({
+            "action": action,
+            "method": method,
+            "enctype": enctype,
+            "inputs": inputs,
+        })
+
+    return results
+```
+
+**Integration: VulnerabilityScanner**
+- Delegates form parsing to the new parser.
+- Preserves CSRF/hidden/button fields via `is_csrf` and `type`.
+- Builds submission data by preserving original values for non-target fields (avoids breaking required inputs/selects), falling back to simple defaults when missing.
+
+File: modules/vulnerability_scanner.py (excerpted changes)
+```
+# Add near other imports
+from .universal_form_parser import parse_forms
+```
+
+Replace method `_parse_forms_with_values`:
+```
+    async def _parse_forms_with_values(self, html_content: str) -> List[Dict]:
+        """Parse forms and extract ALL input fields with their values (universal parser)."""
+        try:
+            forms = parse_forms(html_content, base_url=None)
+            return forms
+        except Exception as e:
+            logger.debug(f"Universal form parsing failed, returning empty list: {e}")
+            return []
+```
+
+Update selection and data-building in `_test_form_inputs_xss_enhanced`:
+```
+        testable_fields = []
+        protected_fields = {}
+
+        for field_name, field_data in input_fields.items():
+            field_type = (field_data.get('type') or 'text').lower()
+            is_csrf = bool(field_data.get('is_csrf'))
+            field_value = field_data.get('value')
+
+            if field_type in ['hidden', 'submit', 'button'] or is_csrf:
+                protected_fields[field_name] = field_value
+            elif field_type in ['text', 'email', 'search', 'password', 'textarea', 'number', 'url', 'select']:
+                testable_fields.append(field_name)
+
+        # ...
+
+                    # Build form data preserving all protected fields and original values
+                    form_data = {}
+
+                    # Start with protected fields (including CSRF/hidden)
+                    form_data.update(protected_fields)
+
+                    # Preserve other fields' original values
+                    for fname, fdata in input_fields.items():
+                        if fname in protected_fields or fname == field_name:
+                            continue
+                        val = fdata.get('value')
+                        if val is None or (isinstance(val, str) and val == ''):
+                            # Reasonable defaults if no original value
+                            if (fdata.get('type') or '').lower() == 'password':
+                                val = 'test'
+                            else:
+                                val = 'test'
+                        form_data[fname] = val
+
+                    # Set XSS payload for the target field
+                    form_data[field_name] = payload
+```
+
+Similarly adjust `_test_form_inputs_sqli_enhanced` selection and defaulting:
+```
+        testable_fields = []
+        protected_fields = {}
+
+        for field_name, field_data in input_fields.items():
+            field_type = (field_data.get('type') or 'text').lower()
+            is_csrf = bool(field_data.get('is_csrf'))
+            field_value = field_data.get('value')
+
+            if field_type in ['hidden', 'submit', 'button'] or is_csrf:
+                protected_fields[field_name] = field_value
+            else:
+                testable_fields.append(field_name)
+
+        # ...
+
+                    # Build form data preserving all protected fields and original values
+                    form_data = {}
+                    form_data.update(protected_fields)
+
+                    for fname, fdata in input_fields.items():
+                        if fname in protected_fields or fname == field_name:
+                            continue
+                        val = fdata.get('value')
+                        if val is None or (isinstance(val, str) and val == ''):
+                            # Set plausible baseline values for auth-ish fields when not testing them
+                            lname = fname.lower()
+                            if 'password' in lname or 'pass' in lname:
+                                val = 'test'
+                            elif 'username' in lname or 'user' in lname or 'email' in lname:
+                                val = 'admin'
+                            else:
+                                val = 'test'
+                        form_data[fname] = val
+
+                    # Set SQLi payload for the target field
+                    form_data[field_name] = payload
+```
+
+These small changes keep method names/signatures stable, preserve existing behavior, and make the scanner universal regarding form inputs.
+
+**New Tests**
+- No network, purely parsing + selection expectations.
+
+File: tests/test_universal_form_parser.py
+```
+import types
+import importlib
+import sys
+
+import pytest
+
+from modules.universal_form_parser import parse_forms, BeautifulSoup as _BS4
+
+
+def test_parse_basic_form_with_csrf_and_controls():
+    html = """
+    <form action="/login" method="post">
+      <input type="text" name="username" value="">
+      <input type="password" name="password">
+      <input type="hidden" name="__RequestVerificationToken" value="abc123">
+      <input type="checkbox" name="remember" value="on">
+      <select name="color">
+         <option value="red" selected>Red</option>
+         <option value="blue">Blue</option>
+      </select>
+      <textarea name="bio">hello</textarea>
+    </form>
+    """
+    forms = parse_forms(html, base_url="https://example.com/path/page")
+    assert len(forms) == 1
+    f = forms[0]
+    assert f["action"] == "https://example.com/login"
+    assert f["method"] == "POST"
+    assert f["enctype"] == "application/x-www-form-urlencoded"
+    inputs = f["inputs"]
+
+    assert "username" in inputs and inputs["username"]["type"] == "text"
+    assert "password" in inputs and inputs["password"]["type"] == "password"
+    assert "__RequestVerificationToken" in inputs
+    assert inputs["__RequestVerificationToken"]["type"] == "hidden"
+    assert inputs["__RequestVerificationToken"].get("is_csrf") is True
+
+    assert "remember" in inputs and inputs["remember"]["type"] == "checkbox"
+    assert inputs["remember"]["value"] == []  # unchecked
+    assert "on" in inputs["remember"]["options"]
+
+    assert "color" in inputs and inputs["color"]["type"] == "select"
+    assert inputs["color"]["value"] == "red"
+    assert inputs["color"]["options"] == ["red", "blue"]
+
+    assert "bio" in inputs and inputs["bio"]["type"] == "textarea"
+    assert inputs["bio"]["value"].strip() == "hello"
+
+
+def test_parse_checkbox_radio_grouping_and_selection():
+    html = """
+    <form>
+      <input type="checkbox" name="features" value="a" checked>
+      <input type="checkbox" name="features" value="b">
+      <input type="radio" name="opt" value="1">
+      <input type="radio" name="opt" value="2" checked>
+    </form>
+    """
+    forms = parse_forms(html)
+    assert len(forms) == 1
+    inputs = forms[0]["inputs"]
+    assert "features" in inputs
+    assert inputs["features"]["type"] == "checkbox"
+    assert set(inputs["features"]["options"]) == {"a", "b"}
+    assert inputs["features"]["value"] == ["a"]
+
+    assert "opt" in inputs
+    assert inputs["opt"]["type"] == "radio"
+    assert set(inputs["opt"]["options"]) == {"1", "2"}
+    assert inputs["opt"]["value"] == ["2"]
+
+
+def test_malformed_html_graceful_degradation():
+    # Missing closing tags; should still parse something useful
+    html = '<form method=post><input name=user type=text><textarea name=notes>hey'
+    forms = parse_forms(html)
+    assert len(forms) >= 1
+    inputs = forms[0]["inputs"]
+    assert "user" in inputs
+    assert inputs["user"]["type"] == "text"
+    assert "notes" in inputs
+    assert inputs["notes"]["type"] == "textarea"
+    assert "hey" in inputs["notes"]["value"]
+
+
+def test_forced_fallback_without_bs4(monkeypatch):
+    # Force fallback parser by monkeypatching BeautifulSoup to None
+    from modules import universal_form_parser as ufp
+    monkeypatch.setattr(ufp, "BeautifulSoup", None, raising=False)
+
+    html = """
+    <form action="go" method="GET">
+      <input type="text" name="q" value="init">
+      <select name="cat" multiple>
+         <option value="a" selected>A</option>
+         <option value="b">B</option>
+      </select>
+    </form>
+    """
+    forms = ufp.parse_forms(html, base_url="https://host/x")
+    assert len(forms) == 1
+    f = forms[0]
+    assert f["action"].endswith("/x") or f["action"].endswith("/go")  # base_url or resolved
+    inputs = f["inputs"]
+    assert "q" in inputs and inputs["q"]["value"] == "init"
+    assert "cat" in inputs and inputs["cat"]["type"] == "select"
+    assert inputs["cat"]["multiple"] is True
+    assert inputs["cat"]["value"] == ["a"]
+```
+
+File: tests/test_scanner_form_integration.py
+```
+import asyncio
+import pytest
+
+from modules.vulnerability_scanner import VulnerabilityScanner
+
+
+def _run(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+class _DummyAssetManager:
+    pass
+
+
+def test_scanner_parse_and_selection_for_xss():
+    scanner = VulnerabilityScanner(_DummyAssetManager(), {})
+    html = """
+    <form action="/submit" method="post">
+      <input type="text" name="username" value="">
+      <input type="password" name="password" value="">
+      <input type="hidden" name="csrf_token" value="tok123">
+      <textarea name="bio">hi</textarea>
+      <select name="color"><option value="red" selected>Red</option></select>
+      <input type="submit" name="doit" value="Go">
+    </form>
+    """
+    forms = _run(scanner._parse_forms_with_values(html))
+    assert len(forms) == 1
+    inputs = forms[0]["inputs"]
+
+    # Derive testable/protected according to the scanner's updated logic
+    testable = []
+    protected = {}
+    for name, data in inputs.items():
+        t = (data.get("type") or "text").lower()
+        is_csrf = bool(data.get("is_csrf"))
+        if t in ["hidden", "submit", "button"] or is_csrf:
+            protected[name] = data.get("value")
+        elif t in ["text", "email", "search", "password", "textarea", "number", "url", "select"]:
+            testable.append(name)
+
+    # Expectations: username, password, bio, color are testable; csrf + submit protected
+    assert set(testable) >= {"username", "password", "bio", "color"}
+    assert "csrf_token" in protected
+    assert "doit" in protected
+
+
+def test_scanner_parse_and_selection_for_sqli():
+    scanner = VulnerabilityScanner(_DummyAssetManager(), {})
+    html = """
+    <form action="/search" method="get">
+      <input type="text" name="q" value="">
+      <input type="hidden" name="_token" value="zzz">
+      <input type="submit" name="btn" value="Go">
+    </form>
+    """
+    forms = _run(scanner._parse_forms_with_values(html))
+    assert len(forms) == 1
+    inputs = forms[0]["inputs"]
+
+    # Selection per SQLi path (same preserved fields)
+    testable = []
+    protected = {}
+    for name, data in inputs.items():
+        t = (data.get("type") or "text").lower()
+        is_csrf = bool(data.get("is_csrf"))
+        if t in ["hidden", "submit", "button"] or is_csrf:
+            protected[name] = data.get("value")
+        else:
+            testable.append(name)
+
+    assert "q" in testable
+    assert "_token" in protected
+    assert "btn" in protected
+```
+
+**Docs**
+Append a short snippet to the end of ARCHITECTURE_OVERVIEW.md describing the parser:
+
+```
+## Universal Form Parser
+
+- Module: `modules/universal_form_parser.py`
+- API: `parse_forms(html: str, base_url: Optional[str] = None) -> List[Dict]`
+- Extracts for any target:
+  - action (absolute if `base_url` provided), method (default GET), enctype.
+  - `inputs` map keyed by field name with normalized structures for:
+    - input types (text/password/hidden/checkbox/radio/submit/button/file/email/search/number/url)
+    - textarea (captures text content)
+    - select (single/multiple) with `value` and `options`
+  - CSRF detection via generic name patterns (`csrf`, `xsrf`, `_token`, `authenticity_token`, `requestverificationtoken`, etc.)
+- The VulnerabilityScanner now delegates `_parse_forms_with_values` to this parser, preserving CSRF and hidden fields automatically and keeping existing method signatures intact.
+- BS4 is used if available; otherwise a safe regex/html.parser fallback is engaged. No network or installs required.
+```
+
+**Why This Meets the Universal Principles**
+- No target-specific logic; CSRF detection uses generic patterns.
+- Works on any HTML structure with graceful degradation (BS4 → fallback).
+- Preserves original values and tokens for proper, realistic submissions.
+- Supports a wide range of input types, including selects and textareas.
+
+**Next Steps**
+- Apply the patches above to your repo.
+- Run: `pytest -q` to verify all tests, including the new ones, pass.
+- If you want, I can also help align any adjacent tests that might need slight expectations updated due to the enhanced universality.
+[2025-08-25T14:38:59] tokens used: 7181
