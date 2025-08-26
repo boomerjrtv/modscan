@@ -552,13 +552,31 @@ class ModularVulnerabilityScanner:
     async def _tier3_modular_vulnerability_scanning(self, session: aiohttp.ClientSession):
         """Tier 3: Vulnerability scanning using VulnerabilityScanner module"""
         try:
+            logger.info("🔧 TIER 3: Preparing assets for vulnerability scanning…")
             # Get assets ready for scanning using AssetManager
             per_cycle = max(10, int(self.max_concurrent))
             ready_assets = self.asset_manager.get_assets_ready_for_deep_scan(per_cycle)
             
             if not ready_assets:
-                logger.info("✅ TIER 3: No ready assets for deep scan this cycle")
-                return
+                logger.info("⚠️  TIER 3: No ready assets from main query — attempting direct URL fallback")
+                try:
+                    with self.asset_manager._get_db() as db:
+                        rows = db.execute(
+                            "SELECT url, IFNULL(tech_stack,''), IFNULL(status_code, 200) FROM assets WHERE title='Direct URL Test' ORDER BY id DESC LIMIT 10"
+                        ).fetchall()
+                    fallback_assets = [
+                        {'id': -1, 'url': r[0], 'tech_stack': r[1] or '', 'status_code': r[2] or 200}
+                        for r in rows if r and r[0]
+                    ]
+                    if fallback_assets:
+                        ready_assets = fallback_assets
+                        logger.info(f"🧪 TIER 3 fallback: scanning {len(ready_assets)} direct URLs")
+                    else:
+                        logger.info("✅ TIER 3: No direct URLs to scan in fallback")
+                        return
+                except Exception as fe:
+                    logger.warning(f"TIER 3 fallback failed: {fe}")
+                    return
             
             # ML-driven prioritization: order ready_assets by quick ML score if available
             try:
