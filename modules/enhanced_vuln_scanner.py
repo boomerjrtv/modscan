@@ -8,6 +8,7 @@ import subprocess
 import json
 import tempfile
 import os
+import re
 import logging
 from typing import List, Dict, Optional
 from urllib.parse import urlparse, parse_qs, urljoin
@@ -264,25 +265,32 @@ class EnhancedVulnerabilityScanner:
         findings = []
         
         try:
-            # Create SQLMap command with proper arguments
+            # Create SQLMap command with comprehensive arguments (based on your improved syntax)
             cmd = [
                 self.tools['sqlmap'],
                 '-u', url,
+                '--method=POST',  # Force POST method for form-based testing
                 '--batch',  # Non-interactive mode
+                '--flush-session',  # Fresh session for each test
+                '--forms',  # Test forms automatically
+                '--risk', '3',  # High risk payloads  
+                '--level', '5',  # Maximum comprehensive testing
                 '--random-agent',  # Use random user agent
-                '--threads', '2',  # Lower threads for stability
-                '--timeout', '20',  # Faster timeout
-                '--retries', '1',  # Single retry
-                '--level', '3',  # More comprehensive testing
-                '--risk', '2',  # Medium risk payloads
-                '--technique', 'BEUST',  # All SQL injection techniques
-                '--no-cast',  # Skip casting
-                '--ignore-code', '404'  # Ignore 404s
+                '--crawl', '1',  # Crawl one level for more targets
+                '--threads', '3',  # Balanced thread count
+                '--timeout', '30',  # Longer timeout for thorough testing
+                '--retries', '2',  # Multiple retries for reliability
+                '--technique', 'BEUSTQ',  # All SQL injection techniques including stacked queries
+                '--no-cast',  # Skip casting for speed
             ]
             
-            # Add authentication cookie
+            # Add authentication cookie and login data
             if self.auth_cookie:
                 cmd.extend(['--cookie', self.auth_cookie])
+                
+            # Add login data for session-based authentication (DVWA-style)
+            if 'PHPSESSID' in str(self.auth_cookie) and 'security=' in str(self.auth_cookie):
+                cmd.extend(['--data', 'username=admin&password=password&Login=Login'])
             
             # Add specific parameters to test
             if params:
