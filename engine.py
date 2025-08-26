@@ -351,16 +351,36 @@ class ModularVulnerabilityScanner:
                     
                     logger.info(f"🔄 MODULAR SCAN CYCLE {scan_cycle} - CPU: {cpu_usage:.1f}%")
                     
-                    # Execute all tiers using modular components
-                    tier_tasks = [
-                        self._tier1_modular_discovery(session),
-                        self._tier2_modular_profiling(session),
-                        self._tier3_modular_vulnerability_scanning(session),
-                        self._tier4_multi_ai_pentesting(session),
-                        self._tier5_modular_advanced_recon(session)
-                    ]
-                    
-                    await asyncio.gather(*tier_tasks, return_exceptions=True)
+                    # If in Direct URL Testing mode, run a streamlined, ordered pipeline:
+                    # 1) Profile (to populate status_code)
+                    # 2) Vulnerability scan
+                    # 3) (Optional) AI pentesting
+                    # Skip discovery and advanced recon entirely in this mode.
+                    import os as _os
+                    if _os.environ.get('MODSCAN_DIRECT_URL_TESTING'):
+                        logger.info("🧪 Direct URL Testing pipeline: Tier2 -> Tier3 -> Tier4 (no discovery/recon)")
+                        try:
+                            await self._tier2_modular_profiling(session)
+                        except Exception as _e2:
+                            logger.warning(f"Tier 2 profiling error (direct): {_e2}")
+                        try:
+                            await self._tier3_modular_vulnerability_scanning(session)
+                        except Exception as _e3:
+                            logger.warning(f"Tier 3 vuln scanning error (direct): {_e3}")
+                        try:
+                            await self._tier4_multi_ai_pentesting(session)
+                        except Exception as _e4:
+                            logger.debug(f"Tier 4 AI pentesting error (direct): {_e4}")
+                    else:
+                        # Execute all tiers using modular components (parallel where safe)
+                        tier_tasks = [
+                            self._tier1_modular_discovery(session),
+                            self._tier2_modular_profiling(session),
+                            self._tier3_modular_vulnerability_scanning(session),
+                            self._tier4_multi_ai_pentesting(session),
+                            self._tier5_modular_advanced_recon(session)
+                        ]
+                        await asyncio.gather(*tier_tasks, return_exceptions=True)
                     
                     # Report progress using AssetManager
                     await self._report_modular_progress(scan_cycle)
@@ -383,6 +403,12 @@ class ModularVulnerabilityScanner:
             if not domains:
                 logger.warning("⚠️  No scope domains found")
                 return
+            
+            # Check if this is Direct URL Testing mode (skip discovery)
+            import os
+            if os.environ.get('MODSCAN_DIRECT_URL_TESTING'):
+                logger.info("⚡ DIRECT URL TESTING MODE: Skipping discovery, testing provided URLs only")
+                return  # Skip discovery entirely
             
             logger.info(f"🔍 TIER 1: Ultimate discovery of {len(domains)} domains")
             
@@ -531,6 +557,7 @@ class ModularVulnerabilityScanner:
             ready_assets = self.asset_manager.get_assets_ready_for_deep_scan(per_cycle)
             
             if not ready_assets:
+                logger.info("✅ TIER 3: No ready assets for deep scan this cycle")
                 return
             
             # ML-driven prioritization: order ready_assets by quick ML score if available

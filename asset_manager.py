@@ -4,6 +4,9 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 # --- CRITICAL: Centralized VulnerabilityFinding Structure ---
 # This is the AUTHORITATIVE definition - all vulnerability scanners MUST use this structure
@@ -784,7 +787,7 @@ class AssetManager:
                     SELECT {fields['id']}, {fields['url']}, {fields['status_code']}, {fields['tech_stack']}
                     FROM assets 
                     WHERE {fields['status_code']} = 200 
-                    AND deep_scan_complete = 0
+                    AND IFNULL(deep_scan_complete, 0) = 0
                     ORDER BY {fields['intelligence_score']} DESC, {fields['last_scanned']} ASC 
                     LIMIT ?
                 '''
@@ -794,6 +797,27 @@ class AssetManager:
                 } for row in cursor.fetchall()]
         except Exception as e:
             print(f"Error getting assets ready for deep scan: {e}")
+            return []
+
+    def get_unscanned_assets_for_domain(self, domain, limit=100):
+        """Get assets for a specific domain that have not been scanned yet (status_code is NULL)."""
+        try:
+            logger.info(f"Searching for unscanned assets in domain: {domain}")
+            with self._get_db() as db:
+                fields = self.get_asset_fields()
+                query = f'''
+                    SELECT {fields['id']}, {fields['url']}
+                    FROM assets 
+                    WHERE {fields['host']} = ? AND {fields['status_code']} IS NULL
+                    ORDER BY {fields['id']} DESC
+                    LIMIT ?
+                '''
+                cursor = db.execute(query, (domain, limit))
+                assets = [{'id': row[0], 'url': row[1]} for row in cursor.fetchall()]
+                logger.info(f"Found {len(assets)} unscanned assets.")
+                return assets
+        except Exception as e:
+            logger.error(f"Error getting unscanned assets for domain: {e}")
             return []
 
     def mark_basic_scan_complete(self, url, headers=None):
@@ -1452,7 +1476,7 @@ try:
         AssetManager.get_existing_urls = _am_get_existing_urls
 except Exception as _e:
     print(f"[compat] could not bind AssetManager compat helpers: {_e}")
-# ----------------------------------------------------------------------------- 
+# -----------------------------------------------------------------------------
 
 # --- Dedup shim: skip re-scans within TTL (non-destructive) -------------------
 def _am__registry_path():
@@ -1595,7 +1619,7 @@ try:
         AssetManager.record_scan_url = _am_record_scan_url
 except Exception as _e:
     print(f"[dedup] bind helpers failed: {_e}")
-# ----------------------------------------------------------------------------- 
+# -----------------------------------------------------------------------------
 
 
 # --- Scope filter shim (dedup-aware & tier-aware) -----------------------------
