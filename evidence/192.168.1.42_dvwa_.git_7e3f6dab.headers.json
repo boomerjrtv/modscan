@@ -1,0 +1,13 @@
+{
+  "url": "http://192.168.1.42/dvwa/.git/?page=auth.inc",
+  "status": 200,
+  "headers": {
+    "content-encoding": "gzip",
+    "content-length": "602",
+    "content-type": "text/html;charset=UTF-8",
+    "date": "Sun, 24 Aug 2025 00:35:55 GMT",
+    "server": "Apache/2.4.62 (Debian)",
+    "vary": "Accept-Encoding",
+    "via": "1.1 tinyproxy (tinyproxy/1.11.1)"
+  }
+}

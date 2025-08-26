@@ -1,0 +1,16 @@
+{
+  "url": "http://192.168.1.42/dvwa/dvwa",
+  "status": 200,
+  "headers": {
+    "connection": "keep-alive",
+    "content-encoding": "gzip",
+    "content-length": "478",
+    "content-type": "text/html;charset=UTF-8",
+    "date": "Sun, 24 Aug 2025 00:35:54 GMT",
+    "server": "Apache/2.4.62 (Debian)",
+    "vary": "Accept-Encoding",
+    "via": "1.1 proxy136 (squid/5.7)",
+    "x-cache": "MISS from proxy136",
+    "x-cache-lookup": "MISS from proxy136:3128"
+  }
+}

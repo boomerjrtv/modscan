@@ -167,17 +167,6 @@
         }
 
         /* Main Content Layout */
-        .siem-main {
-            display: flex;
-            height: calc(100vh - 101px);
-        }
-
-        .content-area {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-
         /* Disable legacy side panel to prevent left gaps */
         .side-panel { display: none !important; width: 0 !important; }
 
@@ -323,12 +312,6 @@
         }
 
         /* Content Container */
-        .content-container {
-            flex: 1;
-            overflow: auto;
-            background: #1a1a1a;
-            padding: 16px;
-        }
 
         /* Enterprise Table */
         .siem-table-container {
@@ -944,8 +927,8 @@
         <button class="siem-nav-item" onclick="showView('logs')">Terminal Logs</button>
     </nav>
 
-    <div class="siem-main">
-        <div class="content-area">
+    <div>
+        <div>
             
             <!-- Assets View -->
             <div id="assets-view">
@@ -1250,6 +1233,7 @@
                             🔍 Scan with Authentication
                         </button>
                     </div>
+
                     
                     <div id="saved-sessions" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #374151;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -1341,7 +1325,7 @@
                 </div> <!-- End auth-panel-content -->
                 </div> <!-- End Authentication Manager -->
 
-                <div class="content-container">
+                <div style="padding: 16px;">
                     <div class="alert alert-warning scope-only">
                         <strong>⚠️ CRITICAL LEGAL WARNING:</strong> Only test targets you have explicit written permission to scan. Unauthorized testing is illegal!
                     </div>
@@ -1372,15 +1356,6 @@
                         </div>
                     </div>
 
-                    <div class="domain-list" style="margin-top:20px;">
-                        <h4 style="color:#fff; margin-bottom:10px; display:flex; align-items:center; justify-content:space-between;">
-                            Evidence Viewer
-                            <button class="siem-btn" onclick="loadEvidenceList()">Refresh</button>
-                        </h4>
-                        <div id="evidence-list">
-                            <div class="loading">No evidence yet. Run screenshots to generate HTML/headers/request logs.</div>
-                        </div>
-                    </div>
 
                     <div class="domain-list scope-only">
                         <h4 style="color: #fff; margin-bottom: 12px;">Wildcard Domains (<span id="wildcard-count">0</span>)</h4>
@@ -1460,21 +1435,117 @@
                 </div>
                 
                 
-                <!-- IDOR Testing Interface -->
-                    <div style="background: #7c2d12; padding: 15px; border-radius: 8px; margin-top: 15px;">
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
-                            <div style="display: flex; align-items: center;">
-                                <span style="font-size: 16px; margin-right: 8px;">🎯</span>
-                                <h4 style="color: #fed7aa; margin: 0; font-size: 14px; font-weight: 600;">Multi-Credential IDOR Testing</h4>
-                            </div>
-                            <button id="idor-minimize-btn" onclick="toggleIdorPanel()" 
-                                    style="background: #6b7280; color: white; border: none; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer; font-weight: bold;">
-                                ─
+                <!-- Testing Tools (Collapsible Tabs) -->
+                <details style="margin: 10px 0; border: 1px solid #374151; border-radius: 6px; background: #1f2937;">
+                    <summary style="padding: 10px 15px; cursor: pointer; background: #374151; border-radius: 6px 6px 0 0; color: #f3f4f6; font-size: 13px; font-weight: 600; user-select: none;">
+                        ⚡ Advanced Testing Tools <span style="color: #9ca3af; font-weight: normal; font-size: 11px;">(Click to expand - Direct URL Testing & IDOR Testing)</span>
+                    </summary>
+                    
+                    <div style="padding: 0;">
+                        <!-- Tab Headers -->
+                        <div style="display: flex; border-bottom: 1px solid #374151;">
+                            <button id="tab-direct" onclick="switchTestingTab('direct')" 
+                                    style="flex: 1; padding: 12px; background: #374151; color: #f3f4f6; border: none; border-right: 1px solid #4b5563; font-size: 13px; font-weight: 600; cursor: pointer;">
+                                🎯 Direct URL Testing
+                            </button>
+                            <button id="tab-idor" onclick="switchTestingTab('idor')" 
+                                    style="flex: 1; padding: 12px; background: #1f2937; color: #9ca3af; border: none; font-size: 13px; font-weight: 600; cursor: pointer;">
+                                🔄 IDOR Testing
                             </button>
                         </div>
                         
-                        <!-- IDOR Panel Content (collapsible) -->
-                        <div id="idor-panel-content">
+                        <!-- Tab Content -->
+                        <div style="padding: 15px;">
+                        
+                        <!-- Direct URL Testing Content -->
+                        <div id="direct-content" style="display: block;">
+                            <!-- Step 1: Target URLs -->
+                            <div style="margin-bottom: 15px;">
+                                <label style="display: block; color: #d1d5db; font-size: 13px; font-weight: 600; margin-bottom: 8px;">
+                                    📍 Step 1: Enter Target URLs (one per line)
+                                </label>
+                                <textarea id="direct-urls" 
+                                          placeholder="http://192.168.1.42/dvwa/vulnerabilities/xss_r/&#10;http://192.168.1.42/dvwa/vulnerabilities/sqli/&#10;http://192.168.1.42/dvwa/vulnerabilities/csrf/"
+                                          rows="3"
+                                          style="width: 100%; padding: 8px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 12px; font-family: monospace; resize: vertical;"
+                                          onchange="saveDirectFormData()" oninput="saveDirectFormData()"></textarea>
+                            </div>
+
+                            <!-- Step 2: Authentication -->
+                            <div style="margin-bottom: 15px; border: 1px solid #6b7280; border-radius: 6px; padding: 12px; background: #374151;">
+                                <label style="display: block; color: #fbbf24; font-size: 13px; font-weight: 600; margin-bottom: 8px;">
+                                    🔐 Step 2: Authentication (will auto-login and extract cookies)
+                                </label>
+                                <div style="margin-bottom: 8px;">
+                                    <input type="text" id="direct-login-url" placeholder="Login URL (e.g. http://192.168.1.42/dvwa/login.php)" 
+                                           style="width: 100%; padding: 6px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 12px;"
+                                           onchange="saveDirectFormData()" oninput="saveDirectFormData()">
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;">
+                                    <input type="text" id="direct-username" placeholder="Username (e.g. admin)" 
+                                           style="padding: 6px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 12px;"
+                                           onchange="saveDirectFormData()" oninput="saveDirectFormData()">
+                                    <input type="password" id="direct-password" placeholder="Password"
+                                           style="padding: 6px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 12px;"
+                                           onchange="saveDirectFormData()" oninput="saveDirectFormData()">
+                                </div>
+                                <button onclick="testLogin()" 
+                                        style="padding: 6px 12px; background: #059669; color: white; border: none; border-radius: 4px; font-size: 11px; font-weight: 600; cursor: pointer; margin-bottom: 10px;"
+                                        onmouseover="this.style.background='#047857'" onmouseout="this.style.background='#059669'">
+                                    🧪 Test Login & Extract Cookies
+                                </button>
+                                <div id="cookie-display" style="background: #1f2937; border: 1px solid #4b5563; border-radius: 4px; padding: 8px; font-family: monospace; font-size: 11px; color: #d1d5db; min-height: 40px; display: none;">
+                                    <div style="color: #10b981; font-weight: 600; margin-bottom: 4px;">🍪 Extracted Cookies:</div>
+                                    <div id="cookie-content"></div>
+                                </div>
+                            </div>
+
+                            <!-- Step 3: Cookie Management -->
+                            <div style="margin-bottom: 15px; border: 1px solid #6b7280; border-radius: 6px; padding: 12px; background: #374151;">
+                                <label style="display: block; color: #a78bfa; font-size: 13px; font-weight: 600; margin-bottom: 8px;">
+                                    ⚙️ Step 3: Cookie Management
+                                </label>
+                                <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 10px;">
+                                    <label style="color: #d1d5db; font-size: 12px; display: flex; align-items: center;">
+                                        <input type="checkbox" id="direct-auto-refresh" style="margin-right: 6px;" onchange="saveDirectFormData()">
+                                        🔄 Auto-refresh when expired
+                                    </label>
+                                </div>
+                                
+                                <!-- Individual Cookie Controls -->
+                                <div id="direct-cookie-controls" style="display: none;">
+                                    <div style="color: #10b981; font-weight: 600; margin-bottom: 8px; font-size: 12px;">🍪 Individual Cookie Controls:</div>
+                                    <div id="direct-cookie-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto;">
+                                        <!-- Individual cookie controls will be populated here -->
+                                    </div>
+                                </div>
+                                
+                                <!-- Manual override field -->
+                                <div style="margin-top: 10px;">
+                                    <input type="text" id="direct-manual-cookies" placeholder="Manual cookie override (e.g. security=low; PHPSESSID=abc123)" 
+                                           style="width: 100%; padding: 6px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 12px;">
+                                    <div style="color: #9ca3af; font-size: 10px; margin-top: 2px;">💡 Use individual controls above, or manually override here</div>
+                                </div>
+                            </div>
+                            
+                            <!-- Step 4: Actions -->
+                            <div style="text-align: center; border-top: 1px solid #4b5563; padding-top: 12px;">
+                                <button onclick="startDirectTesting()" 
+                                        style="padding: 10px 20px; background: #dc2626; color: white; border: none; border-radius: 5px; font-size: 13px; font-weight: 600; cursor: pointer; margin-right: 10px; transition: all 0.2s;"
+                                        onmouseover="this.style.background='#b91c1c'" onmouseout="this.style.background='#dc2626'">
+                                    🚀 Start Vulnerability Testing
+                                </button>
+                                <button onclick="addDirectURLsToScope()" 
+                                        style="padding: 10px 20px; background: #7c3aed; color: white; border: none; border-radius: 5px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s;"
+                                        onmouseover="this.style.background='#6d28d9'" onmouseout="this.style.background='#7c3aed'">
+                                    📋 Add to Assets Only
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- IDOR Testing Content -->
+                        <div id="idor-content" style="display: none;">
+                            <!-- IDOR Panel Content -->
                             <!-- Add Credential Section -->
                             <div style="background: #92400e; padding: 10px; border-radius: 6px; margin-bottom: 10px;">
                                 <h5 style="color: #fed7aa; margin: 0 0 8px 0; font-size: 13px;">Add Test Credential</h5>
@@ -1554,10 +1625,11 @@
                                 </div>
                             </div>
                             
-                        </div> <!-- End idor-panel-content -->
-                    </div> <!-- End IDOR Testing Interface -->
+                        </div>
+                    </div>
+                </details>
 
-                <div class="content-container">
+                <div style="padding: 16px;">
                     <div id="vulnerabilities-table">
                         <div class="loading">Loading vulnerability data...</div>
                     </div>
@@ -1573,7 +1645,7 @@
                     <button class="siem-btn" onclick="exportData('ml-xss')">Export</button>
                 </div>
                 
-                <div class="content-container">
+                <div style="padding: 16px;">
                     <div id="ml-results-table">
                         <div class="loading">Loading ML XSS results...</div>
                     </div>
@@ -1588,7 +1660,7 @@
                     <button class="siem-btn" onclick="exportData('bypasses')">Export</button>
                 </div>
                 
-                <div class="content-container">
+                <div style="padding: 16px;">
                     <div id="bypass-results-table">
                         <div class="loading">Loading 403 bypass results...</div>
                     </div>
@@ -1610,7 +1682,7 @@
                     <label for="log-lines">lines</label>
                 </div>
                 
-                <div class="content-container">
+                <div style="padding: 16px;">
                     <div id="terminal-container" style="background: #000; color: #00ff00; font-family: 'Courier New', monospace; font-size: 12px; padding: 10px; height: 70vh; overflow-y: auto; border: 1px solid #333;">
                         <div id="terminal-content">Loading logs...</div>
                     </div>
@@ -1634,7 +1706,7 @@
                     <button class="siem-btn danger" onclick="resetDbAndRestart()">Reset DB + Restart</button>
                 </div>
                 
-                <div class="content-container">
+                <div style="padding: 16px;">
                     
                     <!-- System Monitoring -->
                     <div class="panel-section">
@@ -1694,8 +1766,8 @@
         </div>
 
         </div> <!-- End all views container -->
-    </div> <!-- End content-area -->
-    </div> <!-- End siem-main -->
+    </div>
+    </div>
 
     <!-- Screenshot Modal -->
     <div id="screenshot-modal" class="modal">
@@ -1738,6 +1810,7 @@
 
         document.addEventListener('DOMContentLoaded', async function() {
             await fetchAssetMapping();
+            restoreDirectFormData(); // Restore saved form data
             
             // Initialize tab from URL hash first - don't block on session loading
             const initialTab = getTabFromURL();
@@ -3740,74 +3813,398 @@
             alert(`✅ Persistent cookies set for ${domain}:\n${(data.persistent || []).join(', ')}`);
         }
 
-        // === Evidence Viewer ===
-        async function loadEvidenceList() {
-            try {
-                const r = await fetch('/api/evidence/list');
-                const d = await r.json();
-                const c = document.getElementById('evidence-list');
-                if (!d || !d.evidence || d.evidence.length === 0) {
-                    c.innerHTML = '<div class="loading">No evidence found.</div>';
-                    return;
-                }
-                let out = '';
-                d.evidence.slice(0, 150).forEach(item => {
-                    const base = item.base;
-                    out += `<div class="evidence-row" style="padding:8px; border-bottom:1px solid #334155;">
-                        <div style="display:flex; align-items:center; gap:10px;">
-                            <code style="color:#cbd5e1;">${base}</code>
-                            ${item.screenshot ? `<a class="siem-btn" href="${item.screenshot}" target="_blank">Screenshot</a>` : ''}
-                            <button class="siem-btn" onclick="viewEvidenceInline('${base}','${item.html}','${item.headers||''}','${item.requests||''}')">View Inline</button>
-                            <a class="siem-btn" href="${item.html}" target="_blank">HTML</a>
-                            ${item.headers ? `<a class="siem-btn" href="${item.headers}" target="_blank">Headers</a>` : ''}
-                            ${item.requests ? `<a class="siem-btn" href="${item.requests}" target="_blank">Requests</a>` : ''}
-                            <span style="color:#9ca3af; font-size:12px; margin-left:auto;">${new Date(item.modified*1000).toLocaleString()}</span>
-                        </div>
-                        <div id="ev-${base}" style="display:none; margin-top:8px; background:#0f172a; border:1px solid #334155; border-radius:4px; padding:8px;"></div>
-                    </div>`;
-                });
-                c.innerHTML = out;
-            } catch (e) {
-                console.warn('Failed loading evidence list', e);
+
+        // ===== Testing Tabs Functions =====
+        function switchTestingTab(tab) {
+            // Update tab buttons
+            const directTab = document.getElementById('tab-direct');
+            const idorTab = document.getElementById('tab-idor');
+            const directContent = document.getElementById('direct-content');
+            const idorContent = document.getElementById('idor-content');
+            
+            if (tab === 'direct') {
+                directTab.style.background = '#374151';
+                directTab.style.color = '#f3f4f6';
+                idorTab.style.background = '#1f2937';
+                idorTab.style.color = '#9ca3af';
+                directContent.style.display = 'block';
+                idorContent.style.display = 'none';
+            } else {
+                directTab.style.background = '#1f2937';
+                directTab.style.color = '#9ca3af';
+                idorTab.style.background = '#374151';
+                idorTab.style.color = '#f3f4f6';
+                directContent.style.display = 'none';
+                idorContent.style.display = 'block';
             }
         }
-
-        async function viewEvidenceInline(base, htmlUrl, headersUrl, requestsUrl) {
-            const box = document.getElementById(`ev-${base}`);
-            if (!box) return;
-            if (box.style.display === 'block') { box.style.display = 'none'; box.innerHTML=''; return; }
-            box.style.display = 'block';
-            box.innerHTML = '<div class="loading">Loading evidence…</div>';
+        
+        // ===== Direct URL Testing Functions =====
+        
+        async function testLogin() {
+            const loginUrl = document.getElementById('direct-login-url').value.trim();
+            const username = document.getElementById('direct-username').value.trim();
+            const password = document.getElementById('direct-password').value.trim();
+            
+            if (!loginUrl) {
+                alert('Please enter the login URL (e.g. http://192.168.1.42/dvwa/login.php)');
+                return;
+            }
+            
+            if (!username || !password) {
+                alert('Please enter both username and password');
+                return;
+            }
+            
             try {
-                const [htmlRes, hdrRes, reqRes] = await Promise.all([
-                    fetch(htmlUrl).then(r => r.text()).catch(()=>''),
-                    headersUrl ? fetch(headersUrl).then(r => r.json()).catch(()=>null) : Promise.resolve(null),
-                    requestsUrl ? fetch(requestsUrl).then(r => r.text()).catch(()=>null) : Promise.resolve(null)
-                ]);
-                const safeHtml = htmlRes || '';
-                let hdrHtml = '';
-                if (hdrRes) {
-                    hdrHtml = `<pre style="white-space:pre-wrap;color:#e5e7eb;">${JSON.stringify(hdrRes, null, 2)}</pre>`;
+                const response = await fetch('/api/login-extract-cookies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        login_url: loginUrl,
+                        username: username,
+                        password: password
+                    })
+                });
+                
+                const result = await response.json();
+                const cookieDisplay = document.getElementById('cookie-display');
+                const cookieContent = document.getElementById('cookie-content');
+                
+                if (result.success) {
+                    cookieContent.innerHTML = `<div style="color: #10b981;">${result.cookie_string}</div>`;
+                    cookieDisplay.style.display = 'block';
+                    
+                    // Populate individual cookie controls
+                    renderDirectCookieControls(result.cookie_string);
+                    
+                    alert('✅ Login successful! Cookies extracted and displayed below.');
+                } else {
+                    cookieContent.innerHTML = `<div style="color: #ef4444;">❌ Login failed: ${result.error}</div>`;
+                    cookieDisplay.style.display = 'block';
+                    alert(`❌ Login failed: ${result.error}`);
                 }
-                let reqHtml = '';
-                if (reqRes) {
-                    reqHtml = `<pre style="white-space:pre-wrap;color:#e5e7eb; max-height:200px; overflow:auto;">${reqRes.replace(/</g,'&lt;')}</pre>`;
-                }
-                box.innerHTML = `
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
-                        <div>
-                            <div style="color:#93c5fd; font-size:13px; margin-bottom:6px;">HTML Snapshot</div>
-                            <iframe sandbox="allow-same-origin" style="width:100%; height:300px; background:white; border:1px solid #334155;" srcdoc="${safeHtml.replace(/"/g,'&quot;')}"></iframe>
-                        </div>
-                        <div>
-                            <div style="color:#93c5fd; font-size:13px; margin-bottom:6px;">Response Metadata</div>
-                            ${hdrHtml || '<div style="color:#94a3b8;">No headers</div>'}
-                            <div style="color:#93c5fd; font-size:13px; margin:6px 0;">Requests</div>
-                            ${reqHtml || '<div style="color:#94a3b8;">No requests</div>'}
-                        </div>
-                    </div>`;
+            } catch (error) {
+                alert(`❌ Network error: ${error.message}`);
+            }
+        }
+        
+        // Save and restore form data
+        function saveDirectFormData() {
+            const formData = {
+                urls: document.getElementById('direct-urls').value,
+                loginUrl: document.getElementById('direct-login-url').value,
+                username: document.getElementById('direct-username').value,
+                password: document.getElementById('direct-password').value,
+                autoRefresh: document.getElementById('direct-auto-refresh').checked
+            };
+            localStorage.setItem('directUrlFormData', JSON.stringify(formData));
+            
+            // Show save feedback
+            showSaveStatus();
+        }
+        
+        function showSaveStatus() {
+            // Remove any existing status
+            const existing = document.getElementById('save-status');
+            if (existing) existing.remove();
+            
+            // Create status indicator
+            const status = document.createElement('div');
+            status.id = 'save-status';
+            status.textContent = '💾 Saved';
+            status.style.cssText = 'position: fixed; top: 20px; right: 20px; background: #10b981; color: white; padding: 8px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; z-index: 9999; transition: opacity 0.3s;';
+            document.body.appendChild(status);
+            
+            // Fade out after 2 seconds
+            setTimeout(() => {
+                status.style.opacity = '0';
+                setTimeout(() => status.remove(), 300);
+            }, 2000);
+        }
+        
+        function restoreDirectFormData() {
+            const saved = localStorage.getItem('directUrlFormData');
+            if (!saved) return;
+            
+            try {
+                const formData = JSON.parse(saved);
+                if (formData.urls) document.getElementById('direct-urls').value = formData.urls;
+                if (formData.loginUrl) document.getElementById('direct-login-url').value = formData.loginUrl;
+                if (formData.username) document.getElementById('direct-username').value = formData.username;
+                if (formData.password) document.getElementById('direct-password').value = formData.password;
+                if (formData.autoRefresh !== undefined) document.getElementById('direct-auto-refresh').checked = formData.autoRefresh;
             } catch (e) {
-                box.innerHTML = `<div style="color:#ef4444;">Failed to load evidence: ${e.message}</div>`;
+                console.log('Failed to restore form data:', e);
+            }
+        }
+        
+        function renderDirectCookieControls(cookieString) {
+            if (!cookieString) return;
+            
+            const controls = document.getElementById('direct-cookie-controls');
+            const list = document.getElementById('direct-cookie-list');
+            
+            // Parse cookies
+            const cookies = cookieString.split(';').map(c => {
+                const [key, ...valueParts] = c.trim().split('=');
+                return [key?.trim(), valueParts.join('=')?.trim()];
+            }).filter(([k, v]) => k && v);
+            
+            // Clear existing controls
+            list.innerHTML = '';
+            
+            // Create controls for each cookie
+            cookies.forEach(([key, value]) => {
+                const wrapper = document.createElement('div');
+                wrapper.style.cssText = 'background:#4b5563; border:1px solid #6b7280; border-radius:6px; padding:8px; display:grid; grid-template-columns: 1fr auto auto; align-items:center; gap:8px;';
+                
+                // Cookie key=value input
+                const cookieInput = document.createElement('div');
+                cookieInput.style.cssText = 'display:flex; align-items:center; gap:6px;';
+                cookieInput.innerHTML = `
+                    <label style="color:#e5e7eb; font-size:12px; min-width:80px;">${key}=</label>
+                    <input type="text" value="${value}" data-key="${key}" style="background:#374151; color:#fff; border:1px solid #6b7280; border-radius:4px; padding:4px 6px; font-size:12px; flex:1;">
+                `;
+                
+                // Use checkbox
+                const useDiv = document.createElement('div');
+                useDiv.style.cssText = 'display:flex; align-items:center; gap:4px;';
+                useDiv.innerHTML = `
+                    <input type="checkbox" id="direct_${key}_use" data-key="${key}" checked>
+                    <label for="direct_${key}_use" style="color:#10b981; font-size:11px; cursor:pointer; white-space:nowrap;">Use</label>
+                `;
+                
+                // Lock checkbox - auto-lock security=impossible and set to low
+                const isSecurityCookie = key === 'security';
+                const lockDiv = document.createElement('div');
+                lockDiv.style.cssText = 'display:flex; align-items:center; gap:4px;';
+                lockDiv.innerHTML = `
+                    <input type="checkbox" id="direct_${key}_lock" data-key="${key}" ${isSecurityCookie ? 'checked' : ''}>
+                    <label for="direct_${key}_lock" style="color:#f59e0b; font-size:11px; cursor:pointer; white-space:nowrap;">Lock</label>
+                `;
+                
+                // If security cookie, override value to 'low'
+                if (isSecurityCookie) {
+                    const valueInput = cookieInput.querySelector('input[type="text"]');
+                    if (valueInput) valueInput.value = 'low';
+                }
+                
+                wrapper.appendChild(cookieInput);
+                wrapper.appendChild(useDiv); 
+                wrapper.appendChild(lockDiv);
+                list.appendChild(wrapper);
+            });
+            
+            // Show the controls
+            controls.style.display = 'block';
+            
+            // Hook change handlers to update manual override field
+            list.querySelectorAll('input').forEach(el => {
+                el.addEventListener('change', updateDirectManualCookies);
+                el.addEventListener('input', updateDirectManualCookies);
+            });
+            
+            // Initial update of manual field
+            updateDirectManualCookies();
+        }
+        
+        function updateDirectManualCookies() {
+            const list = document.getElementById('direct-cookie-list');
+            const manualField = document.getElementById('direct-manual-cookies');
+            
+            if (!list || !manualField) return;
+            
+            const wrappers = Array.from(list.children);
+            const parts = [];
+            
+            wrappers.forEach(wrapper => {
+                const valInput = wrapper.querySelector('input[type="text"]');
+                const useCheckbox = wrapper.querySelector('input[id$="_use"]');
+                const lockCheckbox = wrapper.querySelector('input[id$="_lock"]');
+                
+                if (valInput && useCheckbox && useCheckbox.checked) {
+                    const key = valInput.getAttribute('data-key');
+                    let val = valInput.value || '';
+                    
+                    // If locked, use the locked value
+                    if (lockCheckbox && lockCheckbox.checked) {
+                        // For security cookie, force 'low' value when locked
+                        if (key === 'security') {
+                            val = 'low';
+                            valInput.value = 'low'; // Update display too
+                        }
+                    }
+                    
+                    if (key && val) {
+                        parts.push(`${key}=${val}`);
+                    }
+                }
+            });
+            
+            manualField.value = parts.join('; ');
+        }
+        
+        async function startDirectTesting() {
+            console.log('🚀 [DIRECT DEBUG] startDirectTesting() called');
+            const urls = document.getElementById('direct-urls').value.trim();
+            const loginUrl = document.getElementById('direct-login-url').value.trim();
+            const username = document.getElementById('direct-username').value.trim();
+            const password = document.getElementById('direct-password').value.trim();
+            const manualCookies = document.getElementById('direct-manual-cookies').value.trim();
+            
+            console.log('🔍 [DIRECT DEBUG] Form values:', {urls, loginUrl, username, password: password ? '[FILLED]' : '[EMPTY]', manualCookies});
+            
+            if (!urls) {
+                console.log('❌ [DIRECT DEBUG] Missing URLs');
+                alert('Please enter at least one URL to test');
+                return;
+            }
+            
+            if (!loginUrl || !username || !password) {
+                console.log('❌ [DIRECT DEBUG] Missing auth fields:', {loginUrl: !!loginUrl, username: !!username, password: !!password});
+                alert('Please complete authentication first (Step 2)');
+                return;
+            }
+            
+            const urlList = urls.split('\n').filter(url => url.trim()).map(url => url.trim());
+            const domain = new URL(loginUrl).hostname;
+            
+            console.log('🔧 [DIRECT DEBUG] About to check auto-refresh checkbox');
+            const autoRefreshElement = document.getElementById('direct-auto-refresh');
+            console.log('🔧 [DIRECT DEBUG] Auto-refresh element:', autoRefreshElement);
+            
+            try {
+                console.log('🚀 [DIRECT DEBUG] Making API call to /api/scan/direct');
+                // Use the unified Direct URL Testing API that bypasses discovery
+                const response = await fetch('/api/scan/direct', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        urls: urlList,
+                        credentials: {
+                            login_url: loginUrl,
+                            username: username,
+                            password: password
+                        },
+                        locked_cookies: manualCookies || '',
+                        auto_refresh: document.getElementById('direct-auto-refresh').checked,
+                        vulnerability_test_only: true  // Skip discovery, go straight to vuln testing
+                    })
+                });
+                console.log('✅ [DIRECT DEBUG] API response received:', response.status, response.statusText);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
+                }
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`✅ Direct vulnerability testing started for ${urlList.length} URL(s)\\nCheck the Vulnerabilities tab for results.`);
+                    showView('vulnerabilities');
+                } else {
+                    alert(`❌ Failed to start vulnerability testing: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('❌ [DIRECT DEBUG] Error in startDirectTesting:', error);
+                console.error('❌ [DIRECT DEBUG] Error stack:', error.stack);
+                if (error.message.includes('404')) {
+                    alert(`❌ RESTART YOUR DASHBOARD! The /api/scan/direct endpoint doesn't exist because you're running the old version.\\n\\nError: ${error.message}`);
+                } else {
+                    alert(`❌ Network error: ${error.message}`);
+                }
+            }
+        }
+        
+        // Legacy function for compatibility
+        async function testDirectURLs() {
+            const urls = document.getElementById('direct-urls').value.trim();
+            const username = document.getElementById('direct-username').value.trim();
+            const password = document.getElementById('direct-password').value.trim();
+            const cookies = document.getElementById('direct-cookies').value.trim();
+            const manualCookies = document.getElementById('direct-manual-cookies').value.trim();
+            const autoRefresh = document.getElementById('direct-auto-refresh').checked;
+            const locked = document.getElementById('direct-lock-cookies').checked;
+            
+            if (!urls) {
+                alert('Please enter at least one URL to test');
+                return;
+            }
+            
+            const urlList = urls.split('\n').filter(url => url.trim()).map(url => url.trim());
+            
+            try {
+                const response = await fetch('/api/scan/direct', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        urls: urls,
+                        credentials: {
+                            username: username || '',
+                            password: password || ''
+                        },
+                        cookies: cookies || '',
+                        locked_cookies: manualCookies || '',
+                        auto_refresh: autoRefresh,
+                        locked: locked
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    let message = `✅ Direct vulnerability testing started for ${urlList.length} URL(s)\\nCheck the Vulnerabilities tab for results.`;
+                    
+                    // Add authentication results if available
+                    if (result.auth_results && result.auth_results.length > 0) {
+                        message += '\\n\\nAuthentication Results:\\n' + result.auth_results.join('\\n');
+                    }
+                    
+                    alert(message);
+                    // Switch to vulnerabilities view
+                    showView('vulnerabilities');
+                } else {
+                    alert(`❌ Failed to start vulnerability testing: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`❌ Error: ${error.message}`);
+            }
+        }
+        
+        async function addDirectURLsToScope() {
+            const urls = document.getElementById('direct-urls').value.trim();
+            
+            if (!urls) {
+                alert('Please enter at least one URL to add');
+                return;
+            }
+            
+            const urlList = urls.split('\n').filter(url => url.trim()).map(url => url.trim());
+            
+            try {
+                const response = await fetch('/api/assets/direct', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        urls: urlList
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`✅ Added ${result.added} URL(s) to assets\\nCheck the Assets tab to view them.`);
+                    // Switch to assets view
+                    showView('assets');
+                    // Refresh assets
+                    loadAssets();
+                } else {
+                    alert(`❌ Failed to add URLs: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`❌ Error: ${error.message}`);
             }
         }
 
@@ -4682,6 +5079,7 @@
             }
         }
         
+        
         async function loginAndExtractCookies() {
             const login_url = document.getElementById('login-url').value;
             const username = document.getElementById('login-username').value;
@@ -5343,8 +5741,6 @@ async function saveAuthPolicy() {
                 if (result.success) {
                     if (result.verified) {
                         alert(`✅ Cookie verified successfully for ${domain}`);
-                        // Refresh evidence list for convenience
-                        loadEvidenceList();
                     } else if (result.refreshed) {
                         alert(`🔄 Cookie refreshed for ${domain}`);
                         document.getElementById('cookie-editor-text').value = result.cookie_string;

@@ -1,0 +1,16 @@
+{
+  "url": "http://192.168.1.42/dvwa/.git/HEAD",
+  "status": 200,
+  "headers": {
+    "accept-ranges": "bytes",
+    "connection": "keep-alive",
+    "content-length": "23",
+    "date": "Sun, 24 Aug 2025 00:35:54 GMT",
+    "etag": "\"17-63c5a07590f6e\"",
+    "last-modified": "Thu, 14 Aug 2025 21:33:48 GMT",
+    "server": "Apache/2.4.62 (Debian)",
+    "via": "1.1 proxy127 (squid/5.7)",
+    "x-cache": "MISS from proxy127",
+    "x-cache-lookup": "MISS from proxy127:3128"
+  }
+}

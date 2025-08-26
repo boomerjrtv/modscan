@@ -293,6 +293,30 @@ Standard vulnerability types (use these exact strings):
 - `"PATH_TRAVERSAL"` - Directory traversal
 - `"OPEN_REDIRECT"` - Open redirect
 
+## Debug and Validation Testing
+
+### 🔧 TEMPORARY DEBUG SCRIPTS ONLY
+
+When debugging core issues, you may create temporary validation scripts, but:
+
+- **ALWAYS DELETE** validation scripts after fixing the core issue
+- **FIX THE ROOT CAUSE** in the main modules, don't work around it  
+- **NEVER COMMIT** temporary debug/validation scripts to git
+- Use simple test URLs like `http://192.168.1.42/dvwa/vulnerabilities/sqli` NOT full parameter URLs
+
+### ✅ Example Debug Approach
+
+```python
+# TEMPORARY debug script - DELETE after fixing core issue
+# Test authentication on simple URL: http://192.168.1.42/dvwa/vulnerabilities/sqli
+# NOT: http://192.168.1.42/dvwa/vulnerabilities/sqli/?id=1&Submit=Submit
+
+# 1. Create temp script to isolate issue
+# 2. Fix the actual problem in universal_auth_manager.py or core modules  
+# 3. DELETE the temp script immediately
+# 4. Test fix works in main application
+```
+
 ## Final Note
 
 **NEVER** compromise the universal nature of this platform by adding target-specific logic. If something doesn't work on a specific target, enhance the universal capabilities rather than creating exceptions.

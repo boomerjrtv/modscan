@@ -1,0 +1,16 @@
+{
+  "url": "http://192.168.1.42/.",
+  "status": 200,
+  "headers": {
+    "accept-ranges": "bytes",
+    "content-encoding": "gzip",
+    "content-length": "3041",
+    "content-type": "text/html",
+    "date": "Sun, 24 Aug 2025 00:35:55 GMT",
+    "etag": "\"29cd-63c5a06df7f00-gzip\"",
+    "last-modified": "Thu, 14 Aug 2025 21:33:40 GMT",
+    "server": "Apache/2.4.62 (Debian)",
+    "vary": "Accept-Encoding",
+    "via": "1.1 tinyproxy (tinyproxy/1.11.1)"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "url": "http://192.168.1.42/dvwa/vulnerabilities/javascript",
+  "status": 200,
+  "headers": {
+    "cache-control": "no-cache, must-revalidate",
+    "connection": "keep-alive",
+    "content-encoding": "gzip",
+    "content-length": "606",
+    "content-type": "text/html;charset=utf-8",
+    "date": "Sun, 24 Aug 2025 00:35:55 GMT",
+    "expires": "Tue, 23 Jun 2009 12:00:00 GMT",
+    "pragma": "no-cache",
+    "server": "Apache/2.4.62 (Debian)",
+    "vary": "Accept-Encoding",
+    "via": "1.1 proxy126 (squid/5.7)",
+    "x-cache": "MISS from proxy126",
+    "x-cache-lookup": "HIT from proxy126:3128"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "url": "http://192.168.1.42/index.html",
+  "status": 200,
+  "headers": {
+    "accept-ranges": "bytes",
+    "connection": "keep-alive",
+    "content-encoding": "gzip",
+    "content-length": "3041",
+    "content-type": "text/html",
+    "date": "Sun, 24 Aug 2025 00:35:54 GMT",
+    "etag": "\"29cd-63c5a06df7f00-gzip\"",
+    "last-modified": "Thu, 14 Aug 2025 21:33:40 GMT",
+    "server": "Apache/2.4.62 (Debian)",
+    "vary": "Accept-Encoding",
+    "via": "1.1 proxy128 (squid/5.7)",
+    "x-cache": "MISS from proxy128",
+    "x-cache-lookup": "MISS from proxy128:3128"
+  }
+}
