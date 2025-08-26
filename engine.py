@@ -392,10 +392,15 @@ class ModularVulnerabilityScanner:
                             if urls_inline:
                                 assets_inline = [{'id': -1, 'url': u, 'status_code': 200, 'tech_stack': ''} for u in urls_inline]
                                 logger.info(f"⚡ Direct: Inline Tier3 scan of {len(assets_inline)} URLs…")
-                                await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=8)
+                                await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=3)
                                 logger.info("✅ Direct: Inline Tier3 scan complete")
                         except Exception as _inl:
                             logger.warning(f"Direct: inline scan failed: {_inl}")
+
+                        # If only direct URLs are requested, stop here (no DB-backed Tier3)
+                        if _os.environ.get('MODSCAN_ONLY_DIRECT_URLS'):
+                            logger.info("✅ Direct: Only user URLs requested — stopping after direct scan")
+                            break
 
                         # Tier 3 with timeout watchdog so dashboard never looks stuck
                         try:
@@ -442,9 +447,13 @@ class ModularVulnerabilityScanner:
                         ]
                         await asyncio.gather(*tier_tasks, return_exceptions=True)
                     
-                    # Report progress using AssetManager
-                    await self._report_modular_progress(scan_cycle)
+                    # Report progress using AssetManager (skip in single-shot direct mode to exit faster)
+                    if not (_os.environ.get('MODSCAN_SINGLE_SHOT') and _os.environ.get('MODSCAN_DIRECT_URL_TESTING')):
+                        await self._report_modular_progress(scan_cycle)
                     
+                    # Exit immediately after direct single-shot
+                    if _os.environ.get('MODSCAN_SINGLE_SHOT') and _os.environ.get('MODSCAN_DIRECT_URL_TESTING'):
+                        break
                     await asyncio.sleep(5)
                     
                 except KeyboardInterrupt:

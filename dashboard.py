@@ -2017,7 +2017,6 @@ def direct_url_scan():
                     env = os.environ.copy()
                     env['MODSCAN_AUTH_DOMAIN'] = first_domain
                     env['MODSCAN_TTL_HOURS'] = '0'  # Force fresh scan
-                    env['MODSCAN_SKIP_PROCESS_GUARD'] = '1'
                     env['MODSCAN_DIRECT_URL_TESTING'] = '1'  # Skip discovery, test only provided URLs
                     env['MODSCAN_VULN_VERBOSE'] = '1'  # Show detailed Tier 3 progress
                     env['MODSCAN_FORCE_REFRESH_EVERY_URL'] = '1'  # Strict targets: refresh auth per URL
@@ -2027,8 +2026,12 @@ def direct_url_scan():
                         env['MODSCAN_DIRECT_URLS'] = _json.dumps(urls)
                     except Exception:
                         env['MODSCAN_DIRECT_URLS'] = '\n'.join(urls)
-                    # Only scan the provided URLs; disable extra tools that add noise in direct mode
+                    # Only scan the provided URLs
                     env['MODSCAN_ONLY_DIRECT_URLS'] = '1'
+                    # One-shot: exit after direct pass
+                    env['MODSCAN_SINGLE_SHOT'] = '1'
+                    # Enable strict IDOR comparison
+                    env['MODSCAN_IDOR_STRICT'] = '1'
                     
                     # Log environment variables for debugging
                     app.logger.info(f"🔧 Direct URL Testing - Setting env vars: MODSCAN_DIRECT_URL_TESTING=1, MODSCAN_AUTH_DOMAIN={first_domain}")
