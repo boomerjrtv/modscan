@@ -365,6 +365,21 @@ class ModularVulnerabilityScanner:
                             logger.info("🧪 Direct: Tier2 completed; proceeding to Tier3…")
                         except Exception as _e2:
                             logger.warning(f"Tier 2 profiling error (direct): {_e2}")
+                        # Immediate inline Tier 3 scan on latest direct URLs (guaranteed activity)
+                        try:
+                            with self.asset_manager._get_db() as db:
+                                rows = db.execute(
+                                    "SELECT url FROM assets WHERE title='Direct URL Test' ORDER BY id DESC LIMIT 8"
+                                ).fetchall()
+                            urls_inline = [r[0] for r in rows if r and r[0]]
+                            if urls_inline:
+                                assets_inline = [{'id': -1, 'url': u, 'status_code': 200, 'tech_stack': ''} for u in urls_inline]
+                                logger.info(f"⚡ Direct: Inline Tier3 scan of {len(assets_inline)} URLs…")
+                                await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=8)
+                                logger.info("✅ Direct: Inline Tier3 scan complete")
+                        except Exception as _inl:
+                            logger.warning(f"Direct: inline scan failed: {_inl}")
+
                         # Tier 3 with timeout watchdog so dashboard never looks stuck
                         try:
                             logger.info("➡️ Direct: Starting Tier3 vulnerability scanning…")
