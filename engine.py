@@ -551,6 +551,7 @@ class ModularVulnerabilityScanner:
     async def _tier2_modular_profiling(self, session: aiohttp.ClientSession):
         """Tier 2: Profiling using TechnologyDetector and ScreenshotManager"""
         try:
+            import os as _os
             # First: basic HTTP profiling for assets lacking status_code
             try:
                 filled = await self.reconnaissance.basic_profile_round(session, limit=500)
@@ -559,19 +560,35 @@ class ModularVulnerabilityScanner:
             except Exception as e:
                 logger.warning(f"Tier 2 basic profiling failed: {e}")
 
-            # Technology detection using TechnologyDetector module
-            tech_tasks = [
-                self.technology_detector.process_pending_assets(session, limit=75),
-                self.screenshot_manager.process_pending_screenshots(session, limit=30)
-            ]
-            
-            results = await asyncio.gather(*tech_tasks, return_exceptions=True)
-            tech_completed = results[0] if len(results) > 0 and isinstance(results[0], int) else 0
-            screenshot_completed = results[1] if len(results) > 1 and isinstance(results[1], int) else 0
-            
-            if tech_completed > 0 or screenshot_completed > 0:
-                logger.info(f"✅ TIER 2: Technology detection: {tech_completed}, Screenshots: {screenshot_completed}")
-            
+            # In Direct URL Testing mode, skip heavy tasks (tech detect + screenshots) to avoid stalls
+            if _os.environ.get('MODSCAN_DIRECT_URL_TESTING'):
+                logger.info("⏭️  TIER 2: Direct mode — skipping tech detection and screenshots")
+                return
+
+            # Otherwise, timebox each heavy task so Tier 3 isn’t blocked
+            tech_completed = 0
+            screenshot_completed = 0
+            try:
+                tech_completed = await asyncio.wait_for(
+                    self.technology_detector.process_pending_assets(session, limit=75), timeout=10
+                )
+            except asyncio.TimeoutError:
+                logger.warning("⏰ TIER 2: Technology detection timed out after 10s — continuing")
+            except Exception as e:
+                logger.warning(f"TIER 2: Technology detection failed: {e}")
+
+            try:
+                screenshot_completed = await asyncio.wait_for(
+                    self.screenshot_manager.process_pending_screenshots(session, limit=30), timeout=10
+                )
+            except asyncio.TimeoutError:
+                logger.warning("⏰ TIER 2: Screenshot processing timed out after 10s — continuing")
+            except Exception as e:
+                logger.warning(f"TIER 2: Screenshot processing failed: {e}")
+
+            if (isinstance(tech_completed, int) and tech_completed > 0) or (isinstance(screenshot_completed, int) and screenshot_completed > 0):
+                logger.info(f"✅ TIER 2: Technology detection: {int(tech_completed) if isinstance(tech_completed,int) else 0}, Screenshots: {int(screenshot_completed) if isinstance(screenshot_completed,int) else 0}")
+        
         except Exception as e:
             logger.error(f"Tier 2 modular profiling error: {e}")
     
