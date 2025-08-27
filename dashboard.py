@@ -1822,6 +1822,17 @@ def index():
     response.headers['Expires'] = '0'
     return response
 
+def _load_oob_api_key():
+    try:
+        import json
+        with open('config.json','r') as f:
+            cfg = json.load(f)
+        # Prefer explicit key
+        key = cfg.get('oob_api_key') or (cfg.get('collaborator') or {}).get('api_key')
+        return (key or '').strip()
+    except Exception:
+        return ''
+
 @app.route('/api/oob/callback', methods=['GET', 'POST'])
 def oob_callback_ingest():
     """Ingest OOB collaborator callback. Expects a 'marker' string.
@@ -1834,6 +1845,12 @@ def oob_callback_ingest():
         marker = request.values.get('marker', '').strip()
         method = request.values.get('method', 'oob_confirmed').strip()
         extra = request.values.get('extra', '')
+        # API key check (header or query param)
+        expected = _load_oob_api_key()
+        if expected:
+            provided = request.headers.get('X-Api-Key') or request.values.get('api_key') or ''
+            if provided.strip() != expected:
+                return jsonify({"success": False, "error": "unauthorized"}), 401
         if not marker:
             return jsonify({"success": False, "error": "marker required"}), 400
         mgr = AssetManager()
