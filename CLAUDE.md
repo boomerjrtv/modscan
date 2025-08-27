@@ -312,7 +312,7 @@ When debugging core issues, you may create temporary validation scripts, but:
 # NOT: http://192.168.1.42/dvwa/vulnerabilities/sqli/?id=1&Submit=Submit
 
 # 1. Create temp script to isolate issue
-# 2. Fix the actual problem in universal_auth_manager.py or core modules  
+# 2. Fix the actual problem in modules/auth_manager.py or core modules  
 # 3. DELETE the temp script immediately
 # 4. Test fix works in main application
 ```
