@@ -1295,8 +1295,8 @@ class AssetManager:
                 # Insert new vulnerability
                 query = '''
                     INSERT INTO vulnerabilities 
-                    (asset_id, type, description, severity, evidence, payload, detected_at, confidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (asset_id, type, description, severity, evidence, payload, detected_at, confidence, asset_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 '''
                 cur = db.execute(query, (
                     asset_id,
@@ -1306,7 +1306,8 @@ class AssetManager:
                     finding.evidence,
                     finding.payload,
                     finding.discovered_at.isoformat() if isinstance(finding.discovered_at, datetime) else finding.discovered_at,
-                    finding.confidence
+                    finding.confidence,
+                    finding.url                                          # url -> asset_url
                 ))
                 vuln_id = cur.lastrowid
                 print(f"✅ Added vulnerability: {finding.vuln_type} ({finding.severity}) for asset {asset_id}")

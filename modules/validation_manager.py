@@ -193,10 +193,36 @@ class ValidationManager:
                 a = await r0.text()
             async with session.get(test_url, headers=h, timeout=12) as r1:
                 b = await r1.text()
-            # Simple state diff heuristic
+            # State diff heuristics: content length, JSON token counts, key hints
+            verified = False
+            diff_note = ''
             if (r1.status == 200) and (len(b) != len(a)):
-                finding.evidence = f"{finding.evidence} | Verification: state_diff when {param} changed ({len(a)}→{len(b)})".strip()
-                finding.confidence = max(finding.confidence, 0.8)
+                verified = True
+                diff_note = f"state_diff length {len(a)}→{len(b)}"
+            # JSON tokenized diff
+            try:
+                import json as _json
+                ja = _json.loads(a)
+                jb = _json.loads(b)
+                def _count_json(x):
+                    if isinstance(x, dict):
+                        return len(x) + sum(_count_json(v) for v in x.values())
+                    if isinstance(x, list):
+                        return len(x) + sum(_count_json(v) for v in x)
+                    return 1
+                ca, cb = _count_json(ja), _count_json(jb)
+                if ca != cb:
+                    verified = True
+                    diff_note = (diff_note + '; ' if diff_note else '') + f"json_tokens {ca}→{cb}"
+            except Exception:
+                # HTML keyword hints
+                hints = ['admin','user','email','account','profile']
+                if any(hint in (b.lower()) for hint in hints) and not any(hint in (a.lower()) for hint in hints):
+                    verified = True
+                    diff_note = (diff_note + '; ' if diff_note else '') + "keyword shift"
+            if verified:
+                finding.evidence = f"{finding.evidence} | Verification: {diff_note} when {param} changed".strip()
+                finding.confidence = max(finding.confidence, 0.85)
                 shot = await self.scanner._take_screenshot(test_url)
                 finding.screenshot_path = shot or finding.screenshot_path
         except Exception as e:
@@ -211,10 +237,11 @@ class ValidationManager:
             async with session.get(url, headers=h, timeout=12) as r:
                 html = await r.text()
             if '<form' in html.lower():
-                has_token = any(tok in html.lower() for tok in ['csrf', 'token', '_token', 'authenticity_token'])
+                tokens = ['csrf','token','_token','authenticity_token','xsrf','requestverificationtoken','csrfmiddlewaretoken','form_token','security_token']
+                has_token = any(tok in html.lower() for tok in tokens)
                 if not has_token:
                     finding.evidence = f"{finding.evidence} | Verification: form rendered without CSRF token field".strip()
-                    finding.confidence = max(finding.confidence, 0.75)
+                    finding.confidence = max(finding.confidence, 0.78)
                     shot = await self.scanner._take_screenshot(url)
                     finding.screenshot_path = shot or finding.screenshot_path
         except Exception as e:
