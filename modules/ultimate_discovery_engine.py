@@ -223,7 +223,7 @@ class UltimateDiscoveryEngine:
                         for p in [s.strip() for s in headers['Cookie'].split(';') if s.strip()]:
                             if '=' in p:
                                 cookie_names.append(p.split('=', 1)[0])
-                    header_keys = [k for k in headers.keys() if k.lower() != 'cookie']
+                    header_keys = [k for k in headers.keys()]
                     # Highlight if a known persistent cookie was intended but missing
                     missing_persist = []
                     try:
