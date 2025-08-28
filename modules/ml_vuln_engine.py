@@ -48,11 +48,14 @@ class MLVulnerabilityEngine:
     def __init__(self, asset_manager, config: Dict):
         self.asset_manager = asset_manager
         self.config = config
-        self.gemini_key = config.get('gemini_api_key', '')
+        # Allow environment override for Gemini key
+        import os as _os
+        self.gemini_key = (config.get('gemini_api_key') or _os.environ.get('GEMINI_API_KEY') or '').strip()
         
         # Initialize Gemini if key is provided
         if self.gemini_key:
             genai.configure(api_key=self.gemini_key)
+            # Use the cheapest Flash family by default
             self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
             logger.info("🤖 Gemini Flash 2.5 initialized for AI-assisted vulnerability analysis")
         else:
