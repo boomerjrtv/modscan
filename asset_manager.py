@@ -64,7 +64,7 @@ class AssetManager:
 
 
 
-    def notify_change(self, message: str, payload: dict | None = None) -> None: 
+    def notify_change(self, message: str, payload: dict | None = None, ntype: str = "change") -> None: 
         """
         Append a notification event to BASE_DIR/notifications.jsonl for the dashboard to consume later.
         (If you already have a notifications table/API, wire this there.)
@@ -73,7 +73,7 @@ class AssetManager:
         import json, time
         base_dir = Path(__file__).resolve().parent
         path = base_dir / 'notifications.jsonl'
-        event = {'ts': int(time.time()), 'type': 'change', 'message': message, 'payload': payload or {}}
+        event = {'ts': int(time.time()), 'type': ntype or 'change', 'message': message, 'payload': payload or {}}
         with open(path, 'a', encoding='utf-8') as fp:
             fp.write(json.dumps(event, ensure_ascii=False) + "\n")
     def record_scan(self, url: str, content_hash: str | None = None, meta: dict | None = None) -> dict:
@@ -219,6 +219,90 @@ class AssetManager:
             'detected_at': self.vuln_mappings.get('discovered_at', 'detected_at'),
             'asset_url': self.vuln_mappings.get('asset_url', 'asset_url')
         }
+
+    # ---- CVE candidate support ----
+    def ensure_cve_candidate_table(self):
+        try:
+            with self._get_db() as db:
+                db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS asset_cve_candidates (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        asset_id INTEGER,
+                        cve TEXT,
+                        score REAL,
+                        matched_tokens TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                db.execute("CREATE INDEX IF NOT EXISTS idx_asset_cve_asset ON asset_cve_candidates(asset_id)")
+                db.execute("CREATE INDEX IF NOT EXISTS idx_asset_cve_cve ON asset_cve_candidates(cve)")
+        except Exception as e:
+            print(f"Error ensuring asset_cve_candidates table: {e}")
+
+    def upsert_asset_cve_candidates(self, asset_id: int, candidates: list[dict]):
+        self.ensure_cve_candidate_table()
+        try:
+            with self._get_db() as db:
+                db.execute("DELETE FROM asset_cve_candidates WHERE asset_id=?", (asset_id,))
+                for c in candidates:
+                    db.execute(
+                        "INSERT INTO asset_cve_candidates (asset_id, cve, score, matched_tokens) VALUES (?, ?, ?, ?)",
+                        (asset_id, c.get('cve',''), float(c.get('score', 0.0)), json.dumps(c.get('tokens', []), ensure_ascii=False))
+                    )
+        except Exception as e:
+            print(f"Error upserting CVE candidates: {e}")
+
+    def get_asset_cve_candidates(self, asset_id: int, limit: int = 50) -> list[dict]:
+        self.ensure_cve_candidate_table()
+        try:
+            with self._get_db() as db:
+                cur = db.execute(
+                    "SELECT cve, score, matched_tokens, created_at FROM asset_cve_candidates WHERE asset_id=? ORDER BY score DESC, id DESC LIMIT ?",
+                    (asset_id, limit)
+                )
+                out = []
+                for r in cur.fetchall():
+                    try:
+                        toks = json.loads(r['matched_tokens'] or '[]')
+                    except Exception:
+                        toks = []
+                    out.append({'cve': r['cve'], 'score': float(r['score'] or 0.0), 'tokens': toks, 'created_at': r['created_at']})
+                return out
+        except Exception as e:
+            print(f"Error loading CVE candidates: {e}")
+            return []
+
+    def get_recent_assets_for_cve(self, limit: int = 25) -> list[dict]:
+        try:
+            fields = self.get_asset_fields()
+            with self._get_db() as db:
+                cur = db.execute(
+                    f"""
+                    SELECT id, {fields['url']} as url, {fields['title']} as title, IFNULL({fields['tech_stack']}, '') as tech_stack, IFNULL({fields['status_code']},200) as status
+                    FROM assets
+                    WHERE IFNULL({fields['title']},'') <> '' AND ( {fields['status_code']} IN (200,401,403) OR {fields['status_code']} IS NULL )
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (limit,)
+                )
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            print(f"Error getting recent assets for CVE: {e}")
+            return []
+
+    def get_asset_by_id(self, asset_id: int) -> dict:
+        try:
+            f = self.get_asset_fields()
+            with self._get_db() as db:
+                r = db.execute(
+                    f"SELECT id, {f['url']} as url, {f['title']} as title, {f['tech_stack']} as tech_stack FROM assets WHERE id=?",
+                    (asset_id,)
+                ).fetchone()
+                return dict(r) if r else {}
+        except Exception:
+            return {}
 
     def get_activity_fields(self):
         """Returns database field names for activities based on mapping config"""
@@ -564,7 +648,12 @@ class AssetManager:
             with self._get_db() as db:
                 # Simple query to get all vulnerabilities
                 cursor = db.execute("""
-                    SELECT v.*, a.url as asset_url 
+                    SELECT v.*, a.url as asset_url, a.discovery_method as discovery_method,
+                           CASE 
+                               WHEN a.discovery_method = 'direct_scan' THEN 'direct'
+                               WHEN a.discovery_method LIKE 'authenticated%' THEN 'authenticated'
+                               ELSE 'engine'
+                           END as source
                     FROM vulnerabilities v 
                     LEFT JOIN assets a ON v.asset_id = a.id 
                     ORDER BY v.detected_at DESC 
@@ -1192,12 +1281,29 @@ class AssetManager:
             with self._get_db() as db:
                 # Base query
                 base_query = '''
-                    SELECT v.id, v.asset_id, v.type, v.description, v.severity, 
+                    SELECT v.id, v.asset_id, v.type, v.description, v.severity,
                            v.evidence, v.payload, v.detected_at, v.confidence,
                            a.url as asset_url, a.host as asset_host,
-                           CASE WHEN a.discovery_method = 'authenticated_discovery' THEN 1 ELSE 0 END as auth
+                           a.discovery_method as discovery_method,
+                           CASE 
+                               WHEN a.discovery_method = 'direct_scan' THEN 'direct'
+                               WHEN a.discovery_method LIKE 'authenticated%' THEN 'authenticated'
+                               ELSE 'engine'
+                           END as source,
+                           lv.method as verification_method,
+                           lv.marker as verification_marker,
+                           lv.details as verification_details
                     FROM vulnerabilities v
                     JOIN assets a ON v.asset_id = a.id
+                    LEFT JOIN (
+                        SELECT vv.vulnerability_id, vv.method, vv.marker, vv.details
+                        FROM vulnerability_verifications vv
+                        JOIN (
+                            SELECT vulnerability_id, MAX(id) as max_id
+                            FROM vulnerability_verifications
+                            GROUP BY vulnerability_id
+                        ) latest ON latest.vulnerability_id = vv.vulnerability_id AND latest.max_id = vv.id
+                    ) lv ON lv.vulnerability_id = v.id
                 '''
                 
                 conditions = []
@@ -1277,7 +1383,7 @@ class AssetManager:
         """
         try:
             with self._get_db() as db:
-                # Check for existing duplicate
+                # Check for existing duplicate (payload-based)
                 duplicate_check = '''
                     SELECT COUNT(*) FROM vulnerabilities 
                     WHERE asset_id = ? AND type = ? AND payload = ?
@@ -1291,6 +1397,21 @@ class AssetManager:
                 if cursor.fetchone()[0] > 0:
                     print(f"🔄 Skipping duplicate vulnerability: {finding.vuln_type} with payload '{finding.payload}' for asset {asset_id}")
                     return
+                # Additional de-dupe: same type+URL+evidence prefix
+                try:
+                    dupe2 = db.execute(
+                        """
+                        SELECT COUNT(*) FROM vulnerabilities 
+                        WHERE asset_id=? AND type=? AND asset_url=? 
+                          AND substr(evidence,1,80)=substr(?,1,80)
+                        """,
+                        (asset_id, finding.vuln_type, finding.url, finding.evidence)
+                    ).fetchone()[0]
+                    if dupe2 and dupe2 > 0:
+                        print(f"🔄 Skipping near-duplicate: {finding.vuln_type} at {finding.url}")
+                        return
+                except Exception:
+                    pass
                 
                 # Insert new vulnerability
                 query = '''
@@ -1342,18 +1463,30 @@ class AssetManager:
             print(f"Error ensuring verification table: {e}")
 
     def add_verification_record(self, vulnerability_id: int, method: str, marker: str = "", details: str = "", screenshot_path: str = "", oob_event_id: str = ""):
-        try:
-            self.ensure_verification_table()
-            with self._get_db() as db:
-                db.execute(
-                    """
-                    INSERT INTO vulnerability_verifications (vulnerability_id, method, marker, details, screenshot_path, oob_event_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (vulnerability_id, method, marker, details, screenshot_path, oob_event_id)
-                )
-        except Exception as e:
-            print(f"Error adding verification record: {e}")
+        import time
+        self.ensure_verification_table()
+        attempts = 0
+        last_err = None
+        while attempts < 3:
+            try:
+                with self._get_db() as db:
+                    db.execute(
+                        """
+                        INSERT INTO vulnerability_verifications (vulnerability_id, method, marker, details, screenshot_path, oob_event_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (vulnerability_id, method, marker, details, screenshot_path, oob_event_id)
+                    )
+                return
+            except Exception as e:
+                last_err = e
+                # Retry on transient locking
+                if 'locked' in str(e).lower():
+                    time.sleep(0.15 * (attempts + 1))
+                    attempts += 1
+                    continue
+                break
+        print(f"Error adding verification record: {last_err}")
 
     def _maybe_store_verification_from_evidence(self, vulnerability_id: int, finding: VulnerabilityFinding):
         try:

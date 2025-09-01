@@ -31,6 +31,17 @@ CSRF_PATTERNS = [
     'anti_csrf', 'csrf_hash', 'csrf_test_name'
 ]
 
+# Universal security level detection patterns (works on any application)
+SECURITY_LEVEL_PATTERNS = [
+    # Generic security level indicators
+    'security', 'level', 'difficulty', 'protection', 'mode',
+    # Common values
+    'low', 'medium', 'high', 'impossible', 'easy', 'hard',
+    'basic', 'advanced', 'expert', 'beginner', 'intermediate',
+    # Security modes
+    'secure', 'insecure', 'safe', 'unsafe', 'strict', 'loose'
+]
+
 def _is_csrf_field(field_name: str) -> bool:
     """Check if field name matches common CSRF token patterns"""
     if not field_name:
@@ -38,6 +49,57 @@ def _is_csrf_field(field_name: str) -> bool:
     
     field_lower = field_name.lower()
     return any(pattern in field_lower for pattern in CSRF_PATTERNS)
+
+def detect_security_level(html_content: str, cookies: Dict[str, str] = None) -> Optional[str]:
+    """
+    Universal security level detection - works on any web application
+    Analyzes HTML content and cookies to determine security level
+    """
+    if not html_content:
+        return None
+    
+    html_lower = html_content.lower()
+    
+    # Check cookies first (most reliable)
+    if cookies:
+        for cookie_name, cookie_value in cookies.items():
+            if any(pattern in cookie_name.lower() for pattern in SECURITY_LEVEL_PATTERNS):
+                # Extract security level from cookie value
+                if any(level in cookie_value.lower() for level in ['low', 'medium', 'high', 'impossible']):
+                    return next((level for level in ['low', 'medium', 'high', 'impossible'] 
+                               if level in cookie_value.lower()), None)
+    
+    # Check HTML content for security level indicators
+    security_patterns = [
+        (r'security\s*level[:\s]*([^<\s,]+)', 1),
+        (r'level[:\s]*([^<\s,]+)', 1),
+        (r'difficulty[:\s]*([^<\s,]+)', 1),
+        (r'protection[:\s]*([^<\s,]+)', 1),
+        (r'mode[:\s]*([^<\s,]+)', 1)
+    ]
+    
+    for pattern, group in security_patterns:
+        matches = re.finditer(pattern, html_lower, re.IGNORECASE)
+        for match in matches:
+            level = match.group(group).strip()
+            if level in ['low', 'medium', 'high', 'impossible', 'easy', 'hard', 'basic', 'advanced']:
+                return level
+    
+    # Check for form fields that might indicate security settings
+    form_security_patterns = [
+        r'<input[^>]*name[^>]*security[^>]*value[^>]*([^"\'>\s]+)',
+        r'<select[^>]*name[^>]*security.*?<option[^>]*selected[^>]*value[^>]*([^"\'>\s]+)',
+        r'<input[^>]*name[^>]*level[^>]*value[^>]*([^"\'>\s]+)'
+    ]
+    
+    for pattern in form_security_patterns:
+        matches = re.finditer(pattern, html_lower, re.IGNORECASE)
+        for match in matches:
+            level = match.group(1).strip()
+            if level in ['low', 'medium', 'high', 'impossible']:
+                return level
+    
+    return None
 
 def _resolve_action_url(action: str, base_url: Optional[str] = None) -> str:
     """Resolve form action to absolute URL if base_url provided"""

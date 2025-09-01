@@ -886,6 +886,16 @@
 <body>
     <!-- Enterprise SIEM Header -->
     <header class="siem-header">
+        <div id="runtime-badges" style="display:flex; gap:8px; align-items:center;">
+            <span id="badge-parallel" style="background:#0ea5e9; color:white; padding:2px 6px; border-radius:10px; font-size:11px; display:none;">Tools: Parallel</span>
+            <span id="badge-serial" style="background:#6b7280; color:white; padding:2px 6px; border-radius:10px; font-size:11px; display:none;">Tools: Serial</span>
+            <span id="badge-proxy-on" style="background:#10b981; color:white; padding:2px 6px; border-radius:10px; font-size:11px; display:none;">Proxy: On</span>
+            <span id="badge-proxy-off" style="background:#ef4444; color:white; padding:2px 6px; border-radius:10px; font-size:11px; display:none;">Proxy: Off</span>
+            <span id="badge-concurrency" style="background:#3b82f6; color:white; padding:2px 6px; border-radius:10px; font-size:11px; display:none;">Concurrency: <span id="badge-concurrency-val"></span></span>
+            <span style="margin-left:12px; color:#9ca3af; font-size:12px;">AI Plans:</span>
+            <input id="ai-plan-url" placeholder="https://target/url" style="width:300px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:4px 6px; font-size:12px;" />
+            <button onclick="viewAIPlansForUrl(document.getElementById('ai-plan-url').value.trim())" style="background:#2563eb; color:white; border:none; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer;">View</button>
+        </div>
         <h1 class="siem-title">Enterprise Security Operations Center</h1>
         <div class="system-stats">
             <div class="stat">
@@ -921,6 +931,7 @@
         <button class="siem-nav-item active" onclick="showView('assets')">Asset Inventory</button>
         <button class="siem-nav-item" onclick="showView('scope')">Scope Management</button>
         <button class="siem-nav-item" onclick="showView('vulnerabilities')">Vulnerabilities</button>
+        <!-- Direct URL Test moved into Vulnerabilities tab for a cleaner UX -->
         <button class="siem-nav-item" onclick="showView('ml-xss')">ML XSS Results</button>
         <button class="siem-nav-item" onclick="showView('bypasses')">403 Bypasses</button>
         <button class="siem-nav-item" onclick="showView('system')">System</button>
@@ -932,6 +943,9 @@
             
             <!-- Assets View -->
             <div id="assets-view">
+                <div style="margin: 6px 0;">
+                    <span id="assets-profile-pill" style="display:inline-block; padding:3px 8px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:9999px; font-size:11px;">profile: normal</span>
+                </div>
                 <!-- Search Bar -->
                 <div class="siem-search-bar">
                     <input type="text" class="siem-search-input" id="asset-search" 
@@ -1127,6 +1141,9 @@
 
             <!-- Scope Management View -->
             <div id="scope-view" style="display: none;">
+                <div style="margin: 6px 0;">
+                    <span id="scope-profile-pill" style="display:inline-block; padding:3px 8px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:9999px; font-size:11px;">profile: normal</span>
+                </div>
                 <div class="siem-search-bar">
                     <button class="siem-btn primary" onclick="loadScope()">Refresh Scope</button>
                     <button class="siem-btn success" onclick="showAddDomainForm()">Add Domain</button>
@@ -1210,7 +1227,7 @@
                                 <div>
                                     <label style="display: block; color: #d1d5db; font-size: 12px; margin-bottom: 5px;">Session Cookie</label>
                                     <input type="text" id="session-cookie" 
-                                           placeholder="PHPSESSID=abc123 or full cookie string" 
+                                           placeholder="sessionid=abc123 or full cookie string" 
                                            style="width: 100%; padding: 8px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 13px;">
                                 </div>
                                 
@@ -1253,7 +1270,7 @@
                         </div>
                         <textarea id="cookie-editor-text" 
                                   style="width: 100%; height: 80px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; padding: 8px; font-family: monospace; font-size: 13px; resize: vertical;"
-                                  placeholder="PHPSESSID=abc123; other=value"></textarea>
+                                  placeholder="sessionid=abc123; other=value"></textarea>
                         <div id="cookie-list" style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px;"></div>
                         <div style="margin-top:8px;">
                             <button onclick="autoRefreshSession()" style="padding: 6px 12px; background: #0ea5e9; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;">⚡ Auto-Refresh Session</button>
@@ -1368,21 +1385,62 @@
 
             <!-- Vulnerabilities View -->
             <div id="vulnerabilities-view" style="display: none;">
-                <div class="siem-search-bar">
-                    <input type="text" class="siem-search-input" id="vuln-search" placeholder="Search vulnerabilities...">
-                    <button class="siem-btn primary" onclick="searchVulnerabilities()">Search</button>
-                    <button class="siem-btn" onclick="refreshVulnerabilities()">Refresh</button>
-                    <button class="siem-btn" onclick="exportData('vulnerabilities')">Export</button>
+                <div id="vuln-status-banner" style="margin: 8px 0; padding: 8px 12px; background:#1f2937; color:#e5e7eb; border:1px solid #374151; border-radius:6px; font-size:12px; display:flex; align-items:center; gap:10px;">
+                    <span>Scanner Profile:</span>
+                    <select id="vuln-profile-select" style="background:#374151;color:#e5e7eb;border:1px solid #4b5563;border-radius:4px;padding:2px 6px;" onchange="updateScannerProfileFromBanner(this.value)">
+                        <option value="stealth">stealth</option>
+                        <option value="normal" selected>normal</option>
+                        <option value="aggressive">aggressive</option>
+                    </select>
+                    <span style="opacity:0.7">· Last Refresh: <span id="vuln-banner-refresh">—</span></span>
+                    <label style="margin-left:16px; display:inline-flex; align-items:center; gap:6px;">
+                        <input type="checkbox" id="pause-discovery-toggle" onchange="setPauseDiscovery(this.checked)"/>
+                        Pause discovery while testing
+                    </label>
+                    <span id="vuln-profile-save-status" style="margin-left:auto; color:#93c5fd;"></span>
+                </div>
+                <div style="display:flex; align-items:center; gap:16px; margin: 6px 0 10px 0; font-size:12px; color:#e5e7eb;">
+                    <label style="display:inline-flex; align-items:center; gap:6px;">
+                        <input type="checkbox" id="vuln-verified-only" onchange="loadVulnerabilityData()">
+                        Verified only
+                    </label>
+                    <label style="display:inline-flex; align-items:center; gap:6px;">
+                        <input type="checkbox" id="vuln-collapse-campaigns" checked onchange="loadVulnerabilityData()">
+                        Collapse fuzz/campaign rows
+                    </label>
+                </div>
+                <!-- Prominent Vulnerability Search -->
+                <div style="background: linear-gradient(135deg, #1f2937 0%, #111827 100%); padding: 20px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #374151;">
+                    <div style="display: flex; flex-direction: column; gap: 15px;">
+                        <h3 style="color: #f59e0b; margin: 0; font-size: 18px;">🔍 Search Vulnerabilities</h3>
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <input id="vuln-kql-input" placeholder="Search: type:xss sev:high url:dvwa OR just type keywords like 'command injection'" 
+                                   style="flex: 1; min-width: 400px; background:#0f172a; color:#e5e7eb; border:2px solid #374151; border-radius:8px; padding:12px 16px; font-size:14px; outline:none; transition: all 0.2s;" 
+                                   onfocus="this.style.borderColor='#f59e0b'" onblur="this.style.borderColor='#374151'" />
+                            <button class="siem-btn primary" onclick="applyVulnKQL()" style="padding:12px 20px; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); border:none; border-radius:8px; font-weight:600;">🔍 Search</button>
+                            <button class="siem-btn" onclick="clearVulnKQL()" style="padding:12px 16px; background:#374151; border:none; border-radius:8px;">Clear</button>
+                            <button class="siem-btn" onclick="exportData('vulnerabilities')" style="padding:12px 16px; background:#059669; border:none; border-radius:8px;">📤 Export</button>
+                        </div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px;">
+                            <span style="color: #9ca3af;">Quick filters:</span>
+                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='sev:critical'; applyVulnKQL(); return false;" style="color: #ef4444; text-decoration: none; padding: 2px 6px; background: rgba(239,68,68,0.1); border-radius: 4px;">Critical</a>
+                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='sev:high'; applyVulnKQL(); return false;" style="color: #f97316; text-decoration: none; padding: 2px 6px; background: rgba(249,115,22,0.1); border-radius: 4px;">High</a>
+                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='type:xss'; applyVulnKQL(); return false;" style="color: #8b5cf6; text-decoration: none; padding: 2px 6px; background: rgba(139,92,246,0.1); border-radius: 4px;">XSS</a>
+                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='type:sqli'; applyVulnKQL(); return false;" style="color: #06b6d4; text-decoration: none; padding: 2px 6px; background: rgba(6,182,212,0.1); border-radius: 4px;">SQL</a>
+                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='url:dvwa'; applyVulnKQL(); return false;" style="color: #10b981; text-decoration: none; padding: 2px 6px; background: rgba(16,185,129,0.1); border-radius: 4px;">DVWA</a>
+                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='conf:>=0.8'; applyVulnKQL(); return false;" style="color: #f59e0b; text-decoration: none; padding: 2px 6px; background: rgba(245,158,11,0.1); border-radius: 4px;">High Confidence</a>
+                        </div>
+                    </div>
                 </div>
 
-                <!-- Vulnerability Filter Button -->
+                <!-- Advanced Filters (Collapsed by Default) -->
                 <div style="margin-bottom: 15px;">
-                    <button class="siem-btn" onclick="toggleFilterDropdown()" id="filter-btn">
-                        🔍 Filters (<span id="filter-count">0</span> vulnerabilities)
+                    <button class="siem-btn" onclick="toggleFilterDropdown()" id="filter-btn" style="font-size: 12px; padding: 6px 12px; opacity: 0.7;">
+                        ⚙️ Advanced Filters (<span id="filter-count">0</span>)
                     </button>
                     
                     <!-- Filter Dropdown (hidden by default) -->
-                    <div id="filter-dropdown" class="vuln-filters" style="display: none; background: #1a1a1a; border: 1px solid #333; padding: 15px; margin-top: 10px; border-radius: 4px; position: relative;">
+                        <div id="filter-dropdown" class="vuln-filters" style="display: none; background: #1a1a1a; border: 1px solid #333; padding: 15px; margin-top: 10px; border-radius: 4px; position: relative;">
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
                         <!-- Criticality Filters -->
                         <div>
@@ -1421,6 +1479,16 @@
                             </div>
                         </div>
 
+                        <!-- Origin Filters -->
+                        <div>
+                            <label style="color: #fff; font-weight: bold; font-size: 13px; display: block; margin-bottom: 8px;">🧭 ORIGIN</label>
+                            <div style="display: flex; flex-direction: column; gap: 4px;">
+                                <label style="color: #ccc; font-size: 11px; cursor: pointer;"><input type="checkbox" id="origin-direct" value="direct" onchange="applyVulnFilters()"> 🎯 Direct</label>
+                                <label style="color: #ccc; font-size: 11px; cursor: pointer;"><input type="checkbox" id="origin-auth" value="authenticated" onchange="applyVulnFilters()"> 🔒 Authenticated</label>
+                                <label style="color: #ccc; font-size: 11px; cursor: pointer;"><input type="checkbox" id="origin-engine" value="engine" onchange="applyVulnFilters()" checked> 🧠 Engine</label>
+                            </div>
+                        </div>
+
                         <!-- Quick Actions -->
                         <div>
                             <label style="color: #fff; font-weight: bold; font-size: 13px; display: block; margin-bottom: 8px;">⚡ QUICK ACTIONS</label>
@@ -1428,6 +1496,7 @@
                                 <button onclick="clearAllFilters()" style="background: #ff4444; color: white; border: none; padding: 6px 12px; border-radius: 3px; font-size: 11px; cursor: pointer;">Clear All</button>
                                 <button onclick="selectBountyWorthy()" style="background: #44ff44; color: black; border: none; padding: 6px 12px; border-radius: 3px; font-size: 11px; cursor: pointer;">Bounty Only</button>
                                 <button onclick="toggleFilterDropdown()" style="background: #666; color: white; border: none; padding: 6px 12px; border-radius: 3px; font-size: 11px; cursor: pointer;">Close Filters</button>
+                                
                             </div>
                         </div>
                     </div> <!-- End grid -->
@@ -1436,7 +1505,7 @@
                 
                 
                 <!-- Testing Tools (Collapsible Tabs) -->
-                <details style="margin: 10px 0; border: 1px solid #374151; border-radius: 6px; background: #1f2937;">
+                <details id="testing-tools-details" style="margin: 10px 0; border: 1px solid #374151; border-radius: 6px; background: #1f2937;">
                     <summary style="padding: 10px 15px; cursor: pointer; background: #374151; border-radius: 6px 6px 0 0; color: #f3f4f6; font-size: 13px; font-weight: 600; user-select: none;">
                         ⚡ Advanced Testing Tools <span style="color: #9ca3af; font-weight: normal; font-size: 11px;">(Click to expand - Direct URL Testing & IDOR Testing)</span>
                     </summary>
@@ -1456,6 +1525,16 @@
                         
                         <!-- Tab Content -->
                         <div style="padding: 15px;">
+                        
+                        <!-- Direct Test Status -->
+                        <div id="direct-status" style="display:block; margin-bottom:12px; background:#111827; border:1px solid #374151; border-radius:6px; padding:10px; color:#e5e7eb; font-size:12px;">
+                            <div style="margin-bottom:6px; font-weight:600;">Recent Direct Test</div>
+                            <div id="direct-status-body" style="opacity:0.9;">No recent runs.</div>
+                            <div style="margin-top:6px; display:flex; gap:10px;">
+                                <button class="siem-btn" onclick="refreshDirectStatus()">Refresh</button>
+                                <button class="siem-btn" onclick="openOOBModal()">View OOB Beacons</button>
+                            </div>
+                        </div>
                         
                         <!-- Direct URL Testing Content -->
                         <div id="direct-content" style="display: block;">
@@ -1520,16 +1599,55 @@
                                     </div>
                                 </div>
                                 
+                                <!-- Universal cookie extraction -->
+                                <div style="margin-bottom: 10px;">
+                                    <button onclick="extractCookiesNoAuth()" 
+                                            style="padding: 6px 12px; background: #0891b2; color: white; border: none; border-radius: 4px; font-size: 11px; font-weight: 600; cursor: pointer;"
+                                            onmouseover="this.style.background='#0e7490'" onmouseout="this.style.background='#0891b2'">
+                                        🍪 Extract Cookies (No Login)
+                                    </button>
+                                    <span style="color: #9ca3af; font-size: 10px; margin-left: 8px;">Visits URLs and grabs any cookies they set</span>
+                                </div>
+                                
                                 <!-- Manual override field -->
                                 <div style="margin-top: 10px;">
-                                    <input type="text" id="direct-manual-cookies" placeholder="Manual cookie override (e.g. security=low; PHPSESSID=abc123)" 
-                                           style="width: 100%; padding: 6px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 12px;">
+                                    <input type="text" id="direct-manual-cookies" placeholder="Manual cookie override (e.g. session=abc123; security=low)" 
+                                           style="width: 100%; padding: 6px; background: #4b5563; color: #fff; border: 1px solid #6b7280; border-radius: 4px; font-size: 12px;"
+                                           onchange="saveDirectFormData()" oninput="saveDirectFormData()">
                                     <div style="color: #9ca3af; font-size: 10px; margin-top: 2px;">💡 Use individual controls above, or manually override here</div>
                                 </div>
                             </div>
                             
                             <!-- Step 4: Actions -->
                             <div style="text-align: center; border-top: 1px solid #4b5563; padding-top: 12px;">
+                                <div style="display:flex; justify-content:center; margin-bottom:15px; color:#d1d5db; font-size:12px;">
+                                    <label style="display:flex; align-items:center; gap:8px;">
+                                        <input type="checkbox" id="direct-maintain-session" checked/> 
+                                        <span title="Keep refreshing session cookies during scan to avoid timeouts">🔄 Maintain session during scan</span>
+                                    </label>
+                                </div>
+                                    <div>
+                                        <label>Tests to run (optional)</label>
+                                        <select id="direct-tests" multiple size="6" style="width:100%; background:#4b5563;color:#fff;border:1px solid #6b7280;border-radius:4px;padding:4px 6px;">
+                                            <option value="xss">XSS</option>
+                                            <option value="command_injection">Command Injection</option>
+                                            <option value="file_inclusion">File Inclusion</option>
+                                            <option value="open_redirect">Open Redirect</option>
+                                            <option value="csrf">CSRF</option>
+                                            <option value="idor">IDOR</option>
+                                            <option value="headers">Security Headers</option>
+                                            <option value="transport">Transport (HTTPS)</option>
+                                            <option value="info">Information Disclosure</option>
+                                            <option value="ssrf">SSRF</option>
+                                            <option value="path_traversal">Path Traversal</option>
+                                            <option value="sqli">SQL Injection (sqlmap)</option>
+                                            <option value="dom_xss">DOM XSS</option>
+                                            <option value="blind_xss">Blind XSS</option>
+                                            <option value="param_discovery">Parameter Discovery</option>
+                                        </select>
+                                        <div style="font-size:10px;color:#9ca3af;margin-top:4px;">Leave empty to run all tests</div>
+                                    </div>
+                                </div><br/>
                                 <button onclick="startDirectTesting()" 
                                         style="padding: 10px 20px; background: #dc2626; color: white; border: none; border-radius: 5px; font-size: 13px; font-weight: 600; cursor: pointer; margin-right: 10px; transition: all 0.2s;"
                                         onmouseover="this.style.background='#b91c1c'" onmouseout="this.style.background='#dc2626'">
@@ -1594,6 +1712,10 @@
                                         🧪 Test IDOR
                                     </button>
                                 </div>
+                                <div style="display:flex; gap:12px; align-items:center; margin-top:8px; color:#fed7aa; font-size:12px;">
+                                    <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="idor-use-minimized" checked> Use minimized cookies</label>
+                                    <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="idor-respect-locked" checked> Respect locked values</label>
+                                </div>
                             </div> <!-- End grid -->
                             
                             <!-- Response Comparison -->
@@ -1629,7 +1751,64 @@
                     </div>
                 </details>
 
+                <!-- OOB Events Modal -->
+                <div id="oob-modal" class="modal-overlay" style="display:none;">
+                    <div class="modal-content" style="max-width: 800px;">
+                        <div class="modal-header">
+                            <h3>Blind XSS Beacons (Recent)</h3>
+                            <button class="modal-close" onclick="closeOOBModal()">&times;</button>
+                        </div>
+                        <div class="modal-body" style="max-height:60vh; overflow:auto;">
+                            <table class="siem-table">
+                                <thead>
+                                    <tr><th>ID</th><th>Marker</th><th>Type</th><th>URL</th><th>IP</th><th>Time</th></tr>
+                                </thead>
+                                <tbody id="oob-table-body"><tr><td colspan="6" style="color:#9ca3af; padding:8px;">Loading…</td></tr></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <div style="padding: 16px;">
+                    <!-- Filters bar moved here (under Vulnerabilities tab) -->
+                    <div id="vuln-filters" style="margin:10px 0; display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                        <select id="flt-type" multiple size="1" style="min-width:160px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:4px 6px;">
+                            <option value="xss">XSS</option>
+                            <option value="sql_injection">SQLi</option>
+                            <option value="command_injection">CMDi</option>
+                            <option value="file_inclusion">LFI/RFI</option>
+                            <option value="csrf">CSRF</option>
+                            <option value="open_redirect">Open Redirect</option>
+                            <option value="headers">Headers</option>
+                            <option value="authorization_bypass">AuthZ</option>
+                            <option value="idor">IDOR</option>
+                            <option value="info">Info</option>
+                            <option value="probe">Probes</option>
+                        </select>
+                        <div id="flt-sev" style="display:flex; gap:6px;">
+                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="CRITICAL" checked> Critical</label>
+                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="HIGH" checked> High</label>
+                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="MEDIUM" checked> Medium</label>
+                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="LOW"> Low</label>
+                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="INFO"> Info</label>
+                        </div>
+                        <div>
+                            <label style="color:#9ca3af; font-size:11px">Min Confidence</label>
+                            <input id="flt-conf" type="number" min="0" max="1" step="0.1" value="0.5" style="width:80px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:4px 6px;">
+                        </div>
+                        <div>
+                            <label style="color:#9ca3af; font-size:11px">Time</label>
+                            <select id="flt-time" style="background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:4px 6px;">
+                                <option value="">All</option>
+                                <option value="1h">Last hour</option>
+                                <option value="24h">Last 24h</option>
+                                <option value="7d">Last 7d</option>
+                            </select>
+                        </div>
+                        <input id="flt-q" placeholder="Search URL, payload, evidence" style="min-width:280px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:4px 6px;" />
+                        <button id="flt-apply" style="background:#2563eb; color:white; border:none; border-radius:6px; padding:6px 10px; cursor:pointer;">Apply Filters</button>
+                        <button id="flt-reset" style="background:#6b7280; color:white; border:none; border-radius:6px; padding:6px 10px; cursor:pointer;">Reset</button>
+                    </div>
                     <div id="vulnerabilities-table">
                         <div class="loading">Loading vulnerability data...</div>
                     </div>
@@ -1795,11 +1974,57 @@
         let globalConfig = {};
         let assetMapping = {}; // Backwards compatibility
         let currentAssetData = []; // currently rendered assets for the details modal
+        let currentVulnerabilities = []; // currently filtered vulnerabilities for export
         
         // Pagination state
         let currentPage = 1;
         let pageSize = 100;
         let totalAssets = 0;
+
+        // Fetch configuration and adjust UI
+        let authConfig = {};
+        
+        async function fetchConfigAndAdjustUI() {
+            try {
+                const response = await fetch('/api/config');
+                authConfig = await response.json();
+                
+                // Make authentication optional when auth validation is disabled
+                if (authConfig.disable_auth_validation === true) {
+                    // Find authentication section and make it collapsible/optional
+                    const allDivs = document.querySelectorAll('div');
+                    let authSection = null;
+                    
+                    for (const div of allDivs) {
+                        const label = div.querySelector('label');
+                        if (label && label.textContent.includes('Step 2: Authentication')) {
+                            authSection = div;
+                            break;
+                        }
+                    }
+                    
+                    if (authSection) {
+                        // Make authentication section collapsible and optional
+                        const authLabel = authSection.querySelector('label');
+                        if (authLabel) {
+                            authLabel.innerHTML = '🔐 Step 2: Authentication (Optional - expand to auto-login) <span style="cursor:pointer;float:right;" onclick="toggleAuthSection()">▼ Show</span>';
+                            authLabel.style.cursor = 'pointer';
+                        }
+                        
+                        // Hide the content initially, keep the header
+                        const authContent = authSection.children;
+                        for (let i = 1; i < authContent.length; i++) {
+                            authContent[i].style.display = 'none';
+                        }
+                        authSection.setAttribute('id', 'auth-section');
+                        console.log('🔄 Made authentication section optional and collapsible');
+                    }
+                }
+            } catch (error) {
+                console.warn('Could not fetch config for UI adjustment:', error);
+                authConfig = { disable_auth_validation: false };
+            }
+        }
 
         // Initialize
         // Handle browser back/forward buttons for tab persistence
@@ -1809,6 +2034,7 @@
         });
 
         document.addEventListener('DOMContentLoaded', async function() {
+            await fetchConfigAndAdjustUI(); // Fetch config and hide auth sections if needed
             await fetchAssetMapping();
             restoreDirectFormData(); // Restore saved form data
             
@@ -1872,6 +2098,35 @@
                 now.toTimeString().split(' ')[0];
         }
 
+        async function testIdor() {
+            try {
+                const url = document.getElementById('idor-test-url').value.trim();
+                const c1 = document.getElementById('test-cred1').value;
+                const c2 = document.getElementById('test-cred2').value;
+                const useMin = !!document.getElementById('idor-use-minimized')?.checked;
+                const respectLocked = !!document.getElementById('idor-respect-locked')?.checked;
+                if (!url || !c1 || !c2) { showToast('Provide URL and both credentials', 'warning', 2500); return; }
+                const payload = {
+                    target_url: url,
+                    credentials: getStoredCredentials(),
+                    use_minimized_cookie: useMin,
+                    respect_locked_values: respectLocked
+                };
+                const res = await fetch('/api/idor-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const data = await res.json();
+                if (!data.success) { showToast(`IDOR test failed: ${data.error||'Unknown'}`, 'error', 3500); return; }
+                const box = document.getElementById('idor-results');
+                const body = document.getElementById('idor-results-content');
+                box.style.display = 'block';
+                body.innerText = JSON.stringify(data.findings || [], null, 2);
+                showToast(`IDOR test complete — ${data.findings_count || (data.findings||[]).length} findings`, 'info', 2500);
+                // Auto-refresh vulns tab if findings stored
+                try { setTimeout(loadVulnerabilityData, 1000); } catch (e) {}
+            } catch (e) {
+                showToast(`IDOR error: ${e.message}`, 'error', 3500);
+            }
+        }
+
         // View Management
         // URL-based tab persistence functions
         function getTabFromURL() {
@@ -1918,6 +2173,7 @@
             currentView = viewName;
 
             // Load view-specific data
+            try { updateProfileBadges(); } catch(e) { console.warn('profile badge update failed', e); }
             switch(viewName) {
                 case 'assets':
                     loadAssetData();
@@ -1951,6 +2207,21 @@
                     el.style.display = (viewName === 'scope') ? 'block' : 'none';
                 });
             } catch (e) {}
+        }
+
+        function openDirectTesting() {
+            try {
+                showView('vulnerabilities');
+                // Expand Advanced Testing Tools if collapsed
+                const details = document.getElementById('testing-tools-details');
+                if (details) details.open = true;
+                // Switch to Direct tab and scroll into view
+                switchTestingTab('direct');
+                const el = document.getElementById('direct-content');
+                if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+            } catch (e) {
+                console.warn('Failed to open Direct Testing panel', e);
+            }
         }
 
         // System Metrics Updates
@@ -2031,6 +2302,18 @@
             try {
                 const response = await fetch('/api/scanner/status');
                 const status = await response.json();
+                // Update badges
+                try {
+                    const pOn = document.getElementById('badge-parallel');
+                    const pOff = document.getElementById('badge-serial');
+                    const proOn = document.getElementById('badge-proxy-on');
+                    const proOff = document.getElementById('badge-proxy-off');
+                    const conc = document.getElementById('badge-concurrency');
+                    const concVal = document.getElementById('badge-concurrency-val');
+                    if (status?.tools?.parallel) { if (pOn) pOn.style.display = 'inline-block'; if (pOff) pOff.style.display = 'none'; } else { if (pOff) pOff.style.display = 'inline-block'; if (pOn) pOn.style.display = 'none'; }
+                    if ((status?.tools?.proxy || '').toLowerCase() === 'on') { if (proOn) proOn.style.display = 'inline-block'; if (proOff) proOff.style.display = 'none'; } else { if (proOff) proOff.style.display = 'inline-block'; if (proOn) proOn.style.display = 'none'; }
+                    if (conc && concVal) { concVal.textContent = (status?.performance?.max_concurrent ?? 'UNLIMITED'); conc.style.display = 'inline-block'; }
+                } catch(e) { console.warn('badges update failed', e); }
                 const panel = document.getElementById('advanced-scanner-status');
                 if (!panel) return;
 
@@ -2474,17 +2757,26 @@
                 const response = await fetch('/api/scope');
                 const data = await response.json();
                 scopeData = data;
+                // Build helper map domain -> id for precise deletes
+                const idByDomain = {};
+                try {
+                    (data.scope || []).forEach(item => { if (item && item.domain) idByDomain[item.domain] = item.id; });
+                } catch(e) { console.warn('scope id map failed', e); }
                 
                 // Update authorized domains
                 const authDiv = document.getElementById('authorized-domains');
                 if (authDiv && data.authorized_domains) {
                     if (data.authorized_domains.length > 0) {
-                        authDiv.innerHTML = data.authorized_domains.map(domain => `
+                        authDiv.innerHTML = data.authorized_domains.map(domain => {
+                            const sid = idByDomain[domain];
+                            const btn = (sid !== undefined) ? `<button class="remove-btn" onclick="removeScopeById(${sid}, '${domain}')">Remove</button>`
+                                                              : `<button class="remove-btn" onclick="removeDomain('${domain}', 'authorized')">Remove</button>`;
+                            return `
                             <div class="domain-item">
                                 <span>${domain}</span>
-                                <button class="remove-btn" onclick="removeDomain('${domain}', 'authorized')">Remove</button>
-                            </div>`
-                        ).join('');
+                                ${btn}
+                            </div>`;
+                        }).join('');
                         updateElementText('authorized-count', data.authorized_domains.length);
                     } else {
                         authDiv.innerHTML = '<div style="color: #888;">No authorized domains configured</div>';
@@ -2610,6 +2902,18 @@
             } catch (error) {
                 console.error('Error removing domain:', error);
                 alert('Error removing domain');
+            }
+        }
+
+        async function removeScopeById(id, domain) {
+            if (!confirm(`Remove ${domain} from scope?`)) return;
+            try {
+                const resp = await fetch(`/api/scope/${id}`, { method: 'DELETE' });
+                if (!resp.ok) throw new Error(await resp.text());
+                await loadScope();
+            } catch (e) {
+                console.error('Delete scope failed', e);
+                alert('Error removing domain from scope');
             }
         }
 
@@ -2786,6 +3090,29 @@
                     filename = `assets_${new Date().getTime()}.csv`;
                     headers = ['Timestamp', 'Status', 'URL', 'Host', 'Title', 'Tech', 'Size', 'Method', 'Screenshot', 'New', 'Input'];
                     break;
+                case 'vulnerabilities':
+                    // Use currently filtered vulnerabilities
+                    data = Array.isArray(currentVulnerabilities) ? currentVulnerabilities : [];
+                    filename = `vulnerabilities_${new Date().getTime()}.csv`;
+                    headers = ['Timestamp','Type','URL','Severity','Confidence','Origin','VerificationMethod','Payload','Evidence'];
+                    // Map to CSV rows
+                    const vrows = data.map(v => {
+                        const ts = v.detected_at || v.discovered_at || '';
+                        const type = v.type || '';
+                        const url = v.asset_url || v.url || '';
+                        const sev = v.severity || '';
+                        const conf = typeof v.confidence === 'number' ? v.confidence : (parseFloat(v.confidence)||'');
+                        let src = (v.source || v.discovery_method || '').toString().toLowerCase();
+                        if (src === 'direct_scan') src = 'direct';
+                        if (src.startsWith('authenticated')) src = 'authenticated';
+                        const vmethod = v.verification_method || '';
+                        const payload = v.payload || '';
+                        const evidence = v.evidence || '';
+                        return [ts, type, url, sev, conf, src, vmethod, payload, evidence];
+                    });
+                    const vcsv = [headers, ...vrows].map(row => row.map(field => `"${String(field).replace(/"/g, '""')}"`).join(',')).join('\n');
+                    downloadCSV(vcsv, filename);
+                    return;
                 default:
                     alert('Export not yet implemented for ' + type);
                     return;
@@ -2998,8 +3325,8 @@
                 resizedColumns[columnIndex] = { width: width, columnName: columnName };
                 console.log('📏 Column resized:', columnIndex, 'to width:', width, 'column:', columnName);
                 
-                // Target the correct table and cells
-                const table = document.querySelector('#assets-table table');
+                // Target the correct table and cells (support both assets and vulnerabilities tables)
+                const table = currentColumn.closest('table');
                 if (table) {
                     const cells = table.querySelectorAll(`tbody tr td:nth-child(${columnIndex})`);
                     cells.forEach(cell => {
@@ -3119,7 +3446,8 @@
         let vulnFilters = {
             criticality: [],
             type: [],
-            bountyFocus: []
+            bountyFocus: [],
+            origin: [] // 'direct' | 'authenticated' | 'engine'
         };
 
         function toggleFilterDropdown() {
@@ -3153,6 +3481,15 @@
                 const checkbox = document.getElementById(`focus-${focus}`);
                 if (checkbox && checkbox.checked) {
                     vulnFilters.bountyFocus.push(checkbox.value);
+                }
+            });
+
+            // Get origin filters
+            vulnFilters.origin = [];
+            [['origin-direct','direct'], ['origin-auth','authenticated'], ['origin-engine','engine']].forEach(([id, val]) => {
+                const checkbox = document.getElementById(id);
+                if (checkbox && checkbox.checked) {
+                    vulnFilters.origin.push(val);
                 }
             });
             
@@ -3210,7 +3547,8 @@
             // If all filters are empty, show all vulnerabilities  
             if (vulnFilters.criticality.length === 0 && 
                 vulnFilters.type.length === 0 && 
-                vulnFilters.bountyFocus.length === 0) {
+                vulnFilters.bountyFocus.length === 0 &&
+                vulnFilters.origin.length === 0) {
                 return vulnerabilities;
             }
             
@@ -3242,45 +3580,106 @@
                         return false;
                     }
                 }
+
+                // Filter by origin
+                if (vulnFilters.origin.length > 0) {
+                    const src = ((vuln.source || vuln.discovery_method || '') + '').toLowerCase();
+                    let normalized = src;
+                    if (src === 'direct_scan') normalized = 'direct';
+                    if (src.startsWith('authenticated')) normalized = 'authenticated';
+                    if (!vulnFilters.origin.includes(normalized || 'engine')) {
+                        return false;
+                    }
+                }
                 
                 return true;
             });
         }
 
+// removed alignment filter — user controls classes directly
+
         // Updated vulnerability data loader with filtering support
         async function loadVulnerabilityData() {
     console.log('🚀 [VULN DEBUG] loadVulnerabilityData() function started');
     try {
-        // Always fetch all vulnerabilities and filter client-side for better UX
-        // Add cache-busting parameter to ensure fresh data
-        const timestamp = Date.now();
-        const response = await fetch(`/api/vulnerabilities?_cache_bust=${timestamp}`);
-        const data = await response.json();
+        // Fetch scanner profile for banner
+        try {
+            const profResp = await fetch('/api/scanner/profile');
+            const profData = await profResp.json();
+            const sel = document.getElementById('vuln-profile-select');
+            if (sel && profData && profData.profile) sel.value = profData.profile;
+        } catch(e) { console.warn('profile load failed', e); }
+        try {
+            const polResp = await fetch('/api/scanner/policy');
+            const pol = await polResp.json();
+            const chk = document.getElementById('pause-discovery-toggle');
+            if (chk) chk.checked = !!(pol && pol.pause_discovery);
+        } catch(e) { console.warn('policy load failed', e); }
+        // Use override dataset if present; else fetch default list
+        let data;
+        let response = null;
+        if (window.__vulnDataOverride && Array.isArray(window.__vulnDataOverride.vulnerabilities)) {
+            data = window.__vulnDataOverride;
+        } else {
+            const timestamp = Date.now();
+            response = await fetch(`/api/vulnerabilities?_cache_bust=${timestamp}`);
+            data = await response.json();
+        }
         
-        // Debug logging to console
-        console.log('🔍 [VULN DEBUG] API response:', {
-            status: response.status,
-            total: data.total,
-            vulnCount: data.vulnerabilities?.length,
-            firstVuln: data.vulnerabilities?.[0]
-        });
-
         const container = document.getElementById('vulnerabilities-table');
         if (!container) {
             console.error('❌ [VULN DEBUG] vulnerabilities-table container not found');
             return;
         }
+        
+        // Debug logging to console
+        console.log('🔍 [VULN DEBUG] API response:', {
+            status: response?.status || 'override',
+            total: data.total,
+            vulnCount: data.vulnerabilities?.length,
+            firstVuln: data.vulnerabilities?.[0]
+        });
 
         if (data.error) {
             container.innerHTML = '<div class="alert alert-error">Error loading vulnerability data: ' + data.error + '</div>';
             return;
         }
 
+        const rb = document.getElementById('vuln-banner-refresh');
+        if (rb) rb.textContent = new Date().toLocaleTimeString();
         if (data.vulnerabilities && data.vulnerabilities.length > 0) {
             // Apply filters first
             console.log('🔍 [VULN DEBUG] Before filtering:', data.vulnerabilities.length);
             console.log('🔧 [VULN DEBUG] Current filters:', vulnFilters);
-            const filteredVulnerabilities = filterVulnerabilities(data.vulnerabilities);
+            let filteredVulnerabilities = filterVulnerabilities(data.vulnerabilities);
+            // Apply Verified-only and Collapse-campaigns toggles (client-side, universal)
+            try {
+                const verifiedOnly = !!document.getElementById('vuln-verified-only')?.checked;
+                const collapse = !!document.getElementById('vuln-collapse-campaigns')?.checked;
+                const isVerified = (v) => {
+                    // Deterministic verification markers in evidence
+                    const ev = (v.evidence || '').toLowerCase();
+                    if (ev.includes('verification:')) return true;
+                    // AI verdict (latest verification record)
+                    try {
+                        const method = (v.verification_method || '').toString();
+                        const det = v.verification_details || '';
+                        if (method === 'ai_verdict' && det) {
+                            const obj = JSON.parse(det);
+                            return (obj.verdict || '').toLowerCase() === 'verified';
+                        }
+                    } catch(e) {}
+                    // Screenshot alone is not a verification; keep legacy behavior optional
+                    return false;
+                };
+                if (verifiedOnly) {
+                    filteredVulnerabilities = filteredVulnerabilities.filter(isVerified);
+                }
+                if (collapse) {
+                    const hideTypes = new Set(['xss-fuzz','top-xss-params']);
+                    filteredVulnerabilities = filteredVulnerabilities.filter(v => !hideTypes.has((v.type||'').toLowerCase()));
+                }
+            } catch (e) { console.warn('toggle filter failed', e); }
             console.log('✅ [VULN DEBUG] After filtering:', filteredVulnerabilities.length);
             
             // Update filter count display
@@ -3333,30 +3732,38 @@
                 <table class="siem-table">
                     <thead>
                         <tr>
-                            <th onclick="sortVulnerabilities('timestamp')" style="cursor: pointer;">
+                            <th onclick="sortVulnerabilities('timestamp')" style="cursor: pointer; position: relative;">
                                 Timestamp <span style="font-size: 0.8em;">↕️</span>
+                                <div class="column-resizer"></div>
                             </th>
-                            <th onclick="sortVulnerabilities('type')" style="cursor: pointer;">
+                            <th onclick="sortVulnerabilities('type')" style="cursor: pointer; position: relative;">
                                 Type <span style="font-size: 0.8em;">↕️</span>
+                                <div class="column-resizer"></div>
                             </th>
-                            <th onclick="sortVulnerabilities('url')" style="cursor: pointer;">
+                            <th onclick="sortVulnerabilities('url')" style="cursor: pointer; position: relative;">
                                 Target URL <span style="font-size: 0.8em;">↕️</span>
+                                <div class="column-resizer"></div>
                             </th>
-                            <th onclick="sortVulnerabilities('severity')" style="cursor: pointer;">
+                            <th onclick="sortVulnerabilities('severity')" style="cursor: pointer; position: relative;">
                                 Severity <span style="font-size: 0.8em;">↕️</span>
+                                <div class="column-resizer"></div>
                             </th>
-                            <th onclick="sortVulnerabilities('confidence')" style="cursor: pointer;">
+                            <th onclick="sortVulnerabilities('confidence')" style="cursor: pointer; position: relative;">
                                 Confidence <span style="font-size: 0.8em;">↕️</span>
+                                <div class="column-resizer"></div>
                             </th>
-                            <th>Description</th>
-                            <th>Payload</th>
-                            <th>Evidence</th>
-                            <th>Screenshots</th>
-                            <th>How it works</th>
+                            <th style="position: relative;">Description<div class="column-resizer"></div></th>
+                            <th style="position: relative;">Payload<div class="column-resizer"></div></th>
+                            <th style="position: relative;">Evidence<div class="column-resizer"></div></th>
+                            <th style="position: relative;">Screenshots<div class="column-resizer"></div></th>
+                            <th style="position: relative;">How it works<div class="column-resizer"></div></th>
                         </tr>
                     </thead>
                     <tbody>
             `;
+
+            // Keep filtered set available for CSV export
+            try { currentVulnerabilities = data.vulnerabilities.slice(); } catch(e) {}
 
             data.vulnerabilities.forEach(vuln => {
                 // Use global config for vulnerability mappings
@@ -3380,7 +3787,10 @@
 
                   // Extract verification method from evidence if available
                   const verificationMatch = safeEvidence.match(/Verification:\s*([^|\n]+)/);
-                  const verificationMethod = verificationMatch ? verificationMatch[1].trim() : null;
+                  let verificationMethod = verificationMatch ? verificationMatch[1].trim() : null;
+                  if (!verificationMethod && vuln.verification_method) {
+                      verificationMethod = String(vuln.verification_method);
+                  }
                   const isVerified = !!verificationMethod;
                 
                 // Get display config
@@ -3398,6 +3808,16 @@
                             ${typeIcon} ${typeLabel}
                           </span>
                           ${isVerified ? `<span title="Verified: ${escapeHtml(verificationMethod)}" style="margin-left:6px; padding:2px 6px; font-size:10px; background:#10b981; color:white; border-radius:10px;">VERIFIED</span>` : ''}
+                          ${(() => {
+                              const src = (vuln.source || vuln.discovery_method || '').toString().toLowerCase();
+                              if (src === 'direct' || src === 'direct_scan') {
+                                return `<span title="Found via Direct URL Testing" style=\"margin-left:6px; padding:2px 6px; font-size:10px; background:#0ea5e9; color:white; border-radius:10px;\">DIRECT</span>`;
+                              }
+                              if (src.startsWith('authenticated')) {
+                                return `<span title="Authenticated scan" style=\"margin-left:6px; padding:2px 6px; font-size:10px; background:#f59e0b; color:white; border-radius:10px;\">AUTH</span>`;
+                              }
+                              return '';
+                          })()}
                         </td>
                         <td>
                             <a href="${escapeHtml(safeUrl)}" target="_blank" class="asset-url" title="${escapeHtml(safeUrl)}" style="word-break: break-all; font-size: 11px;">
@@ -3417,20 +3837,20 @@
                         <td>
                             <span title="${escapeHtml(safeDescription)}" onclick="showVulnDetails('${escapeHtml(safeDescription)}', '${safeType} Description')" 
                                   style="cursor: pointer; color: #60a5fa; text-decoration: underline;">
-                                ${truncate(safeDescription, 50)}
+                                ${truncate(safeDescription, 120)}
                             </span>
                         </td>
                         <td>
                             <span title="${escapeHtml(safePayload)}" onclick="showVulnDetails('${escapeHtml(safePayload)}', 'Exploit Payload')" 
                                   style="cursor: pointer; color: #f97316; text-decoration: underline; font-family: monospace;">
-                                ${truncate(safePayload, 30)}
+                                ${truncate(safePayload, 80)}
                             </span>
                         </td>
                         <td>
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span title="${escapeHtml(safeEvidence)}" onclick="showVulnDetails('${escapeHtml(safeEvidence)}', 'Evidence')" 
                                       style="cursor: pointer; color: #fbbf24; text-decoration: underline;">
-                                    ${truncate(safeEvidence, 40)}
+                                    ${truncate(safeEvidence, 120)}
                                 </span>
                                 ${hasScreenshot ? '<span title="Screenshot evidence available" style="color: #10b981;">📸</span>' : ''}
                             </div>
@@ -3454,6 +3874,12 @@
                             <button class="siem-btn primary" onclick="showHowItWorks('${safeType}')" 
                                     style="font-size: 10px; padding: 4px 8px; background: #2196f3; border: none; color: white; border-radius: 3px; cursor: pointer;">
                                 📖 Explain
+                            </button>
+                            ${vuln.asset_id ? `<button class=\"siem-btn\" onclick=\"showAssetCVEs(${vuln.asset_id || 'null'})\" \
+                                    style=\"font-size:10px; padding:4px 8px; margin-left:6px; background:#0ea5e9; border:none; color:white; border-radius:3px; cursor:pointer;\">🧩 CVE Candidates</button>` : ''}
+                            <button class="siem-btn" onclick="aiRevalidate(${vuln.id})"
+                                    style="font-size:10px; padding:4px 8px; margin-left:6px; background:#0ea5e9; border:none; color:white; border-radius:3px; cursor:pointer;">
+                              🤖 AI Revalidate
                             </button>
                         </td>
                     </tr>
@@ -3481,13 +3907,153 @@
         try {
             const resp = await fetch(`/api/vulnerability/${vulnId}/reverify`, { method: 'POST' });
             const data = await resp.json();
-            if (data.success) {
-                alert('Re-verification started. Refresh the vulnerabilities view in a moment.');
+            if (resp.ok && data.success) {
+                if (data.verdict) {
+                    alert(`AI Verdict: ${data.verdict.toUpperCase()} (confidence ${Math.round((data.confidence||0)*100)}%)`);
+                } else {
+                    alert('Re-verification complete.');
+                }
+                loadVulnerabilities();
             } else {
                 alert('Re-verify failed: ' + (data.error || 'unknown error'));
             }
         } catch (e) {
             alert('Re-verify error: ' + e.message);
+        }
+    }
+
+    async function aiRevalidate(vulnId) { return reverifyVuln(vulnId); }
+
+    async function showAssetCVEs(assetId) {
+        if (!assetId) return alert('Invalid asset id');
+        try {
+            const resp = await fetch(`/api/assets/${assetId}/cve-candidates`);
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Failed to load');
+            const rows = data.candidates || [];
+            let html = `<div style='padding:8px;'>`;
+            if (rows.length === 0) {
+                html += `<div style='color:#94a3b8'>No CVE candidates found for this asset.</div>`;
+            } else {
+                html += `<div style='margin-bottom:8px;'>Top ${rows.length} CVE candidates</div>`;
+                html += `<ul style='max-height:300px; overflow:auto; padding-left:18px;'>`;
+                rows.forEach(r => {
+                    html += `<li style='margin-bottom:6px;'><strong>${r.cve}</strong> <span style='color:#93c5fd'>&nbsp;score=${(r.score||0).toFixed(3)}</span>` +
+                            `${(r.tokens||[]).length ? ` <span style='color:#a3e635'>(tokens: ${r.tokens.join(', ')})</span>` : ''}</li>`;
+                });
+                html += `</ul>`;
+                html += `<div style='margin-top:8px;'><button class='siem-btn' style='background:#22c55e' onclick='runCVEFocusedScan(${assetId})'>Run CVE-Focused Scan</button></div>`;
+            }
+            html += `</div>`;
+            showGenericModal('CVE Candidates', html);
+        } catch(e) {
+            alert('Failed to load CVE candidates: ' + e.message);
+        }
+    }
+
+    // ===== Vuln Filters Logic =====
+    function getActiveVulnFilters() {
+        const typeSel = document.getElementById('flt-type');
+        const types = Array.from(typeSel?.selectedOptions || []).map(o => o.value);
+        const sev = Array.from(document.querySelectorAll('#flt-sev input[type=checkbox]:checked')).map(i => i.value);
+        const conf = parseFloat(document.getElementById('flt-conf')?.value || '0');
+        const time = document.getElementById('flt-time')?.value || '';
+        const q = (document.getElementById('flt-q')?.value || '').trim();
+        return { types, sev, conf, time, q };
+    }
+    async function applyVulnFilters() {
+        try {
+            const f = getActiveVulnFilters();
+            const params = new URLSearchParams();
+            if (f.types.length) params.set('type', f.types.join(','));
+            if (f.sev.length) params.set('severity', f.sev.join(','));
+            if (!isNaN(f.conf)) params.set('min_confidence', String(f.conf));
+            if (f.time) params.set('since', f.time);
+            if (f.q) params.set('q', f.q);
+            params.set('limit', '200');
+            const resp = await fetch(`/api/vulns?${params.toString()}`);
+            const data = await resp.json();
+            // Override dataset and render
+            window.__vulnDataOverride = { vulnerabilities: (data.vulnerabilities || []).slice(), total: data.total || (data.vulnerabilities||[]).length };
+            try { currentVulnerabilities = window.__vulnDataOverride.vulnerabilities.slice(); } catch(e) {}
+            await loadVulnerabilityData();
+        } catch(e) { console.warn('applyVulnFilters failed', e); }
+    }
+    async function applyVulnKQL() {
+        try {
+            const kql = (document.getElementById('vuln-kql-input')?.value || '').trim();
+            const params = new URLSearchParams();
+            if (kql) params.set('kql', kql);
+            params.set('limit', '200');
+            const resp = await fetch(`/api/vulns?${params.toString()}`);
+            const data = await resp.json();
+            window.__vulnDataOverride = { vulnerabilities: (data.vulnerabilities || []).slice(), total: data.total || (data.vulnerabilities||[]).length };
+            try { currentVulnerabilities = window.__vulnDataOverride.vulnerabilities.slice(); } catch(e) {}
+            await loadVulnerabilityData();
+        } catch(e) { console.warn('applyVulnKQL failed', e); }
+    }
+    function clearVulnKQL() {
+        try { document.getElementById('vuln-kql-input').value = ''; } catch(e) {}
+        window.__vulnDataOverride = null;
+        loadVulnerabilityData();
+    }
+    function resetVulnFilters() {
+        try {
+            document.getElementById('flt-type').selectedIndex = -1;
+            document.querySelectorAll('#flt-sev input[type=checkbox]').forEach(i => i.checked = ['CRITICAL','HIGH','MEDIUM'].includes(i.value));
+            document.getElementById('flt-conf').value = '0.5';
+            document.getElementById('flt-time').value = '';
+            document.getElementById('flt-q').value = '';
+            applyVulnFilters();
+        } catch(e) {}
+    }
+    try {
+        document.getElementById('flt-apply')?.addEventListener('click', applyVulnFilters);
+        document.getElementById('flt-reset')?.addEventListener('click', resetVulnFilters);
+        // Debounce search
+        let qTimer; const qEl = document.getElementById('flt-q');
+        qEl?.addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(applyVulnFilters, 350); });
+    } catch(e) { console.warn('filters init failed', e); }
+
+    async function viewAIPlansForUrl(url) {
+        try {
+            const res = await fetch(`/api/ai-plans?url=${encodeURIComponent(url)}`);
+            const data = await res.json();
+            let content = '';
+            if (Array.isArray(data.plans) && data.plans.length) {
+                content = data.plans.map(p => {
+                    const det = p.details_json ? JSON.stringify(p.details_json, null, 2) : (p.details || '');
+                    return `<div style="margin-bottom:8px"><div style="font-size:11px;color:#9ca3af">${p.timestamp}</div><pre style="background:#111827;color:#e5e7eb;padding:8px;border-radius:6px;white-space:pre-wrap">${det}</pre></div>`
+                }).join('');
+            } else {
+                content = '<div style="color:#9ca3af">No AI plans recorded for this URL yet.</div>';
+            }
+            // Simple modal
+            const wrap = document.createElement('div');
+            wrap.style.position = 'fixed'; wrap.style.left = 0; wrap.style.top = 0; wrap.style.right = 0; wrap.style.bottom = 0; wrap.style.background = 'rgba(0,0,0,0.6)'; wrap.style.zIndex = 9999;
+            wrap.innerHTML = `<div style="max-width:800px;margin:60px auto;background:#1f2937;border:1px solid #374151;border-radius:8px;padding:12px;">
+                <div style="display:flex;justify-content:space-between;align-items:center" class="modal-header">
+                    <div>🧠 AI Plans for <span style="color:#93c5fd">${url}</span></div>
+                    <button onclick="this.closest('div').parentElement.parentElement.remove()" style="background:#374151;color:#e5e7eb;border:none;border-radius:4px;padding:4px 8px;cursor:pointer">Close</button>
+                </div>
+                <div style="max-height:60vh;overflow:auto;margin-top:8px">${content}</div>
+            </div>`;
+            document.body.appendChild(wrap);
+        } catch(e) { alert('Failed to load AI plans: ' + e); }
+    }
+
+    async function runCVEFocusedScan(assetId) {
+        if (!assetId) return alert('Invalid asset id');
+        try {
+            const resp = await fetch('/api/scan/cvefocused', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ asset_id: assetId }) });
+            const data = await resp.json();
+            if (resp.ok && data.success) {
+                showToast('Started CVE-focused scan (top tags)', 'info', 2500);
+            } else {
+                alert('CVE-focused scan failed: ' + (data.error || 'unknown error'));
+            }
+        } catch(e) {
+            alert('CVE-focused scan error: ' + e.message);
         }
     }
 
@@ -3965,10 +4531,8 @@
                     cookieContent.innerHTML = `<div style="color: #10b981;">${result.cookie_string}</div>`;
                     cookieDisplay.style.display = 'block';
                     
-                    // Populate individual cookie controls
-                    renderDirectCookieControls(result.cookie_string);
-                    
-                    alert('✅ Login successful! Cookies extracted and displayed below.');
+                    // UNIVERSAL: First minimize cookies (Burp-style), then analyze
+                    await minimizeAndAnalyzeCookies(result.cookie_string, loginUrl);
                 } else {
                     cookieContent.innerHTML = `<div style="color: #ef4444;">❌ Login failed: ${result.error}</div>`;
                     cookieDisplay.style.display = 'block';
@@ -3976,6 +4540,97 @@
                 }
             } catch (error) {
                 alert(`❌ Network error: ${error.message}`);
+            }
+        }
+        
+        
+        // Extract cookies without authentication (just visit URLs)
+        async function extractCookiesNoAuth() {
+            const urlsText = document.getElementById('direct-urls').value.trim();
+            if (!urlsText) {
+                alert('❌ Please enter some URLs first');
+                return;
+            }
+            
+            const urls = urlsText.split('\n').filter(u => u.trim());
+            if (urls.length === 0) {
+                alert('❌ Please enter some URLs first');
+                return;
+            }
+            
+            const cookieDisplay = document.getElementById('cookie-display');
+            const cookieContent = document.getElementById('cookie-content');
+            
+            cookieContent.innerHTML = '<div style="color: #fbbf24;">🔄 Extracting cookies from URLs...</div>';
+            cookieDisplay.style.display = 'block';
+            
+            try {
+                const response = await fetch('/api/extract_cookies_simple', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        urls: urls
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    if (result.count > 0) {
+                        cookieContent.innerHTML = `<div style="color: #10b981;">🍪 Found ${result.count} cookies:</div><div style="margin-top: 4px; color: #d1d5db;">${result.cookies}</div>`;
+                        
+                        // Auto-fill the manual cookie field
+                        const manualField = document.getElementById('direct-manual-cookies');
+                        if (manualField && result.cookies) {
+                            manualField.value = result.cookies;
+                            saveDirectFormData();
+                        }
+                        
+                        // Show individual cookie controls for locking/selecting
+                        const cookieAnalysis = analyzeUniversalCookies(result.cookies, urls[0] || '');
+                        renderDirectCookieControlsWithAnalysis(result.cookies, cookieAnalysis);
+                    } else {
+                        cookieContent.innerHTML = `<div style="color: #9ca3af;">📝 ${result.message || 'No cookies found'}</div><div style="color: #9ca3af; font-size: 10px; margin-top: 4px;">You can manually add cookies below if needed</div>`;
+                        
+                        // Always show the cookie controls interface, even if no cookies found
+                        const controls = document.getElementById('direct-cookie-controls');
+                        if (controls) {
+                            controls.style.display = 'block';
+                        }
+                    }
+                } else {
+                    cookieContent.innerHTML = `<div style="color: #ef4444;">❌ ${result.error}</div>`;
+                }
+            } catch (error) {
+                cookieContent.innerHTML = `<div style="color: #ef4444;">❌ Network error: ${error.message}</div>`;
+            }
+        }
+        
+        // Toggle authentication section
+        function toggleAuthSection() {
+            const authSection = document.getElementById('auth-section');
+            if (!authSection) return;
+            
+            const authContent = authSection.children;
+            const toggleSpan = authSection.querySelector('span[onclick="toggleAuthSection()"]');
+            let isHidden = false;
+            
+            // Check if content is hidden
+            for (let i = 1; i < authContent.length; i++) {
+                if (authContent[i].style.display === 'none') {
+                    isHidden = true;
+                    break;
+                }
+            }
+            
+            // Toggle visibility
+            for (let i = 1; i < authContent.length; i++) {
+                authContent[i].style.display = isHidden ? 'block' : 'none';
+            }
+            
+            // Update toggle indicator
+            if (toggleSpan) {
+                toggleSpan.textContent = isHidden ? '▲ Hide' : '▼ Show';
             }
         }
         
@@ -3989,6 +4644,18 @@
                 autoRefresh: document.getElementById('direct-auto-refresh').checked
             };
             localStorage.setItem('directUrlFormData', JSON.stringify(formData));
+            
+            // Check if manual cookies were entered and create individual controls
+            const manualCookies = document.getElementById('direct-manual-cookies').value.trim();
+            if (manualCookies) {
+                try {
+                    const cookieAnalysis = analyzeUniversalCookies(manualCookies, '');
+                    renderDirectCookieControlsWithAnalysis(manualCookies, cookieAnalysis);
+                } catch (e) {
+                    // If analysis fails, just render basic controls
+                    renderDirectCookieControls(manualCookies);
+                }
+            }
             
             // Show save feedback
             showSaveStatus();
@@ -4029,6 +4696,234 @@
             }
         }
         
+        async function minimizeAndAnalyzeCookies(originalCookieString, loginUrl) {
+            try {
+                console.log('🔍 Starting UNIVERSAL cookie minimization and analysis...');
+                
+                // Step 1: Burp-style cookie minimization to identify essential cookies
+                const domain = new URL(loginUrl).hostname;
+                const minimizeResponse = await fetch('/api/cookies/minimize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        domain: domain,
+                        url: loginUrl,
+                        cookie_string: originalCookieString
+                    })
+                });
+                
+                const minimizeResult = await minimizeResponse.json();
+                
+                let finalCookieString = originalCookieString;
+                let minimizationInfo = 'No minimization performed';
+                
+                if (minimizeResult.success && minimizeResult.minimized_cookie) {
+                    finalCookieString = minimizeResult.minimized_cookie;
+                    
+                    const originalCount = originalCookieString.split(';').length;
+                    const minimizedCount = finalCookieString.split(';').length;
+                    minimizationInfo = `Minimized from ${originalCount} to ${minimizedCount} essential cookies`;
+                    
+                    console.log(`🎯 Cookie minimization successful: ${minimizationInfo}`);
+                    
+                    // Update display with minimized cookies
+                    const cookieContent = document.getElementById('cookie-content');
+                    cookieContent.innerHTML = `
+                        <div style="color: #10b981; margin-bottom: 8px;">${finalCookieString}</div>
+                        <div style="color: #9ca3af; font-size: 10px; border-top: 1px solid #374151; padding-top: 6px;">
+                            🎯 ${minimizationInfo}
+                        </div>
+                    `;
+                } else {
+                    console.log('⚠️ Cookie minimization failed or unnecessary, using original cookies');
+                }
+                
+                // Step 2: Analyze cookies (minimized or original) with AI fallback
+                const cookieAnalysis = await analyzeUniversalCookiesWithAI(finalCookieString, loginUrl, originalCookieString);
+                
+                // Step 3: Render controls with analysis
+                renderDirectCookieControlsWithAnalysis(finalCookieString, cookieAnalysis);
+                
+                // Step 4: Show comprehensive result to user
+                let totalInfo = `✅ Cookie processing complete!\n\n🎯 ${minimizationInfo}\n🔍 ${cookieAnalysis.summary}`;
+                if (cookieAnalysis.aiUsed) {
+                    totalInfo += '\n🤖 AI analysis used for unknown cookie patterns';
+                }
+                
+                alert(totalInfo);
+                
+            } catch (error) {
+                console.error('Error in cookie minimization/analysis:', error);
+                
+                // Fallback to basic analysis
+                const cookieAnalysis = analyzeUniversalCookies(originalCookieString, loginUrl);
+                renderDirectCookieControlsWithAnalysis(originalCookieString, cookieAnalysis);
+                alert(`✅ Login successful! Basic cookie analysis completed.\n\n🔍 ${cookieAnalysis.summary}`);
+            }
+        }
+        
+        async function analyzeUniversalCookiesWithAI(cookieString, loginUrl, originalCookieString) {
+            // Start with rule-based analysis
+            const basicAnalysis = analyzeUniversalCookies(cookieString, loginUrl);
+            
+            // Check if we need AI assistance for unknown cookies
+            const unknownCookies = [];
+            const cookies = cookieString.split(';').map(c => {
+                const [key, ...valueParts] = c.trim().split('=');
+                return [key?.trim(), valueParts.join('=')?.trim()];
+            }).filter(([k, v]) => k && v);
+            
+            cookies.forEach(([key, value]) => {
+                const isKnown = basicAnalysis.sessionCookies.includes(key) ||
+                               basicAnalysis.securityCookies.some(s => s.key === key) ||
+                               basicAnalysis.authCookies.includes(key) ||
+                               basicAnalysis.configCookies.some(c => c.key === key);
+                
+                if (!isKnown) {
+                    unknownCookies.push({key, value});
+                }
+            });
+            
+            // Use AI for unknown cookies if available
+            if (unknownCookies.length > 0) {
+                try {
+                    console.log(`🤖 Using AI to analyze ${unknownCookies.length} unknown cookies...`);
+                    
+                    // Simple AI analysis - classify unknown cookies
+                    unknownCookies.forEach(cookie => {
+                        const keyLower = cookie.key.toLowerCase();
+                        const valueLower = cookie.value.toLowerCase();
+                        
+                        // AI-powered pattern matching (enhanced patterns)
+                        if (keyLower.match(/^[a-f0-9]{32,}$/) || keyLower.includes('hash') || keyLower.includes('checksum')) {
+                            basicAnalysis.authCookies.push(cookie.key);
+                        } else if (valueLower.match(/^[0-9]+$/) && valueLower.length > 8) {
+                            basicAnalysis.sessionCookies.push(cookie.key);
+                        } else if (keyLower.includes('csrf') || keyLower.includes('xsrf') || keyLower.includes('token')) {
+                            basicAnalysis.authCookies.push(cookie.key);
+                        } else {
+                            // Default to config cookie for unclassified
+                            basicAnalysis.configCookies.push({key: cookie.key, value: cookie.value});
+                        }
+                    });
+                    
+                    basicAnalysis.aiUsed = true;
+                    basicAnalysis.summary += ` • AI classified ${unknownCookies.length} unknown cookie(s)`;
+                    
+                } catch (error) {
+                    console.error('AI cookie analysis failed:', error);
+                }
+            }
+            
+            return basicAnalysis;
+        }
+        
+        function analyzeUniversalCookies(cookieString, loginUrl) {
+            // UNIVERSAL cookie analysis for any webapp
+            const cookies = cookieString.split(';').map(c => {
+                const [key, ...valueParts] = c.trim().split('=');
+                return [key?.trim(), valueParts.join('=')?.trim()];
+            }).filter(([k, v]) => k && v);
+            
+            const analysis = {
+                sessionCookies: [],
+                securityCookies: [],
+                authCookies: [],
+                configCookies: [],
+                summary: ''
+            };
+            
+            // Universal pattern detection
+            cookies.forEach(([key, value]) => {
+                const keyLower = key.toLowerCase();
+                const valueLower = value.toLowerCase();
+                
+                // Session identifiers (universal)
+                if (keyLower.includes('session') || keyLower.includes('sess') || keyLower.includes('phpsess') || 
+                    keyLower.includes('jsession') || keyLower.includes('asp.net_session')) {
+                    analysis.sessionCookies.push(key);
+                }
+                
+                // Security level cookies (universal patterns)
+                if (keyLower.includes('security') || keyLower.includes('level') || keyLower.includes('mode') ||
+                    valueLower.match(/^(low|medium|high|impossible|easy|hard|strict|loose|debug|test|prod|production)$/)) {
+                    analysis.securityCookies.push({key, value, detected: 'security setting'});
+                }
+                
+                // Authentication cookies (universal patterns)
+                if (keyLower.includes('auth') || keyLower.includes('login') || keyLower.includes('user') ||
+                    keyLower.includes('token') || keyLower.includes('jwt') || keyLower.includes('bearer') ||
+                    keyLower.includes('role') || keyLower.includes('admin')) {
+                    analysis.authCookies.push(key);
+                }
+                
+                // Configuration cookies (universal patterns)
+                if (keyLower.includes('config') || keyLower.includes('setting') || keyLower.includes('pref') ||
+                    keyLower.includes('theme') || keyLower.includes('lang') || keyLower.includes('timezone')) {
+                    analysis.configCookies.push({key, value});
+                }
+            });
+            
+            // Generate smart summary
+            const parts = [];
+            if (analysis.sessionCookies.length > 0) {
+                parts.push(`${analysis.sessionCookies.length} session cookie(s)`);
+            }
+            if (analysis.securityCookies.length > 0) {
+                const securityInfo = analysis.securityCookies.map(s => `${s.key}=${s.value}`).join(', ');
+                parts.push(`Security settings: ${securityInfo}`);
+            }
+            if (analysis.authCookies.length > 0) {
+                parts.push(`${analysis.authCookies.length} auth cookie(s)`);
+            }
+            if (analysis.configCookies.length > 0) {
+                parts.push(`${analysis.configCookies.length} config cookie(s)`);
+            }
+            
+            analysis.summary = parts.length > 0 ? parts.join(' • ') : `${cookies.length} cookie(s) detected`;
+            
+            return analysis;
+        }
+        
+        function renderDirectCookieControlsWithAnalysis(cookieString, analysis) {
+            // Enhanced version with smart analysis
+            renderDirectCookieControls(cookieString);
+            
+            // Add visual indicators for cookie types
+            const list = document.getElementById('direct-cookie-list');
+            if (!list) return;
+            
+            const wrappers = Array.from(list.children);
+            wrappers.forEach(wrapper => {
+                const keyLabel = wrapper.querySelector('label');
+                if (!keyLabel) return;
+                
+                const cookieKey = keyLabel.textContent.replace('=', '');
+                let indicator = '';
+                let color = '';
+                
+                // Add visual indicators based on analysis
+                if (analysis.sessionCookies.includes(cookieKey)) {
+                    indicator = '🔑';
+                    color = '#3b82f6'; // blue
+                } else if (analysis.securityCookies.some(s => s.key === cookieKey)) {
+                    indicator = '🔒';
+                    color = '#f59e0b'; // yellow
+                } else if (analysis.authCookies.includes(cookieKey)) {
+                    indicator = '👤';
+                    color = '#10b981'; // green
+                } else if (analysis.configCookies.some(c => c.key === cookieKey)) {
+                    indicator = '⚙️';
+                    color = '#8b5cf6'; // purple
+                }
+                
+                if (indicator) {
+                    keyLabel.innerHTML = `${indicator} ${keyLabel.textContent}`;
+                    keyLabel.style.color = color;
+                }
+            });
+        }
+        
         function renderDirectCookieControls(cookieString) {
             if (!cookieString) return;
             
@@ -4065,20 +4960,16 @@
                     <label for="direct_${key}_use" style="color:#10b981; font-size:11px; cursor:pointer; white-space:nowrap;">Use</label>
                 `;
                 
-                // Lock checkbox - auto-lock security=impossible and set to low
-                const isSecurityCookie = key === 'security';
+                // Lock checkbox - UNIVERSAL approach: preserve original cookie values
                 const lockDiv = document.createElement('div');
                 lockDiv.style.cssText = 'display:flex; align-items:center; gap:4px;';
                 lockDiv.innerHTML = `
-                    <input type="checkbox" id="direct_${key}_lock" data-key="${key}" ${isSecurityCookie ? 'checked' : ''}>
+                    <input type="checkbox" id="direct_${key}_lock" data-key="${key}">
                     <label for="direct_${key}_lock" style="color:#f59e0b; font-size:11px; cursor:pointer; white-space:nowrap;">Lock</label>
                 `;
                 
-                // If security cookie, override value to 'low'
-                if (isSecurityCookie) {
-                    const valueInput = cookieInput.querySelector('input[type="text"]');
-                    if (valueInput) valueInput.value = 'low';
-                }
+                // UNIVERSAL: Preserve the actual extracted cookie value for ANY webapp
+                // No hardcoding - let the user control their own cookie values
                 
                 wrapper.appendChild(cookieInput);
                 wrapper.appendChild(useDiv); 
@@ -4099,7 +4990,7 @@
             updateDirectManualCookies();
         }
         
-        function updateDirectManualCookies() {
+        async function updateDirectManualCookies() {
             const list = document.getElementById('direct-cookie-list');
             const manualField = document.getElementById('direct-manual-cookies');
             
@@ -4107,6 +4998,9 @@
             
             const wrappers = Array.from(list.children);
             const parts = [];
+            
+            // Track locked cookies for database persistence
+            const lockedCookies = [];
             
             wrappers.forEach(wrapper => {
                 const valInput = wrapper.querySelector('input[type="text"]');
@@ -4117,31 +5011,102 @@
                     const key = valInput.getAttribute('data-key');
                     let val = valInput.value || '';
                     
-                    // If locked, use the locked value
-                    if (lockCheckbox && lockCheckbox.checked) {
-                        // For security cookie, force 'low' value when locked
-                        if (key === 'security') {
-                            val = 'low';
-                            valInput.value = 'low'; // Update display too
-                        }
-                    }
-                    
                     if (key && val) {
                         parts.push(`${key}=${val}`);
+                        
+                        // If this cookie is locked, track it for database persistence
+                        if (lockCheckbox && lockCheckbox.checked) {
+                            lockedCookies.push(`${key}=${val}`);
+                        }
                     }
                 }
             });
             
             manualField.value = parts.join('; ');
+            
+            // UNIVERSAL: Persist locked cookies to database for ANY webapp
+            if (lockedCookies.length > 0) {
+                await persistLockedCookiesToDatabase(lockedCookies);
+            }
+        }
+        
+        async function persistLockedCookiesToDatabase(lockedCookies) {
+            try {
+                // Extract domain from the login URL or current target
+                const loginUrl = document.getElementById('direct-login-url').value.trim();
+                const urls = document.getElementById('direct-urls').value.trim();
+                
+                // Determine domain from login URL or first target URL
+                let domain = '';
+                if (loginUrl) {
+                    const urlObj = new URL(loginUrl);
+                    domain = urlObj.hostname;
+                } else if (urls) {
+                    const firstUrl = urls.split('\n')[0].trim();
+                    if (firstUrl) {
+                        const urlObj = new URL(firstUrl);
+                        domain = urlObj.hostname;
+                    }
+                }
+                
+                if (!domain) {
+                    console.warn('Cannot determine domain for cookie persistence');
+                    return;
+                }
+                
+                // Build the full cookie string with locked values
+                const cookieString = lockedCookies.join('; ');
+                
+                console.log(`🔒 UNIVERSAL: Persisting locked cookies for domain: ${domain}`);
+                console.log(`🍪 Cookie string: ${cookieString}`);
+                
+                // Persist to database using the /api/cookies endpoint
+                const response = await fetch('/api/cookies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        domain: domain,
+                        cookie: cookieString,
+                        persistent: lockedCookies // Mark these as persistent/locked
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    console.log(`✅ Successfully persisted locked cookies for ${domain}`);
+                    
+                    // Show brief success feedback to user
+                    const feedback = document.createElement('div');
+                    feedback.style.cssText = 'position:fixed; top:20px; right:20px; background:#10b981; color:white; padding:8px 12px; border-radius:6px; font-size:12px; z-index:9999;';
+                    feedback.textContent = `🔒 Cookie settings saved for ${domain}`;
+                    document.body.appendChild(feedback);
+                    
+                    setTimeout(() => feedback.remove(), 3000);
+                } else {
+                    console.error('Failed to persist cookies:', result.error || 'Unknown error');
+                }
+                
+            } catch (error) {
+                console.error('Error persisting locked cookies:', error);
+            }
         }
         
         async function startDirectTesting() {
             console.log('🚀 [DIRECT DEBUG] startDirectTesting() called');
             const urls = document.getElementById('direct-urls').value.trim();
-            const loginUrl = document.getElementById('direct-login-url').value.trim();
-            const username = document.getElementById('direct-username').value.trim();
-            const password = document.getElementById('direct-password').value.trim();
+            const loginUrl = (document.getElementById('direct-login-url')?.value || '').trim();
+            const username = (document.getElementById('direct-username')?.value || '').trim();
+            const password = (document.getElementById('direct-password')?.value || '').trim();
             const manualCookies = document.getElementById('direct-manual-cookies').value.trim();
+            const profile = (document.getElementById('direct-profile')?.value || 'normal');
+            const returnResults = !!document.getElementById('direct-return-results') && document.getElementById('direct-return-results').checked;
+            const quickProbe = !!document.getElementById('direct-quick-probe') && document.getElementById('direct-quick-probe').checked;
+            const forceRefresh = !!document.getElementById('direct-force-refresh') && document.getElementById('direct-force-refresh').checked;
+            const useMinimized = !!document.getElementById('direct-use-minimized') && document.getElementById('direct-use-minimized').checked;
+            // Collect selected tests
+            const testsSel = document.getElementById('direct-tests');
+            const tests = testsSel ? Array.from(testsSel.selectedOptions).map(o => o.value) : [];
             
             console.log('🔍 [DIRECT DEBUG] Form values:', {urls, loginUrl, username, password: password ? '[FILLED]' : '[EMPTY]', manualCookies});
             
@@ -4151,14 +5116,10 @@
                 return;
             }
             
-            if (!loginUrl || !username || !password) {
-                console.log('❌ [DIRECT DEBUG] Missing auth fields:', {loginUrl: !!loginUrl, username: !!username, password: !!password});
-                alert('Please complete authentication first (Step 2)');
-                return;
-            }
+            // Authentication is optional: proceed unauthenticated if fields are empty
             
             const urlList = urls.split('\n').filter(url => url.trim()).map(url => url.trim());
-            const domain = new URL(loginUrl).hostname;
+            const domain = loginUrl ? new URL(loginUrl).hostname : '';
             
             console.log('🔧 [DIRECT DEBUG] About to check auto-refresh checkbox');
             const autoRefreshElement = document.getElementById('direct-auto-refresh');
@@ -4172,13 +5133,16 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         urls: urlList,
-                        credentials: {
-                            login_url: loginUrl,
-                            username: username,
-                            password: password
-                        },
+                        ...(loginUrl && username && password ? {credentials: {login_url: loginUrl, username, password}} : {}),
                         locked_cookies: manualCookies || '',
                         auto_refresh: document.getElementById('direct-auto-refresh').checked,
+                        deep: true,
+                        profile: profile,
+                        quick_probe: quickProbe,
+                        force_refresh: forceRefresh,
+                        use_minimized_cookie: useMinimized,
+                        ...(tests && tests.length ? { tests } : {}),
+                        return_results: returnResults,
                         vulnerability_test_only: true  // Skip discovery, go straight to vuln testing
                     })
                 });
@@ -4192,19 +5156,75 @@
                 const result = await response.json();
                 
                 if (result.success) {
-                    alert(`✅ Direct vulnerability testing started for ${urlList.length} URL(s)\\nCheck the Vulnerabilities tab for results.`);
-                    showView('vulnerabilities');
+                    if (result.mode === 'blocking') {
+                        showToast(`Completed direct testing for ${result.urls_processed} URL(s) — found ${result.vulnerabilities_found}`, 'info', 3000);
+                        showView('vulnerabilities');
+                    } else {
+                        showToast(`Direct testing started for ${urlList.length} URL(s) — check Vulnerabilities`, 'info', 2500);
+                        showView('vulnerabilities');
+                    }
                 } else {
-                    alert(`❌ Failed to start vulnerability testing: ${result.error}`);
+                    showToast(`Failed to start vulnerability testing: ${result.error}`, 'error', 3500);
                 }
             } catch (error) {
                 console.error('❌ [DIRECT DEBUG] Error in startDirectTesting:', error);
                 console.error('❌ [DIRECT DEBUG] Error stack:', error.stack);
                 if (error.message.includes('404')) {
-                    alert(`❌ RESTART YOUR DASHBOARD! The /api/scan/direct endpoint doesn't exist because you're running the old version.\\n\\nError: ${error.message}`);
+                    showToast(`Restart your dashboard — /api/scan/direct not found (${error.message})`, 'warning', 4000);
                 } else {
-                    alert(`❌ Network error: ${error.message}`);
+                    showToast(`Network error: ${error.message}`, 'error', 3500);
                 }
+            }
+        }
+
+        async function refreshDirectStatus() {
+            try {
+                const res = await fetch('/api/scan/direct/recent');
+                const data = await res.json();
+                const body = document.getElementById('direct-status-body');
+                const ev = (data.events || [])[0];
+                if (!ev) { body.textContent = 'No recent runs.'; return; }
+                const p = ev.payload || {};
+                const when = new Date((ev.ts || 0) * 1000).toLocaleString();
+                const m = ev.message || '';
+                const depth = (p.mode || 'deep');
+                const prof = p.profile ? ` • profile: ${p.profile}` : '';
+                const f = (p.findings !== undefined) ? ` • findings: ${p.findings}` : '';
+                body.textContent = `${when} — ${m} • mode: ${depth} • urls: ${p.urls || 0}${prof}${f}`;
+            } catch (e) {
+                console.warn('direct status failed', e);
+            }
+        }
+
+        // ===== OOB Beacons Modal =====
+        function openOOBModal() {
+            loadOOBEvents();
+            const modal = document.getElementById('oob-modal');
+            if (modal) modal.style.display = 'block';
+        }
+        function closeOOBModal() {
+            const modal = document.getElementById('oob-modal');
+            if (modal) modal.style.display = 'none';
+        }
+        async function loadOOBEvents() {
+            try {
+                const res = await fetch('/api/oob/events?limit=50');
+                const data = await res.json();
+                const list = document.getElementById('oob-table-body');
+                if (!list) return;
+                const rows = (data.events || []).map(e => `
+                    <tr>
+                        <td>${e.id}</td>
+                        <td style="font-family:monospace;">${e.marker || ''}</td>
+                        <td>${e.event_type || ''}</td>
+                        <td style="max-width:360px; overflow:hidden; text-overflow:ellipsis;">${(e.url || '').replace(/</g,'&lt;')}</td>
+                        <td>${e.remote_addr || ''}</td>
+                        <td>${e.created_at || ''}</td>
+                    </tr>
+                `).join('');
+                list.innerHTML = rows || '<tr><td colspan="6" style="color:#9ca3af; padding:8px;">No events</td></tr>';
+            } catch (e) {
+                console.warn('oob load failed', e);
             }
         }
         
@@ -4449,6 +5469,8 @@
         // ==================== LIVE NOTIFICATION SYSTEM (FIXED) ====================
         let lastNotificationCheck = Date.now();
         let shownNotifications = new Set();
+        const recentNotificationWindowMs = 6000; // suppress duplicates within 6s
+        const recentNotificationByKey = new Map(); // key: type|message -> lastTs
 
         function checkForNotifications() {
             fetch('/api/notifications')
@@ -4457,9 +5479,16 @@
                     const notifications = data.notifications || data;
                     if (Array.isArray(notifications)) {
                         notifications.forEach(notification => {
-                            if (!shownNotifications.has(notification.id)) {
+                            const id = notification.id || `${notification.ts}-${(notification.message||'')}`;
+                            if (!shownNotifications.has(id)) {
                                 showNotification(notification);
-                                shownNotifications.add(notification.id);
+                                shownNotifications.add(id);
+                                // Auto-refresh vulnerabilities on new finding
+                                const msg = (notification.message || '').toLowerCase();
+                                const ntype = (notification.type || '').toLowerCase();
+                                if (msg.includes('vulnerability found') || ntype === 'vulnerability' || msg.includes('direct scan completed')) {
+                                    try { setTimeout(loadVulnerabilityData, 800); } catch (e) { console.warn('vuln refresh failed', e); }
+                                }
                             }
                         });
                     }
@@ -4467,6 +5496,51 @@
                 .catch(error => {
                     console.error('Error fetching notifications:', error);
                 });
+        }
+
+        async function updateProfileBadges() {
+            try {
+                const resp = await fetch('/api/scanner/profile');
+                const data = await resp.json();
+                const prof = (data && data.profile) ? data.profile : 'normal';
+                const a = document.getElementById('assets-profile-pill');
+                const s = document.getElementById('scope-profile-pill');
+                if (a) a.textContent = `profile: ${prof}`;
+                if (s) s.textContent = `profile: ${prof}`;
+                const sel = document.getElementById('vuln-profile-select');
+                if (sel) sel.value = prof;
+            } catch (e) {
+                console.warn('Failed updating profile badges', e);
+            }
+        }
+
+        async function updateScannerProfileFromBanner(profile) {
+            try {
+                const resp = await fetch('/api/scanner/profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ profile })
+                });
+                const data = await resp.json();
+                if (!resp.ok || data.error) throw new Error(data.error || 'Failed to set profile');
+                const status = document.getElementById('vuln-profile-save-status');
+                if (status) { status.textContent = `Profile set to ${data.profile}`; setTimeout(()=> status.textContent='', 2000); }
+                updateProfileBadges();
+            } catch (e) {
+                alert('Failed to set profile: ' + e.message);
+            }
+        }
+
+        async function setPauseDiscovery(enabled) {
+            try {
+                await fetch('/api/scanner/policy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pause_discovery: !!enabled })
+                });
+            } catch (e) {
+                alert('Failed to update engine policy: ' + e.message);
+            }
         }
 
         function showVulnDetails(content, title) {
@@ -4696,6 +5770,17 @@
         function showNotification(notification) {
             const container = document.getElementById('notification-container');
             
+            // Deduplicate by (type+message) within a short time window
+            try {
+                const key = `${notification.type || 'info'}|${notification.message || ''}`;
+                const now = Date.now();
+                const last = recentNotificationByKey.get(key) || 0;
+                if (now - last < recentNotificationWindowMs) {
+                    return; // skip burst duplicates
+                }
+                recentNotificationByKey.set(key, now);
+            } catch (e) {}
+
             // Create notification element
             const notificationElement = document.createElement('div');
             notificationElement.className = `notification-popup ${notification.type || 'discovery'}`;
@@ -4705,6 +5790,7 @@
                 <button class="notification-close" onclick="closeNotification('${notification.id}')">&times;</button>
                 <div class="notification-header">${getNotificationIcon(notification.type)} ${notification.message}</div>
                 ${notification.details ? `<div class="notification-details">${notification.details}</div>` : ''}
+                ${notification.payload && notification.payload.url ? `<div style="margin-top:6px"><a href="#" style="color:#93c5fd;text-decoration:underline;" onclick="try{showView('vulnerabilities');setTimeout(()=>{document.getElementById('vuln-search').value='${(notification.payload.url||'').replace(/'/g,"&#39;")}'; searchVulnerabilities();},200);}catch(e){}">View in Vulnerabilities</a></div>` : ''}
             `;
             
             // Add to container
@@ -4714,6 +5800,32 @@
             setTimeout(() => {
                 notificationElement.classList.add('show');
             }, 100);
+
+            // Auto-dismiss after 5 seconds
+            setTimeout(() => {
+                if (document.body.contains(notificationElement)) {
+                    notificationElement.classList.remove('show');
+                    setTimeout(() => notificationElement.remove(), 300);
+                }
+            }, 5000);
+        }
+
+        // Lightweight, auto-dismiss toast for ephemeral status (non-blocking)
+        function showToast(message, type = 'info', timeoutMs = 2000) {
+            try {
+                const container = document.getElementById('notification-container');
+                const id = 'toast-' + Date.now();
+                const el = document.createElement('div');
+                el.className = `notification-popup ${type}`;
+                el.id = id;
+                el.innerHTML = `
+                    <button class="notification-close" onclick="closeNotification('${id}')">&times;</button>
+                    <div class="notification-header">${getNotificationIcon(type)} ${message}</div>
+                `;
+                container.appendChild(el);
+                setTimeout(()=> el.classList.add('show'), 50);
+                setTimeout(()=> { try { closeNotification(id); } catch(e) {} }, timeoutMs);
+            } catch (e) { console.log(message); }
         }
         
         function closeNotification(notificationId) {
@@ -5882,7 +6994,22 @@ async function saveAuthPolicy() {
             border-radius: 6px;
             padding: 12px;
         }
-        
+
+        /* Adaptive columns for Vulnerabilities table */
+        .vuln-table td { vertical-align: top; }
+        .vuln-table .asset-url { word-break: break-all; }
+        @media (max-width: 1500px) {
+            .vuln-table td:nth-child(6) span, /* Description */
+            .vuln-table td:nth-child(7) span, /* Payload */
+            .vuln-table td:nth-child(8) span  /* Evidence */
+            { display: inline-block; max-width: 520px; white-space: normal; word-break: break-word; }
+        }
+        @media (max-width: 1200px) {
+            .vuln-table td:nth-child(6) span,
+            .vuln-table td:nth-child(7) span,
+            .vuln-table td:nth-child(8) span { max-width: 380px; }
+        }
+    
         .scanner-label {
             font-weight: bold;
             color: #cbd5e1;

@@ -57,10 +57,15 @@ class ScreenshotManager:
                 self._check_chrome_availability(),
                 timeout=8.0
             )
-
+            # If Chrome is missing, allow Playwright-based screenshots if available
             if not chrome_available:
-                logger.warning("⚠️ Chrome not available - screenshots will be disabled")
-                self.enabled = False
+                pw_ok = await self._check_playwright_availability()
+                if not pw_ok:
+                    logger.warning("⚠️ No Chrome/Chromium and Playwright unavailable - screenshots disabled")
+                    self.enabled = False
+                else:
+                    logger.info("📸 Playwright available — using it for screenshots")
+                    self.enabled = True
             
             # Log initialization using AssetManager
             self.asset_manager.log_activity(
@@ -181,10 +186,11 @@ class ScreenshotManager:
 
                 use_auth = bool(auth_cookie) and (not auth_domain or (auth_domain in url))
 
-                if use_auth and await self._check_playwright_availability():
-                    success = await self._take_screenshot_with_playwright(url, screenshot_path, auth_cookie, auth_domain, eff_cfg)
+                prefer_pw = await self._check_playwright_availability()
+                if prefer_pw:
+                    success = await self._take_screenshot_with_playwright(url, screenshot_path, auth_cookie if use_auth else None, auth_domain if use_auth else None, eff_cfg)
                 else:
-                    # Fallback to CLI Chrome (fast path, unauthenticated)
+                    # Fallback to CLI Chrome
                     success = await self._take_screenshot_with_chrome(url, screenshot_path)
                 
                 if success:
@@ -219,8 +225,9 @@ class ScreenshotManager:
             eff_cfg, auth_cookie, auth_domain = self._build_effective_auth_config(url)
             use_auth = bool(auth_cookie) and (not auth_domain or (auth_domain in url))
 
-            if use_auth and await self._check_playwright_availability():
-                ok = await self._take_screenshot_with_playwright(url, screenshot_path, auth_cookie, auth_domain, eff_cfg)
+            prefer_pw = await self._check_playwright_availability()
+            if prefer_pw:
+                ok = await self._take_screenshot_with_playwright(url, screenshot_path, auth_cookie if use_auth else None, auth_domain if use_auth else None, eff_cfg)
             else:
                 ok = await self._take_screenshot_with_chrome(url, screenshot_path)
 
@@ -287,7 +294,13 @@ class ScreenshotManager:
                     continue
             
             if not chrome_cmd:
-                logger.debug("No Chrome browser found for screenshots")
+                logger.debug("No Chrome browser found for screenshots; trying Playwright fallback")
+                # Fallback to Playwright even without auth
+                try:
+                    if await self._check_playwright_availability():
+                        return await self._take_screenshot_with_playwright(url, screenshot_path, None, None, None)
+                except Exception:
+                    pass
                 return False
             
             # Chrome arguments for headless screenshot
@@ -511,7 +524,17 @@ class ScreenshotManager:
                     '--disable-dev-shm-usage',
                     '--disable-gpu',
                 ]
-                browser = await pw.chromium.launch(headless=True, args=browser_args)
+                # Honor global live-view / DevTools settings while preserving baseline args
+                try:
+                    from .browser_runtime import get_launch_options, extend_args, detect_lan_ip
+                    opts = get_launch_options()
+                    launch_args = extend_args(browser_args, opts['args'])
+                    browser = await pw.chromium.launch(headless=bool(opts['headless']), devtools=bool(opts['devtools']), args=launch_args)
+                    if opts.get('rdp_port'):
+                        ip = detect_lan_ip()
+                        logger.info(f"🔎 DevTools listening: http://{ip}:{opts['rdp_port']}  (chrome://inspect -> Add target)")
+                except Exception:
+                    browser = await pw.chromium.launch(headless=True, args=browser_args)
 
                 # Randomized but realistic UA if not provided
                 ua = cfg.get('user_agent')

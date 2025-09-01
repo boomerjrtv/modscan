@@ -242,6 +242,63 @@ class NucleiVulnerabilityScanner:
         logger.info(f"[Nuclei] Exit code: {rc}, stored findings: {findings}")
         return findings
 
+    async def scan_urls_by_cves(self, urls: List[str], cves: List[str]) -> int:
+        """Run a CVE-focused Nuclei scan limited to provided CVE tags (best-effort).
+        Falls back to generic '-tags cve' if specific tags unsupported.
+        """
+        if not urls or not cves:
+            return 0
+        if not self.available:
+            logger.warning("[Nuclei] Not available; skipping CVE-focused run")
+            return 0
+        # Write URLs to temp
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            target_file = f.name
+            for u in urls:
+                f.write(u.strip() + "\n")
+        try:
+            cmd = [
+                str(self.nuclei_path),
+                "-l", target_file,
+                "-t", str(self.templates_path),
+                "-jsonl",
+                "-silent",
+            ]
+            # Limit by CVE tags when possible
+            try:
+                tag_arg = ",".join(sorted(set(cves)))
+                if tag_arg:
+                    cmd += ["-tags", tag_arg]
+                else:
+                    cmd += ["-tags", "cve"]
+            except Exception:
+                cmd += ["-tags", "cve"]
+            logger.info(f"[Nuclei] CVE-focused: {' '.join(cmd)}")
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            findings = 0
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                try:
+                    data = json.loads(line.decode('utf-8', errors='ignore'))
+                    await self._store_nuclei_result(data)
+                    findings += 1
+                except Exception:
+                    continue
+            await proc.wait()
+            return findings
+        finally:
+            try:
+                Path(target_file).unlink(missing_ok=True)
+            except Exception:
+                pass
+
     async def _process_nuclei_finding(self, finding: Dict[str, Any]) -> bool:
         try:
             template_id = finding.get("template-id", "unknown")

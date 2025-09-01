@@ -113,10 +113,10 @@ class SecListsManager:
             },
             'cms_specific': {
                 'wordpress': ['Discovery/Web-Content/CMS/wordpress.fuzz.txt'],
-                'drupal': ['Discovery/Web-Content/CMS/drupal.txt', 'Discovery/Web-Content/CMS/trickest-cms-wordlist/drupal.txt'],
+                'drupal': ['Discovery/Web-Content/CMS/drupal.txt'],
                 'joomla': ['Discovery/Web-Content/CMS/joomla.txt'],
-                'django': ['Discovery/Web-Content/CMS/trickest-cms-wordlist/django-cms.txt'],
-                'umbraco': ['Discovery/Web-Content/CMS/trickest-cms-wordlist/umbraco-cms-all-levels.txt']
+                'django': ['Discovery/Web-Content/Common-WordPress.txt'],
+                'umbraco': ['Discovery/Web-Content/Common-CMS.txt']
             },
             'backup_files': {
                 'surface': ['Discovery/Web-Content/Common-DB-Backups.txt'],
