@@ -33,6 +33,9 @@ from modules.nuclei_scanner import NucleiVulnerabilityScanner
 # Import Multi-AI Pentester Team (XBOW-inspired)
 from modules.multi_ai_pentester_team import MultiAIPentesterTeam
 
+# Import Agentic Browser Loop (ABL)
+from modules.agent_browser import AgentBrowser
+
 # Import YOUR AssetManager for centralized field mapping
 from asset_manager import AssetManager
 
@@ -91,7 +94,11 @@ class ModularVulnerabilityScanner:
         if not self.auth_cookie:
             try:
                 import sqlite3
-                conn = sqlite3.connect('lean_recon.db')
+                # Use the same database path as the dashboard/config for consistency
+                db_path = CONFIG.get('database_path')
+                if not db_path:
+                    db_path = str((Path(__file__).resolve().parent / 'lean_recon.db'))
+                conn = sqlite3.connect(db_path)
                 cursor = conn.execute("SELECT domain, cookie, policy FROM cookies LIMIT 1")
                 row = cursor.fetchone()
                 if row:
@@ -150,6 +157,9 @@ class ModularVulnerabilityScanner:
         # Initialize Multi-AI Pentester Team (XBOW-inspired)
         self.ai_pentester_team = MultiAIPentesterTeam(self.asset_manager, AUTH_CONFIG)
         
+        # Initialize Agentic Browser Loop (ABL)
+        self.agent_browser = AgentBrowser(AUTH_CONFIG, self.asset_manager, self.screenshot_manager)
+        
         # Runtime controls and state will be set up after initialization
         
         # Dynamic resource-based performance settings (cap CPU target to 50%)
@@ -169,6 +179,29 @@ class ModularVulnerabilityScanner:
         # Nuclei long scan settings
         self.nuclei_long_enabled = CONFIG.get('nuclei_long_scan_enabled', True)
         self.nuclei_long_ttl_hours = CONFIG.get('nuclei_long_scan_ttl_hours', 24)
+
+        # Profile-aware limits (shared across dashboard + engine)
+        try:
+            from pathlib import Path as _Path
+            import json as _json
+            prof_path = _Path(__file__).resolve().parent / 'scan_profile.json'
+            data = _json.loads(prof_path.read_text(encoding='utf-8') or '{}') if prof_path.exists() else {}
+            self.scan_profile = (data.get('profile') or 'normal').lower()
+            # Load agent_enabled configuration
+            agent_config = data.get('agent_enabled', {})
+            self.agent_enabled = agent_config.get(self.scan_profile, False)
+        except Exception:
+            self.scan_profile = 'normal'
+            self.agent_enabled = False
+
+    def _profile_limits(self):
+        # Centralized mapping for engine
+        pm = {
+            'stealth':   {'inline': 1,  'tier3': 100},
+            'normal':    {'inline': 5,  'tier3': 500},
+            'aggressive':{'inline': 20, 'tier3': 1500}
+        }
+        return pm.get(self.scan_profile, pm['normal'])
 
     async def _monitor_discovery_progress(self, domain: str, start_time: float, timeout: int):
         """Monitor discovery progress and alert about potential hangs."""
@@ -318,32 +351,45 @@ class ModularVulnerabilityScanner:
         
         logger.info("🎯 Starting Modular Progressive Vulnerability Scanner")
         
-        # Create high-performance session
-        connector = aiohttp.TCPConnector(
-            limit=min(2000, self.max_concurrent),
-            ssl=False,
-            ttl_dns_cache=300,
-            keepalive_timeout=30,
-            enable_cleanup_closed=True
-        )
-        
-        # ✅ INCLUDE AUTHENTICATION HEADERS IF AVAILABLE
-        session_headers = {'User-Agent': 'ModularScanner/2025'}
-        if self.auth_cookie and self.auth_domain:
-            session_headers['Cookie'] = self.auth_cookie
-            logger.info(f"🔐 Adding authentication headers for {self.auth_domain}")
-        
-        async with aiohttp.ClientSession(
-            connector=connector,
-            timeout=aiohttp.ClientTimeout(total=15),
-            headers=session_headers
-        ) as session:
-            
-            scan_cycle = 0
-            
-            while True:
+        scan_cycle = 0
+        while True:
+            try:
+                # Pre-cycle: ensure valid session (universal)
                 try:
+                    from modules.auth_manager import AuthManager as _AM
+                    if not getattr(self, 'auth_manager', None):
+                        self.auth_manager = _AM(self.asset_manager, CONFIG)
+                    host = (self.auth_domain or '').replace('http://','').replace('https://','').strip('/ ')
+                    if self.auth_manager and host:
+                        probe = f"http://{host}/"
+                        new_cookie = await self.auth_manager.ensure_valid_session(probe, host)
+                        if new_cookie and new_cookie != self.auth_cookie:
+                            self.auth_cookie = new_cookie
+                            logger.info("🔄 Pre-cycle: refreshed authentication cookie")
+                except Exception as _pre:
+                    logger.debug(f"Pre-cycle auth ensure skipped: {_pre}")
+
+                # Create high-performance session (fresh each cycle to capture new Cookie header)
+                connector = aiohttp.TCPConnector(
+                    limit=min(2000, self.max_concurrent),
+                    ssl=False,
+                    ttl_dns_cache=300,
+                    keepalive_timeout=30,
+                    enable_cleanup_closed=True
+                )
+                session_headers = {'User-Agent': 'ModularScanner/2025'}
+                if self.auth_cookie and self.auth_domain:
+                    session_headers['Cookie'] = self.auth_cookie
+                    logger.info(f"🔐 Adding authentication headers for {self.auth_domain}")
+
+                async with aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                    headers=session_headers
+                ) as session:
+                    
                     scan_cycle += 1
+                    
                     cpu_usage = self.monitor_and_adjust_performance()
                     
                     # Skip proxy health check to prevent hangs - proxies checked during initialization
@@ -351,6 +397,16 @@ class ModularVulnerabilityScanner:
                     
                     logger.info(f"🔄 MODULAR SCAN CYCLE {scan_cycle} - CPU: {cpu_usage:.1f}%")
                     
+                    # Honor runtime policy from engine_policy.json (pause discovery if requested)
+                    try:
+                        from pathlib import Path as _Path
+                        import json as _json
+                        pol_path = _Path(__file__).resolve().parent / 'engine_policy.json'
+                        policy = _json.loads(pol_path.read_text(encoding='utf-8') or '{}') if pol_path.exists() else {}
+                        pause_discovery = bool(policy.get('pause_discovery'))
+                    except Exception:
+                        pause_discovery = False
+
                     # If in Direct URL Testing mode, run a streamlined, ordered pipeline:
                     # 1) Profile (to populate status_code)
                     # 2) Vulnerability scan
@@ -371,12 +427,8 @@ class ModularVulnerabilityScanner:
                                 assets_inline = [{'id': -1, 'url': u, 'status_code': 200, 'tech_stack': ''} for u in direct_list if u.startswith('http')]
                                 if assets_inline:
                                     logger.info(f"⚡ Direct: Inline Tier3 scan of {len(assets_inline)} user URLs…")
-                                    try:
-                                        import os as __os
-                                        conc = int(__os.environ.get('MODSCAN_INLINE_CONCURRENCY', '1'))
-                                    except Exception:
-                                        conc = 1
-                                    await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=max(1, conc))
+                                    conc = max(1, int(self._profile_limits().get('inline', 1)))
+                                    await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=conc)
                                     logger.info("✅ Direct: Inline Tier3 scan complete")
                         except Exception as _dash:
                             logger.warning(f"Direct: inline scan of user URLs failed: {_dash}")
@@ -384,9 +436,16 @@ class ModularVulnerabilityScanner:
                         # Tier 2
                         try:
                             await self._tier2_modular_profiling(session)
-                            logger.info("🧪 Direct: Tier2 completed; proceeding to Tier3…")
+                            logger.info("🧪 Direct: Tier2 completed; proceeding to Tier2.5…")
                         except Exception as _e2:
                             logger.warning(f"Tier 2 profiling error (direct): {_e2}")
+                        # Tier 2.5 (ABL) for direct URLs if enabled
+                        if self.agent_enabled:
+                            try:
+                                await self._tier2_5_agentic_exploration(session)
+                                logger.info("🤖 Direct: ABL exploration completed; proceeding to Tier3…")
+                            except Exception as _e25:
+                                logger.warning(f"Tier 2.5 ABL error (direct): {_e25}")
                         # Immediate inline Tier 3 scan on latest direct URLs (guaranteed activity)
                         try:
                             with self.asset_manager._get_db() as db:
@@ -397,12 +456,8 @@ class ModularVulnerabilityScanner:
                             if urls_inline:
                                 assets_inline = [{'id': -1, 'url': u, 'status_code': 200, 'tech_stack': ''} for u in urls_inline]
                                 logger.info(f"⚡ Direct: Inline Tier3 scan of {len(assets_inline)} URLs…")
-                                try:
-                                    import os as __os
-                                    conc = int(__os.environ.get('MODSCAN_INLINE_CONCURRENCY', '1'))
-                                except Exception:
-                                    conc = 1
-                                await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=max(1, conc))
+                                conc = max(1, int(self._profile_limits().get('inline', 1)))
+                                await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets_inline, session, semaphore_limit=conc)
                                 logger.info("✅ Direct: Inline Tier3 scan complete")
                         except Exception as _inl:
                             logger.warning(f"Direct: inline scan failed: {_inl}")
@@ -428,7 +483,7 @@ class ModularVulnerabilityScanner:
                                 urls = [r[0] for r in rows if r and r[0]]
                                 if urls:
                                     assets = [{'id': -1, 'url': u, 'status_code': 200, 'tech_stack': ''} for u in urls]
-                                    await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets, session, semaphore_limit=8)
+                                    await self.vulnerability_scanner.scan_assets_for_vulnerabilities(assets, session, semaphore_limit=max(1, int(self._profile_limits().get('inline', 1))))
                                     logger.info(f"✅ Direct: Emergency fallback scanned {len(urls)} URLs")
                                 else:
                                     logger.info("✅ Direct: No URLs available for emergency fallback")
@@ -448,13 +503,17 @@ class ModularVulnerabilityScanner:
                             logger.debug(f"Tier 4 AI pentesting error (direct): {_e4}")
                     else:
                         # Execute all tiers using modular components (parallel where safe)
-                        tier_tasks = [
-                            self._tier1_modular_discovery(session),
-                            self._tier2_modular_profiling(session),
-                            self._tier3_modular_vulnerability_scanning(session),
-                            self._tier4_multi_ai_pentesting(session),
-                            self._tier5_modular_advanced_recon(session)
-                        ]
+                        tier_tasks = []
+                        if not pause_discovery:
+                            tier_tasks.append(self._tier1_modular_discovery(session))
+                        tier_tasks.append(self._tier2_modular_profiling(session))
+                        # Add Tier 2.5 (ABL) after Tier 2 if enabled
+                        if self.agent_enabled:
+                            tier_tasks.append(self._tier2_5_agentic_exploration(session))
+                        tier_tasks.append(self._tier3_modular_vulnerability_scanning(session))
+                        tier_tasks.append(self._tier4_multi_ai_pentesting(session))
+                        if not pause_discovery:
+                            tier_tasks.append(self._tier5_modular_advanced_recon(session))
                         await asyncio.gather(*tier_tasks, return_exceptions=True)
                     
                     # Report progress using AssetManager (skip in single-shot direct mode to exit faster)
@@ -466,12 +525,12 @@ class ModularVulnerabilityScanner:
                         break
                     await asyncio.sleep(5)
                     
-                except KeyboardInterrupt:
-                    logger.info("🛑 Modular scanner stopped by user")
-                    break
-                except Exception as e:
-                    logger.error(f"Modular scan cycle error: {e}")
-                    await asyncio.sleep(10)
+            except KeyboardInterrupt:
+                logger.info("🛑 Modular scanner stopped by user")
+                break
+            except Exception as e:
+                logger.error(f"Modular scan cycle error: {e}")
+                await asyncio.sleep(10)
     
     async def _tier1_modular_discovery(self, session: aiohttp.ClientSession):
         """Tier 1: Ultimate Discovery using UltimateDiscoveryEngine module"""
@@ -641,9 +700,121 @@ class ModularVulnerabilityScanner:
 
             if (isinstance(tech_completed, int) and tech_completed > 0) or (isinstance(screenshot_completed, int) and screenshot_completed > 0):
                 logger.info(f"✅ TIER 2: Technology detection: {int(tech_completed) if isinstance(tech_completed,int) else 0}, Screenshots: {int(screenshot_completed) if isinstance(screenshot_completed,int) else 0}")
+
+            # CVE correlation (Exploit-DB) — universal, fast heuristic
+            try:
+                from modules.exploitdb_index import ExploitDBIndex
+                idx = ExploitDBIndex(CONFIG.get('database_path', 'lean_recon.db'))
+                # Take a small batch of recent assets with titles
+                assets = self.asset_manager.get_recent_assets_for_cve(limit=15)
+                total_candidates = 0
+                for a in assets:
+                    cands = idx.find_candidates(a.get('title','') or '', a.get('tech_stack','') or '', limit=20)
+                    if cands:
+                        self.asset_manager.upsert_asset_cve_candidates(a.get('id'), cands[:20])
+                        total_candidates += len(cands)
+                if total_candidates:
+                    logger.info(f"🧩 TIER 2: CVE correlation indexed {total_candidates} candidate matches across {len(assets)} assets")
+            except Exception as e:
+                logger.debug(f"TIER 2: CVE correlation skipped: {e}")
         
         except Exception as e:
             logger.error(f"Tier 2 modular profiling error: {e}")
+    
+    async def _tier2_5_agentic_exploration(self, session: aiohttp.ClientSession):
+        """Tier 2.5: Agentic Browser Loop exploration with conservative budgets"""
+        if not self.agent_enabled:
+            logger.debug("ABL disabled for current profile - skipping Tier 2.5")
+            return
+            
+        try:
+            # Check CPU headroom before starting ABL
+            cpu_usage = psutil.cpu_percent(interval=0.1)
+            if cpu_usage > 75:  # Conservative CPU threshold
+                logger.info("ABL skipped - high CPU usage")
+                return
+                
+            # Get candidate URLs from AssetManager
+            candidates = []
+            try:
+                # Get recently profiled assets with good status codes
+                candidates = self.asset_manager.get_assets_ready_for_deep_scan(limit=5)
+                # Filter to status codes that indicate accessible content
+                candidates = [
+                    asset for asset in candidates 
+                    if asset.get('status_code') in [200, 401, 403]
+                ]
+            except Exception as e:
+                logger.debug(f"Failed to get ABL candidates: {e}")
+                return
+                
+            # Handle Direct URL Testing mode
+            import os
+            if os.environ.get('MODSCAN_DIRECT_URL_TESTING'):
+                direct_urls = os.environ.get('MODSCAN_DIRECT_URL_TESTING', '').split(',')
+                candidates = [{'url': url.strip(), 'id': -1} for url in direct_urls if url.strip()]
+                
+            if not candidates:
+                logger.debug("No suitable candidates for ABL exploration")
+                return
+                
+            logger.info(f"🤖 TIER 2.5: ABL exploration of {len(candidates)} URLs")
+            
+            # Conservative budgets to maintain performance
+            budgets = {
+                'max_steps': 12,
+                'max_clicks': 8, 
+                'max_time_ms': 15000,  # 15 seconds
+                'action_timeout': 5000  # 5 seconds per action
+            }
+            
+            # Process candidates with strict time budget
+            session_start = time.time()
+            max_session_time = 20  # 20 seconds total for all ABL work
+            
+            for i, candidate in enumerate(candidates[:3]):  # Max 3 URLs
+                if (time.time() - session_start) > max_session_time:
+                    logger.info("ABL session time budget exceeded - stopping")
+                    break
+                    
+                url = candidate.get('url', '')
+                if not url:
+                    continue
+                    
+                logger.info(f"🔍 ABL exploring: {url}")
+                
+                try:
+                    # Execute ABL session with timeout
+                    result = await asyncio.wait_for(
+                        self.agent_browser.execute_session(url, budgets),
+                        timeout=budgets['max_time_ms'] / 1000 + 5  # Add 5s buffer
+                    )
+                    
+                    if result.get('status') == 'completed':
+                        steps = result.get('steps_taken', 0)
+                        clicks = result.get('clicks_taken', 0)
+                        duration = result.get('duration_ms', 0)
+                        logger.info(f"✅ ABL completed: {steps} steps, {clicks} clicks, {duration}ms")
+                        
+                        # Log activity if AssetManager supports it
+                        try:
+                            if hasattr(self.asset_manager, 'log_activity'):
+                                self.asset_manager.log_activity(
+                                    f"ABL exploration completed: {steps} steps, {clicks} clicks",
+                                    level='info'
+                                )
+                        except:
+                            pass
+                    else:
+                        logger.debug(f"ABL session result: {result}")
+                        
+                except asyncio.TimeoutError:
+                    logger.warning(f"ABL session timeout for {url}")
+                except Exception as e:
+                    logger.debug(f"ABL session error for {url}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Tier 2.5 ABL error: {e}")
     
     async def _tier3_modular_vulnerability_scanning(self, session: aiohttp.ClientSession):
         """Tier 3: Vulnerability scanning using VulnerabilityScanner module"""
@@ -692,7 +863,7 @@ class ModularVulnerabilityScanner:
             
             # Process vulnerabilities using VulnerabilityScanner module
             vulnerability_results = await self.vulnerability_scanner.scan_assets_for_vulnerabilities(
-                ready_assets, session, semaphore_limit=max(8, int(self.max_concurrent/2))
+                ready_assets, session, semaphore_limit=int(self._profile_limits().get('tier3', 500))
             )
             
             total_vulns = sum(len(vulns) for vulns in vulnerability_results if vulns)

@@ -1,75 +1,61 @@
-# Python
+### Python
 __pycache__/
+.pytest_cache/
+.mypy_cache/
 *.py[cod]
 *.pyo
 *.pyd
 *.egg-info/
-.mypy_cache/
-.pytest_cache/
 
-# Virtual envs
+### Virtualenv
 .venv/
 venv/
 
-# Local data / logs / screenshots
-logs/
-screenshots/
-*.log
-*.sqlite
-*.db
-*.db-*
-*.db-*
-lean_recon.db*
-*.jsonl
-
-# Large vendor/data
-SecLists/
-models/
-node_modules/
-
-# Backups/artifacts
-*._backup_*
-*.bak
-*.swp
-*.swo
-*.tgz
-*.zip
-
-# --- local noise / large stuff ---
+### Logs & Runtime Artifacts
 logs/
 *.log
 *.log.*
 engine_*.log
-*.sqlite
-*.db
-screenshots/
-archive/
-*.bak
-*.tmp
-.DS_Store
-# big wordlists or downloaded sets (keep your curated SecLists outside the repo if huge)
-SecLists/
-SecLists/
-.venv
-*.pyc
-
-# local logs & artifacts
-*.log
-/tmp/*.png
-run.log
 engine_live.log
-minimal_discovery.log
-
-# local config
-config.json
-
-# local logs & artifacts
-*.log
-*.sqlite
-*.db
-/tmp/*.png
 run.log
-engine_live.log
 minimal_discovery.log
 full_engine_log.txt
-working_discovery.py
+
+# local runner artifacts
+.code/
+
+### Databases & State
+*.sqlite
+*.db
+*.db-*
+lean_recon.db*
+modscan.db
+recon_platform.db
+reconnaissance.db
+discovery.db
+database.db
+assets.db
+
+### Evidence & Outputs
+screenshots/
+evidence/
+storage_states/
+tools/skills/
+*.jsonl
+/tmp/*.png
+
+### Large vendor/data
+SecLists/
+models/
+node_modules/
+
+### Backups/Temp
+*.bak
+*.tmp
+*._backup_*
+*.swp
+*.swo
+.DS_Store
+
+### Local config (example checked in separately)
+config.json

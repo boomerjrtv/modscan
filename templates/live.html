@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ModScan Live Viewer</title>
+  <style>
+    body { background: #111; color: #ddd; font-family: system-ui, sans-serif; margin: 0; padding: 0; }
+    header { background: #181818; padding: 10px 16px; display:flex; align-items:center; justify-content:space-between; }
+    h1 { font-size: 16px; margin: 0; color: #14e956; }
+    #status { font-size: 12px; color: #aaa; }
+    main { display:flex; align-items:center; justify-content:center; height: calc(100vh - 48px); padding: 12px; }
+    img { max-width: 100%; max-height: 100%; border: 1px solid #333; background:#000; }
+    .controls { display:flex; gap: 8px; align-items:center; }
+    input, button, select { background: #222; color: #ddd; border: 1px solid #333; padding: 6px 8px; border-radius: 4px; }
+    label { font-size: 12px; color: #aaa; }
+  </style>
+  <script>
+    let lastFilename = null;
+    let intervalId = null;
+
+    async function fetchLatest() {
+      const status = document.getElementById('status');
+      try {
+        const resp = await fetch('/api/screenshots/latest', { cache: 'no-store' });
+        if (!resp.ok) {
+          status.textContent = 'No screenshots yet…';
+          return;
+        }
+        const data = await resp.json();
+        if (!data || !data.url) {
+          status.textContent = 'Waiting for screenshots…';
+          return;
+        }
+        const img = document.getElementById('live-img');
+        const ts = data.modified || Date.now();
+        const force = document.getElementById('force-reload').checked;
+        const newSrc = data.url + '?t=' + ts;
+        if (force || data.filename !== lastFilename || img.getAttribute('src') !== newSrc) {
+          img.setAttribute('src', newSrc);
+          lastFilename = data.filename;
+        }
+        status.textContent = 'Showing: ' + data.filename + ' @ ' + new Date(ts * 1000).toLocaleTimeString();
+      } catch (e) {
+        status.textContent = 'Error fetching latest screenshot';
+      }
+    }
+
+    function start() {
+      const freq = parseInt(document.getElementById('freq').value, 10) || 1000;
+      if (intervalId) clearInterval(intervalId);
+      intervalId = setInterval(fetchLatest, freq);
+      fetchLatest();
+    }
+
+    function onFreqChange() {
+      start();
+    }
+
+    window.addEventListener('DOMContentLoaded', start);
+  </script>
+  </head>
+  <body>
+    <header>
+      <h1>ModScan Live Viewer</h1>
+      <div class="controls">
+        <label>Refresh (ms): <input id="freq" type="number" value="1000" min="250" step="250" oninput="onFreqChange()"/></label>
+        <label><input type="checkbox" id="force-reload" /> Always refresh</label>
+        <span id="status">Initializing…</span>
+      </div>
+    </header>
+    <main>
+      <img id="live-img" alt="Live Screenshot" />
+    </main>
+  </body>
+</html>
+

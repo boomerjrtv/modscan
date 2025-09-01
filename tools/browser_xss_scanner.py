@@ -11,6 +11,13 @@ import time
 import uuid
 from pathlib import Path
 from playwright.async_api import async_playwright
+try:
+    # Use shared browser runtime settings if available
+    from modules.browser_runtime import get_launch_options, extend_args, detect_lan_ip
+except ImportError:
+    get_launch_options = None
+    extend_args = None
+    detect_lan_ip = None
 from bs4 import BeautifulSoup
 
 class BrowserXSSScanner:
@@ -25,10 +32,23 @@ class BrowserXSSScanner:
         """Start Playwright browser"""
         self.playwright = await async_playwright().start()
         # Use chromium for better JS execution detection
-        self.browser = await self.playwright.chromium.launch(
-            headless=True,
-            args=['--disable-web-security', '--disable-features=VizDisplayCompositor']
-        )
+        if get_launch_options:
+            opts = get_launch_options()
+            base_args = ['--disable-web-security', '--disable-features=VizDisplayCompositor']
+            args = extend_args(base_args, opts['args']) if extend_args else base_args
+            self.browser = await self.playwright.chromium.launch(
+                headless=bool(opts['headless']),
+                devtools=bool(opts['devtools']),
+                args=args
+            )
+            if opts.get('rdp_port') and detect_lan_ip:
+                ip = detect_lan_ip()
+                print(f"🔎 DevTools listening: http://{ip}:{opts['rdp_port']}  (chrome://inspect -> Add target)")
+        else:
+            self.browser = await self.playwright.chromium.launch(
+                headless=True,
+                args=['--disable-web-security', '--disable-features=VizDisplayCompositor']
+            )
         self.context = await self.browser.new_context(
             ignore_https_errors=True,
             viewport={'width': 1280, 'height': 720}
