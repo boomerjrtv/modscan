@@ -66,8 +66,9 @@ class NucleiVulnerabilityScanner:
         Determine templates directory. Precedence:
         1) config["NUCLEI_TEMPLATES"]
         2) env NUCLEI_TEMPLATES
-        3) ~/.local/nuclei-templates
-        4) ./nuclei-templates under repo root
+        3) common local/user locations (XDG, ~/.local, ~/.config, ~/nuclei-templates)
+        4) system-wide locations (/usr/share/nuclei-templates)
+        5) ./nuclei-templates under repo root
         """
         # 1
         direct = self.config.get("NUCLEI_TEMPLATES")
@@ -81,13 +82,34 @@ class NucleiVulnerabilityScanner:
             logger.info(f"[Nuclei] Using templates (env): {envp}")
             return envp
 
-        # 3
-        home_default = Path.home() / ".local" / "nuclei-templates"
-        if home_default.exists():
-            logger.info(f"[Nuclei] Using templates (~/.local): {home_default}")
-            return str(home_default)
+        # 3) Try common local/user locations
+        candidates = []
+        try:
+            # XDG data home
+            xdg = os.getenv("XDG_DATA_HOME")
+            if xdg:
+                candidates.append(Path(xdg) / "nuclei-templates")
+        except Exception:
+            pass
+        # ~/.local/nuclei-templates
+        candidates.append(Path.home() / ".local" / "nuclei-templates")
+        # ~/.config/nuclei/templates
+        candidates.append(Path.home() / ".config" / "nuclei" / "templates")
+        # ~/nuclei-templates (common git clone path)
+        candidates.append(Path.home() / "nuclei-templates")
 
-        # 4
+        for c in candidates:
+            if c.exists():
+                logger.info(f"[Nuclei] Using templates (user): {c}")
+                return str(c)
+
+        # 4) System-wide
+        sys_path = Path("/usr/share/nuclei-templates")
+        if sys_path.exists():
+            logger.info(f"[Nuclei] Using templates (system): {sys_path}")
+            return str(sys_path)
+
+        # 5) Repo-local
         repo_default = self.root / "nuclei-templates"
         if repo_default.exists():
             logger.info(f"[Nuclei] Using templates (repo): {repo_default}")
@@ -320,6 +342,16 @@ class NucleiVulnerabilityScanner:
             if not asset_id:
                 logger.warning(f"[Nuclei] No asset found for URL: {matched_at}")
                 return False
+
+            # Suppress infra-only noise if configured
+            try:
+                from pathlib import Path as _P
+                cfg = json.loads((_P(__file__).resolve().parents[1] / 'config.json').read_text())
+                persistence = cfg.get('persistence') or {}
+                if persistence.get('suppress_infra', False) and template_name.lower() in ('weak-cipher-suites','insecure transport','missing security header'):
+                    return False
+            except Exception:
+                pass
 
             # Preferred unified insert via asset_manager
             if hasattr(self.asset_manager, "add_vulnerability_finding"):
