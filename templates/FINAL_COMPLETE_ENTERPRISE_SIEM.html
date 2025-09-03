@@ -3775,13 +3775,21 @@
                 const safeType = vuln[vulnMapping.vuln_type] || vuln.type || 'Unknown';
                 const safeTimestamp = vuln[vulnMapping.discovered_at] || vuln.detected_at || 'Unknown';
                 const safePayload = escapeHtml(vuln[vulnMapping.payload] || vuln.payload || 'No payload captured');
-                const safeEvidence = escapeHtml(vuln[vulnMapping.evidence] || vuln.evidence || 'No evidence captured');
+                const rawEvidence = vuln[vulnMapping.evidence] || vuln.evidence || '';
+                const safeEvidence = escapeHtml(rawEvidence || 'No evidence captured');
                 const confidence = vuln[vulnMapping.confidence] || vuln.confidence || 0.5;
                   const severity = vuln[vulnMapping.severity] || vuln.severity || 'MEDIUM';
                   const severityClass = severity.toLowerCase();
                 
-                  // Extract screenshot from evidence if available
-                  const screenshotMatch = safeEvidence.match(/Screenshot:\s*([^\s,]+)/);
+                  // Parse structured evidence if JSONL-like
+                  let curlCmd = '';
+                  try {
+                      const evObj = JSON.parse(rawEvidence);
+                      curlCmd = evObj['curl-command'] || evObj['curl_command'] || '';
+                  } catch(e) {}
+
+                  // Extract screenshot from evidence if available (handle both Screenshot: and Screenshots: formats)
+                  const screenshotMatch = safeEvidence.match(/Screenshots?:\s*([^\s,]+)/);
                   const hasScreenshot = screenshotMatch && screenshotMatch[1] !== 'screenshot_unavailable';
                   const screenshotPath = hasScreenshot ? screenshotMatch[1] : null;
 
@@ -3792,6 +3800,10 @@
                       verificationMethod = String(vuln.verification_method);
                   }
                   const isVerified = !!verificationMethod;
+                  
+                  // Extract PoC URL from evidence if available
+                  const pocMatch = safeEvidence.match(/PoC:\s*([^\s]+)/);
+                  const pocUrl = pocMatch ? pocMatch[1] : null;
                 
                 // Get display config
                 const typeConfig = vulnDisplay.type_display?.[safeType] || {};
@@ -3852,6 +3864,7 @@
                                       style="cursor: pointer; color: #fbbf24; text-decoration: underline;">
                                     ${truncate(safeEvidence, 120)}
                                 </span>
+                                ${curlCmd ? `<button class=\"siem-btn\" title=\"Copy curl\" onclick=\"try{navigator.clipboard.writeText(\'${(curlCmd||'').replace(/\\/g, "\\\\").replace(/'/g, "\\'")}\'); showToast('Copied cURL', 'info', 1500);}catch(e){alert('Copy failed');}\" style=\"font-size:10px; padding:2px 6px; background:#334155; color:#e5e7eb; border:none; border-radius:3px;\">copy curl</button>` : ''}
                                 ${hasScreenshot ? '<span title="Screenshot evidence available" style="color: #10b981;">📸</span>' : ''}
                             </div>
                         </td>
@@ -3861,6 +3874,10 @@
                                     ${!hasScreenshot ? 'disabled' : ''}>
                                   ${hasScreenshot ? '📸 View PoC' : '📸 No PoC'}
                             </button>
+                            ${pocUrl ? `<button class="siem-btn secondary" onclick="window.open('${pocUrl}', '_blank')" 
+                                    style="font-size:10px; padding:4px 8px; margin-left:6px; background:#f59e0b; border:none; color:white; border-radius:3px; cursor:pointer;">
+                              🌐 Open PoC
+                            </button>` : ''}
                             <button class="siem-btn secondary" onclick="reverifyVuln(${vuln.id || 'null'})" 
                                     style="font-size:10px; padding:4px 8px; margin-left:6px; background:#2563eb; border:none; color:white; border-radius:3px; cursor:pointer;">
                               🔁 Re-verify
@@ -3893,6 +3910,7 @@
 
             console.log(`✅ [VULN DEBUG] Rendering ${data.vulnerabilities.length} vulnerabilities to table`);
             container.innerHTML = tableHTML;
+            try { initializeVulnTableResizing(); } catch(e) { console.warn('vuln resize init failed', e); }
         } else {
             console.log('⚠️ [VULN DEBUG] No vulnerabilities found in data');
             container.innerHTML = '<div class="alert alert-warning">No vulnerabilities found</div>';
@@ -3900,6 +3918,51 @@
     } catch (error) {
         console.error('Error loading vulnerability data:', error);
         container.innerHTML = '<div class="alert alert-error">Network error loading vulnerability data</div>';
+    }
+
+    // Lightweight column resizing for Vulnerabilities table (persists in localStorage)
+    function initializeVulnTableResizing() {
+        const table = document.querySelector('#vulnerabilities-table table');
+        if (!table) return;
+        const storageKey = 'vulnTableCols';
+        const saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
+        // Apply saved widths
+        Object.keys(saved).forEach(idx => {
+            const th = table.querySelector(`thead th:nth-child(${idx})`);
+            if (th) { th.style.width = saved[idx] + 'px'; th.style.minWidth = saved[idx] + 'px'; }
+            table.querySelectorAll(`tbody td:nth-child(${idx})`).forEach(td => {
+                td.style.width = saved[idx] + 'px'; td.style.maxWidth = saved[idx] + 'px';
+            });
+        });
+        // Attach drag handles
+        table.querySelectorAll('thead th').forEach((th, i) => {
+            const handle = th.querySelector('.column-resizer');
+            if (!handle) return;
+            handle.onmousedown = (e) => {
+                e.preventDefault();
+                const startX = e.pageX;
+                const startW = th.offsetWidth;
+                const colIndex = i + 1;
+                const onMove = (ev) => {
+                    const dx = ev.pageX - startX;
+                    const w = Math.max(120, startW + dx);
+                    th.style.width = w + 'px'; th.style.minWidth = w + 'px';
+                    table.querySelectorAll(`tbody td:nth-child(${colIndex})`).forEach(td => {
+                        td.style.width = w + 'px'; td.style.maxWidth = w + 'px';
+                    });
+                };
+                const onUp = () => {
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                    const w = th.offsetWidth;
+                    const colIndex = i + 1;
+                    const s = JSON.parse(localStorage.getItem(storageKey) || '{}');
+                    s[colIndex] = w; localStorage.setItem(storageKey, JSON.stringify(s));
+                };
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            };
+        });
     }
 
     async function reverifyVuln(vulnId) {
@@ -5554,7 +5617,7 @@
                                 <button class="modal-close" onclick="closeVulnDetailsModal()">&times;</button>
                             </div>
                             <div class="modal-body">
-                                <pre id="vuln-details-content" style="white-space: pre-wrap; word-wrap: break-word; background: #f8f9fa; padding: 15px; border-radius: 4px; max-height: 400px; overflow-y: auto;"></pre>
+                                <div id="vuln-details-content" style="white-space: pre-wrap; word-wrap: break-word; background: #f8f9fa; padding: 15px; border-radius: 4px; max-height: 70vh; overflow-y: auto;"></div>
                             </div>
                         </div>
                     </div>
@@ -5564,7 +5627,27 @@
             
             // Update modal content
             document.getElementById('vuln-details-title').textContent = title || 'Details';
-            document.getElementById('vuln-details-content').textContent = content || 'No details available';
+            const container = document.getElementById('vuln-details-content');
+            const safeTitle = String(title||'');
+            const safeContent = String(content||'');
+            // Helper: decode HTML entities safely (client-side only)
+            const decodeHtml = (s) => { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; };
+            if (/payload/i.test(safeTitle)) {
+                const decoded = decodeHtml(safeContent);
+                container.innerHTML = `
+                    <div style="font-size:12px; color:#4b5563; margin-bottom:8px;">Dashboard safely escapes payloads to avoid executing them here.</div>
+                    <div style="display:flex; gap:8px; margin-bottom:10px;">
+                        <button class="siem-btn" style="padding:4px 8px; font-size:12px;" onclick="navigator.clipboard.writeText('${safeContent.replace(/'/g, "\\'")}');">Copy (encoded)</button>
+                        <button class="siem-btn primary" style="padding:4px 8px; font-size:12px;" onclick="navigator.clipboard.writeText('${decoded.replace(/'/g, "\\'").replace(/\\/g, "\\\\")}');">Copy (decoded)</button>
+                    </div>
+                    <div style="margin-bottom:6px; font-weight:600;">Encoded:</div>
+                    <pre style="white-space: pre-wrap; word-wrap: break-word; background: #fff; padding: 10px; border:1px solid #e5e7eb; border-radius:4px;">${escapeHtml(safeContent)}</pre>
+                    <div style="margin:10px 0 6px; font-weight:600;">Decoded (paste this into target input):</div>
+                    <pre style="white-space: pre-wrap; word-wrap: break-word; background: #fff; padding: 10px; border:1px solid #e5e7eb; border-radius:4px;">${escapeHtml(decoded)}</pre>
+                `;
+            } else {
+                container.textContent = safeContent || 'No details available';
+            }
             document.getElementById('vuln-details-modal').style.display = 'flex';
         }
         

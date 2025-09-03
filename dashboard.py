@@ -150,9 +150,12 @@ def get_vulns():
                     if key == 'type' and val:
                         ts = [x.strip().lower() for x in val.split(',') if x.strip()]
                         if ts:
-                            placeholders = ','.join('?'*len(ts))
-                            where.append(f"LOWER(v.type) IN ({placeholders})")
-                            params.extend(ts)
+                            # Partial matching for universal types
+                            like_clauses = []
+                            for tv in ts:
+                                like_clauses.append("LOWER(v.type) LIKE ?")
+                                params.append(f"%{tv}%")
+                            where.append('(' + ' OR '.join(like_clauses) + ')')
                     elif key in ('sev','severity') and val:
                         sv = [x.strip().upper() for x in val.split(',') if x.strip()]
                         if sv:
@@ -196,9 +199,12 @@ def get_vulns():
         if types:
             ts = [t.strip().lower() for t in types.split(',') if t.strip()]
             if ts:
-                placeholders = ','.join('?'*len(ts))
-                where.append(f"LOWER(v.type) IN ({placeholders})")
-                params.extend(ts)
+                # Partial matching for universal filters (e.g., 'xss' matches 'xss_verified_adaptive')
+                like_clauses = []
+                for t in ts:
+                    like_clauses.append("LOWER(v.type) LIKE ?")
+                    params.append(f"%{t}%")
+                where.append('(' + ' OR '.join(like_clauses) + ')')
         if severities:
             sv = [s.strip().upper() for s in severities.split(',') if s.strip()]
             if sv:
