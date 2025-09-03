@@ -95,7 +95,8 @@ class XSSAlertDetector:
                 
                 context = await browser.new_context(
                     viewport={"width": 1366, "height": 768},
-                    ignore_https_errors=True
+                    ignore_https_errors=True,
+                    bypass_csp=True
                 )
                 
                 # Add authentication if provided
@@ -103,6 +104,10 @@ class XSSAlertDetector:
                     await self._inject_auth_cookies(context, url, auth_cookie, auth_domain)
                 
                 page = await context.new_page()
+                try:
+                    page.set_default_timeout(15000)
+                except Exception:
+                    pass
                 
                 # JavaScript execution log
                 js_log = []
@@ -143,11 +148,10 @@ class XSSAlertDetector:
                 
                 # Step 1: Take screenshot BEFORE XSS injection
                 try:
-                    await page.goto(url, wait_until='domcontentloaded', timeout=15000)
-                    await page.wait_for_timeout(1000)  # Let page settle
-                    
+                    await self._safe_page_goto(page, url)
+                    await page.wait_for_timeout(500)
                     screenshot_before = self._generate_screenshot_path(url, "before_xss")
-                    await page.screenshot(path=str(screenshot_before))
+                    await self._safe_screenshot(page, str(screenshot_before))
                     verification_result['screenshot_before'] = str(screenshot_before)
                     logger.debug(f"📸 Before screenshot: {screenshot_before}")
                 except Exception as e:
@@ -190,7 +194,7 @@ class XSSAlertDetector:
                                 last_param = param_name
                                 
                                 # Navigate to XSS test URL
-                                await page.goto(test_url, wait_until='domcontentloaded', timeout=15000)
+                                await self._safe_page_goto(page, test_url)
                                 
                                 # Wait for potential alert
                                 await page.wait_for_timeout(2000)
@@ -223,7 +227,7 @@ class XSSAlertDetector:
                     
                     # Step 3: Take screenshot AFTER XSS attempt
                     screenshot_after = self._generate_screenshot_path(url, "after_xss")
-                    await page.screenshot(path=str(screenshot_after))
+                    await self._safe_screenshot(page, str(screenshot_after))
                     verification_result['screenshot_after'] = str(screenshot_after)
                     logger.debug(f"📸 After screenshot: {screenshot_after}")
                     
@@ -305,6 +309,37 @@ class XSSAlertDetector:
                 'execution_log': [],
                 'dialog_intercepted': False
             }
+
+    async def _safe_page_goto(self, page, url: str, timeout_ms: int = 20000):
+        try:
+            await page.goto(url, wait_until='domcontentloaded', timeout=timeout_ms)
+            return True
+        except Exception:
+            try:
+                await page.goto(url, wait_until='load', timeout=timeout_ms)
+                return True
+            except Exception:
+                try:
+                    await page.goto(url, timeout=timeout_ms)
+                    return True
+                except Exception as e:
+                    logger.debug(f"goto failed for {url}: {e}")
+                    return False
+
+    async def _safe_screenshot(self, page, path: str, timeout_ms: int = 5000):
+        # Try standard page screenshot first
+        try:
+            await page.screenshot(path=path, timeout=timeout_ms)
+            return True
+        except Exception as e:
+            logger.debug(f"page.screenshot failed: {e}; trying element screenshot")
+            try:
+                el = page.locator('html')
+                await el.screenshot(path=path, timeout=timeout_ms)
+                return True
+            except Exception as e2:
+                logger.debug(f"element screenshot failed: {e2}")
+                return False
     
     async def _analyze_reflection_context(self, url: str, auth_cookie: Optional[str] = None, auth_domain: Optional[str] = None) -> List[str]:
         """
