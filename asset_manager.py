@@ -31,6 +31,7 @@ class VulnerabilityFinding:
     affected_parameter: str = ""    # Parameter that was vulnerable
     raw_request: str = ""           # Raw HTTP request
     raw_response: str = ""          # Raw HTTP response
+    bypass_method: str = ""         # HTTP bypass method used (if any)
     screenshot_path: str = ""       # Screenshot path if available
 
 # Database field mapping for vulnerabilities table
@@ -199,7 +200,8 @@ class AssetManager:
             'response_time': self.field_mappings.get('time', 'response_time'),
             'discovery_method': self.field_mappings.get('method', 'discovery_method'),
             'response_body': self.field_mappings.get('response', 'response_body'),
-            'last_scanned': self.field_mappings.get('timestamp', 'last_scanned'),
+            'last_scanned': self.field_mappings.get('last_scanned', 'last_scanned'),
+            'discovered_at': self.field_mappings.get('discovered_at', 'discovered_at'),
             'screenshot_path': self.field_mappings.get('screenshot', 'screenshot_path'),
             'intelligence_score': self.field_mappings.get('intelligence_score', 'intelligence_score'),
             'id': self.field_mappings.get('id', 'id')
@@ -675,9 +677,44 @@ class AssetManager:
             print(f"Error loading vulnerabilities: {e}")
             return {"vulnerabilities": [], "total": 0}
 
+    def _should_skip_url(self, url):
+        """Filter out noise URLs that shouldn't be added as assets."""
+        if not url or not isinstance(url, str):
+            return True
+            
+        url_lower = url.lower()
+        
+        # Skip common noise patterns
+        skip_patterns = [
+            '/logout', '/signout', '/exit', '/quit',
+            '/css/', '/js/', '/images/', '/img/', '/static/', '/assets/', '/fonts/', '/icons/',
+            '.css', '.js', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.woff', '.ttf', '.eot',
+            '&page=', '&p=', '&start=', '&offset=', '&limit=', '&size=',
+            'javascript:', 'mailto:', 'tel:', 'ftp:', '#',
+            '/wp-admin/', '/wp-content/', '/wp-includes/',
+            '/admin/css/', '/admin/js/', '/admin/images/',
+        ]
+        
+        for pattern in skip_patterns:
+            if pattern in url_lower:
+                return True
+        
+        # Skip URLs that are too long (likely have excessive parameters)
+        if len(url) > 500:
+            return True
+            
+        # Skip URLs with too many parameters (crawling explosion)
+        if url.count('&') > 10 or url.count('=') > 10:
+            return True
+            
+        return False
+
     def add_asset(self, url, host, discovery_method):
         """Adds or updates an asset and RETURNS its ID (universal helper)."""
         try:
+            # Filter out noise URLs
+            if self._should_skip_url(url):
+                return None
             with self._get_db() as db:
                 # Use field mappings for database columns
                 fields = self.get_asset_fields()
@@ -722,6 +759,68 @@ class AssetManager:
         except Exception as e:
             print(f"Error adding asset {url}: {e}")
             return None
+    
+    def add_assets_batch(self, url_list, discovery_method, batch_size=1000):
+        """Add multiple assets efficiently with deduplication."""
+        try:
+            if not url_list:
+                return []
+                
+            # Filter out noise URLs
+            filtered_urls = []
+            for url_data in url_list:
+                if isinstance(url_data, dict):
+                    url = url_data.get('url')
+                    host = url_data.get('host', '')
+                else:
+                    url = str(url_data)
+                    from urllib.parse import urlparse
+                    host = urlparse(url).netloc
+                    
+                if not self._should_skip_url(url):
+                    filtered_urls.append((url, host))
+            
+            if not filtered_urls:
+                return []
+                
+            print(f"📊 Filtered {len(url_list)} URLs down to {len(filtered_urls)} valid assets")
+            
+            added_ids = []
+            with self._get_db() as db:
+                fields = self.get_asset_fields()
+                
+                # Get existing URLs to avoid duplicates
+                existing_urls = set()
+                if filtered_urls:
+                    url_placeholders = ','.join('?' * len(filtered_urls))
+                    urls_only = [url for url, _ in filtered_urls]
+                    existing_query = f"SELECT {fields['url']} FROM assets WHERE {fields['url']} IN ({url_placeholders})"
+                    existing_urls = set(row[0] for row in db.execute(existing_query, urls_only).fetchall())
+                
+                # Process in batches
+                for i in range(0, len(filtered_urls), batch_size):
+                    batch = filtered_urls[i:i+batch_size]
+                    new_assets = [(url, host) for url, host in batch if url not in existing_urls]
+                    
+                    if new_assets:
+                        # Bulk insert new assets
+                        insert_query = f"""
+                            INSERT INTO assets ({fields['url']}, {fields['host']}, {fields['discovery_method']}, 
+                                               {fields['last_scanned']}, discovered_at) 
+                            VALUES (?, ?, ?, ?, ?)
+                        """
+                        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+                        insert_data = [(url, host, discovery_method, timestamp, timestamp) for url, host in new_assets]
+                        
+                        db.executemany(insert_query, insert_data)
+                        print(f"✅ Added {len(new_assets)} new assets (batch {i//batch_size + 1})")
+                
+                db.commit()
+                return added_ids
+                
+        except Exception as e:
+            print(f"Error in batch asset addition: {e}")
+            return []
 
     def get_assets(self, search_query='', page=1, per_page=25):
         """Retrieves assets from the database with search and pagination using field mappings."""
@@ -806,7 +905,7 @@ class AssetManager:
                 active_assets = db.execute(f"SELECT COUNT({fields['id']}) FROM assets WHERE {fields['status_code']} = 200").fetchone()[0]
                 forbidden_assets = db.execute(f"SELECT COUNT({fields['id']}) FROM assets WHERE {fields['status_code']} = 403").fetchone()[0]
                 redirect_assets = db.execute(f"SELECT COUNT({fields['id']}) FROM assets WHERE {fields['status_code']} >= 300 AND {fields['status_code']} < 400").fetchone()[0]
-                new_today = db.execute(f"SELECT COUNT({fields['id']}) FROM assets WHERE date({fields['last_scanned']}) = date('now')").fetchone()[0]
+                new_today = db.execute(f"SELECT COUNT({fields['id']}) FROM assets WHERE date({fields['discovered_at']}) = date('now')").fetchone()[0]
                 screenshots = db.execute(f"SELECT COUNT({fields['id']}) FROM assets WHERE {fields['screenshot_path']} IS NOT NULL").fetchone()[0]
                 
                 return {
@@ -875,7 +974,9 @@ class AssetManager:
             return []
 
     def get_assets_ready_for_deep_scan(self, limit=75):
-        """AGGRESSIVE: Get ANY assets with status 200 for vulnerability scanning - no tier dependencies"""
+        """Prefer validated assets for deep scan to reduce noise.
+        Select assets with status_code=200 AND basic_scan_complete=1.
+        """
         try:
             with self._get_db() as db:
                 fields = self.get_asset_fields()
@@ -883,6 +984,7 @@ class AssetManager:
                     SELECT {fields['id']}, {fields['url']}, {fields['status_code']}, {fields['tech_stack']}
                     FROM assets 
                     WHERE {fields['status_code']} = 200 
+                    AND IFNULL(basic_scan_complete, 0) = 1
                     AND IFNULL(deep_scan_complete, 0) = 0
                     ORDER BY {fields['intelligence_score']} DESC, {fields['last_scanned']} ASC 
                     LIMIT ?
@@ -1383,6 +1485,22 @@ class AssetManager:
         """
         try:
             with self._get_db() as db:
+                # Persistence policy
+                persistence = (CONFIG.get('persistence') or {}) if isinstance(CONFIG, dict) else {}
+                min_conf = float(persistence.get('min_confidence', 0.0))
+                suppress_infra = bool(persistence.get('suppress_infra', False))
+                allow_upgrade = bool(persistence.get('allow_upgrade_duplicates', True))
+
+                # Optional suppression of infrastructure findings
+                if suppress_infra:
+                    infra_types = { 'weak-cipher-suites', 'insecure_transport', 'Missing Security Header' }
+                    if str(getattr(finding, 'vuln_type', '')).strip() in infra_types:
+                        return None
+
+                # Optional minimum confidence gate
+                if getattr(finding, 'confidence', 0.0) < min_conf:
+                    return None
+
                 # Check for existing duplicate (payload-based)
                 duplicate_check = '''
                     SELECT COUNT(*) FROM vulnerabilities 
@@ -1395,7 +1513,51 @@ class AssetManager:
                 ))
                 
                 if cursor.fetchone()[0] > 0:
-                    print(f"🔄 Skipping duplicate vulnerability: {finding.vuln_type} with payload '{finding.payload}' for asset {asset_id}")
+                    # Allow upgrading existing row if new finding is stronger
+                    if allow_upgrade:
+                        row = db.execute(
+                            "SELECT id, severity, confidence FROM vulnerabilities WHERE asset_id=? AND type=? AND payload=? ORDER BY id DESC LIMIT 1",
+                            (asset_id, finding.vuln_type, finding.payload)
+                        ).fetchone()
+                        if row:
+                            vid, sev_old, conf_old = row[0], str(row[1] or ''), float(row[2] or 0.0)
+                            def sev_rank(s:str)->int:
+                                m = {'info':0,'low':1,'medium':2,'high':3,'critical':4}
+                                return m.get(str(s or '').lower(), 0)
+                            if sev_rank(finding.severity) > sev_rank(sev_old) or float(finding.confidence or 0.0) > conf_old:
+                                # Normalize values then update
+                                def _s(x):
+                                    try:
+                                        if x is None: return ''
+                                        if isinstance(x,(str,bytes)): return x if isinstance(x,str) else x.decode('utf-8','ignore')
+                                        if isinstance(x,(dict,list,tuple)): return json.dumps(x, ensure_ascii=False)[:100000]
+                                        return str(x)
+                                    except Exception:
+                                        return ''
+                                ts = finding.discovered_at.isoformat() if isinstance(finding.discovered_at, datetime) else _s(finding.discovered_at)
+                                db.execute(
+                                    """
+                                    UPDATE vulnerabilities SET description=?, severity=?, evidence=?, detected_at=?, confidence=?, asset_url=?, raw_request=?, raw_response=?, bypass_method=?
+                                    WHERE id=?
+                                    """,
+                                    (
+                                        _s(finding.impact_description or finding.evidence),
+                                        _s(finding.severity),
+                                        _s(finding.evidence),
+                                        ts,
+                                        float(finding.confidence or 0.0),
+                                        _s(finding.url),
+                                        _s(finding.raw_request),
+                                        _s(finding.raw_response),
+                                        _s(finding.bypass_method),
+                                        int(vid)
+                                    )
+                                )
+                                db.commit()
+                                print(f"🔁 Upgraded existing vulnerability {vid}: {finding.vuln_type}")
+                                return vid
+                    # Otherwise skip duplicate
+                    print(f"🔄 Deduplication: Skipping duplicate {finding.vuln_type} (payload: '{finding.payload[:50]}...') for asset {asset_id}")
                     return
                 # Additional de-dupe: same type+URL+evidence prefix
                 try:
@@ -1416,19 +1578,36 @@ class AssetManager:
                 # Insert new vulnerability
                 query = '''
                     INSERT INTO vulnerabilities 
-                    (asset_id, type, description, severity, evidence, payload, detected_at, confidence, asset_url)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (asset_id, type, description, severity, evidence, payload, detected_at, confidence, asset_url, raw_request, raw_response, bypass_method)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 '''
+                # Normalize types for SQLite binding
+                def _s(x):
+                    try:
+                        if x is None:
+                            return ''
+                        if isinstance(x, (str, bytes)):
+                            return x if isinstance(x, str) else x.decode('utf-8', 'ignore')
+                        # Dataclass or dict to JSON
+                        if isinstance(x, (dict, list, tuple)):
+                            return json.dumps(x, ensure_ascii=False)[:100000]
+                        return str(x)
+                    except Exception:
+                        return ''
+                ts = finding.discovered_at.isoformat() if isinstance(finding.discovered_at, datetime) else _s(finding.discovered_at)
                 cur = db.execute(query, (
-                    asset_id,
-                    finding.vuln_type,                                    # vuln_type -> type
-                    finding.impact_description or finding.evidence,      # impact_description -> description
-                    finding.severity,
-                    finding.evidence,
-                    finding.payload,
-                    finding.discovered_at.isoformat() if isinstance(finding.discovered_at, datetime) else finding.discovered_at,
-                    finding.confidence,
-                    finding.url                                          # url -> asset_url
+                    int(asset_id or 0),
+                    _s(finding.vuln_type),
+                    _s(finding.impact_description or finding.evidence),
+                    _s(finding.severity),
+                    _s(finding.evidence),
+                    _s(finding.payload),
+                    ts,
+                    float(finding.confidence or 0.0),
+                    _s(finding.url),
+                    _s(finding.raw_request),
+                    _s(finding.raw_response),
+                    _s(finding.bypass_method)
                 ))
                 vuln_id = cur.lastrowid
                 print(f"✅ Added vulnerability: {finding.vuln_type} ({finding.severity}) for asset {asset_id}")
@@ -1439,7 +1618,22 @@ class AssetManager:
                     pass
                 return vuln_id
         except Exception as e:
-            print(f"Error adding vulnerability finding: {e}")
+            try:
+                # Detailed diagnostics to pinpoint bad parameter types
+                dbg = {
+                    'asset_id': type(asset_id).__name__,
+                    'vuln_type': type(getattr(finding, 'vuln_type', None)).name if hasattr(type(getattr(finding,'vuln_type',None)), 'name') else str(type(getattr(finding,'vuln_type',None))),
+                    'impact_description': type(getattr(finding, 'impact_description', None)).__name__ if hasattr(type(getattr(finding,'impact_description',None)), '__name__') else str(type(getattr(finding,'impact_description',None))),
+                    'severity': type(getattr(finding, 'severity', None)).__name__ if hasattr(type(getattr(finding,'severity',None)), '__name__') else str(type(getattr(finding,'severity',None))),
+                    'evidence': type(getattr(finding, 'evidence', None)).__name__ if hasattr(type(getattr(finding,'evidence',None)), '__name__') else str(type(getattr(finding,'evidence',None))),
+                    'payload': type(getattr(finding, 'payload', None)).__name__ if hasattr(type(getattr(finding,'payload',None)), '__name__') else str(type(getattr(finding,'payload',None))),
+                    'detected_at': type(getattr(finding, 'discovered_at', None)).__name__ if hasattr(type(getattr(finding,'discovered_at',None)), '__name__') else str(type(getattr(finding,'discovered_at',None))),
+                    'confidence': type(getattr(finding, 'confidence', None)).__name__ if hasattr(type(getattr(finding,'confidence',None)), '__name__') else str(type(getattr(finding,'confidence',None))),
+                    'asset_url': type(getattr(finding, 'url', None)).__name__ if hasattr(type(getattr(finding,'url',None)), '__name__') else str(type(getattr(finding,'url',None))),
+                }
+                print(f"Error adding vulnerability finding: {e} | param types: {dbg}")
+            except Exception:
+                print(f"Error adding vulnerability finding: {e}")
             return None
 
     def ensure_verification_table(self):

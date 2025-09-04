@@ -99,46 +99,36 @@ class ModularVulnerabilityScanner:
                 if not db_path:
                     db_path = str((Path(__file__).resolve().parent / 'lean_recon.db'))
                 conn = sqlite3.connect(db_path)
-                cursor = conn.execute("SELECT domain, cookie, policy FROM cookies LIMIT 1")
-                row = cursor.fetchone()
-                if row:
-                    self.auth_domain = row[0]
-                    self.auth_cookie = row[1]
-                    policy_json = (row[2] if len(row) > 2 else None)
-                    logger.info(f"🔐 Loaded authentication from database for: {self.auth_domain}")
-                    logger.info(f"🍪 Using saved session cookie: {self.auth_cookie[:30]}...")
-                    # Parse policy and merge into config
-                    try:
-                        import json as _json
-                        pol = _json.loads(policy_json) if policy_json else None
-                        if isinstance(pol, dict):
-                            CONFIG.update({
-                                'auth_headers': pol.get('headers'),
-                                'auth_bearer': pol.get('bearer'),
-                                'auth_local_storage': pol.get('local_storage'),
-                                'auth_session_storage': pol.get('session_storage'),
-                            })
-                            login_cfg = pol.get('login') or {}
-                            CONFIG.update({
-                                'login_url': login_cfg.get('url'),
-                                'login_username': login_cfg.get('username'),
-                                'login_password': login_cfg.get('password'),
-                            })
-                    except Exception as e:
-                        logger.debug(f"Failed parsing auth policy: {e}")
+                # UNIVERSAL SCANNING: Load all domain-specific authentication, don't apply globally
+                cursor = conn.execute("SELECT domain, cookie, policy FROM cookies")
+                auth_entries = cursor.fetchall()
+                self.domain_auth = {}  # Store domain-specific auth instead of global
+                
+                for domain, cookie, policy_json in auth_entries:
+                    self.domain_auth[domain] = {
+                        'cookie': cookie,
+                        'policy': policy_json
+                    }
+                    logger.info(f"🔐 Loaded authentication for domain: {domain}")
+                
+                # Only log if we actually have authentication configured
+                if self.domain_auth:
+                    domains = list(self.domain_auth.keys())
+                    logger.info(f"🔐 Authenticated scanning enabled for {len(domains)} domain(s): {', '.join(domains[:3])}")
+                    
+                # Don't set global auth_domain/auth_cookie - use domain-specific lookup instead
+                self.auth_domain = None  # Remove global auth
+                self.auth_cookie = None  # Remove global auth
                 conn.close()
             except Exception as e:
                 logger.debug(f"Failed to load auth from database: {e}")
         
-        if self.auth_cookie:
-            logger.info(f"🔐 Authenticated scanning enabled for domain: {self.auth_domain}")
-        else:
-            logger.info("🌐 Unauthenticated scanning mode")
+        # UNIVERSAL SCANNING: No global authentication, use domain-specific lookup
+        logger.info("🌐 Universal scanning mode - using domain-specific authentication")
         
-        # ✅ ADD AUTHENTICATION TO CONFIG
+        # ✅ ADD DOMAIN-SPECIFIC AUTHENTICATION TO CONFIG
         AUTH_CONFIG = CONFIG.copy()
-        AUTH_CONFIG['auth_cookie'] = self.auth_cookie
-        AUTH_CONFIG['auth_domain'] = self.auth_domain
+        AUTH_CONFIG['domain_auth'] = getattr(self, 'domain_auth', {})
         
         # Initialize all scanning modules with AssetManager reference and authentication
         self.seclists_manager = SecListsManager(self.asset_manager, AUTH_CONFIG)
@@ -357,15 +347,21 @@ class ModularVulnerabilityScanner:
                 # Pre-cycle: ensure valid session (universal)
                 try:
                     from modules.auth_manager import AuthManager as _AM
+                    # UNIVERSAL SCANNING: Refresh authentication for all configured domains
                     if not getattr(self, 'auth_manager', None):
                         self.auth_manager = _AM(self.asset_manager, CONFIG)
-                    host = (self.auth_domain or '').replace('http://','').replace('https://','').strip('/ ')
-                    if self.auth_manager and host:
-                        probe = f"http://{host}/"
-                        new_cookie = await self.auth_manager.ensure_valid_session(probe, host)
-                        if new_cookie and new_cookie != self.auth_cookie:
-                            self.auth_cookie = new_cookie
-                            logger.info("🔄 Pre-cycle: refreshed authentication cookie")
+                    
+                    if self.auth_manager and hasattr(self, 'domain_auth'):
+                        for domain in self.domain_auth.keys():
+                            try:
+                                host = domain.replace('http://','').replace('https://','').strip('/ ')
+                                probe = f"http://{host}/"
+                                new_cookie = await self.auth_manager.ensure_valid_session(probe, host)
+                                if new_cookie and new_cookie != self.domain_auth[domain]['cookie']:
+                                    self.domain_auth[domain]['cookie'] = new_cookie
+                                    logger.info(f"🔄 Pre-cycle: refreshed authentication for {domain}")
+                            except Exception as refresh_err:
+                                logger.debug(f"Auth refresh failed for {domain}: {refresh_err}")
                 except Exception as _pre:
                     logger.debug(f"Pre-cycle auth ensure skipped: {_pre}")
 
@@ -378,9 +374,8 @@ class ModularVulnerabilityScanner:
                     enable_cleanup_closed=True
                 )
                 session_headers = {'User-Agent': 'ModularScanner/2025'}
-                if self.auth_cookie and self.auth_domain:
-                    session_headers['Cookie'] = self.auth_cookie
-                    logger.info(f"🔐 Adding authentication headers for {self.auth_domain}")
+                # UNIVERSAL SCANNING: No global authentication headers
+                # Authentication is now handled per-request based on target domain
 
                 async with aiohttp.ClientSession(
                     connector=connector,
@@ -440,7 +435,9 @@ class ModularVulnerabilityScanner:
                         except Exception as _e2:
                             logger.warning(f"Tier 2 profiling error (direct): {_e2}")
                         # Tier 2.5 (ABL) for direct URLs if enabled
-                        if self.agent_enabled:
+                        # In direct-only mode, skip ABL to avoid noise and invalid URLs
+                        import os as _os
+                        if self.agent_enabled and not _os.environ.get('MODSCAN_ONLY_DIRECT_URLS'):
                             try:
                                 await self._tier2_5_agentic_exploration(session)
                                 logger.info("🤖 Direct: ABL exploration completed; proceeding to Tier3…")
@@ -472,6 +469,11 @@ class ModularVulnerabilityScanner:
                             logger.info("➡️ Direct: Starting Tier3 vulnerability scanning…")
                             await asyncio.wait_for(self._tier3_modular_vulnerability_scanning(session), timeout=60)
                             logger.info("✅ Direct: Tier3 completed")
+                            # Proactively close any internal sessions opened by the scanner
+                            try:
+                                await self.vulnerability_scanner._close_internal_session()
+                            except Exception:
+                                pass
                         except asyncio.TimeoutError:
                             logger.warning("⏰ Direct: Tier3 timed out after 60s — running emergency fallback on latest direct URLs")
                             # Emergency minimal inline scan on last few direct URLs
@@ -494,6 +496,10 @@ class ModularVulnerabilityScanner:
                         # If dashboard requested only these URLs, stop after inline pass and one focused Tier3
                         if _os.environ.get('MODSCAN_ONLY_DIRECT_URLS'):
                             logger.info("✅ Direct: Only user URLs requested — stopping after direct scan")
+                            try:
+                                await self.vulnerability_scanner._close_internal_session()
+                            except Exception:
+                                pass
                             break
 
                         # Tier 4 (optional)
@@ -599,7 +605,9 @@ class ModularVulnerabilityScanner:
                     logger.info(f"✅ Found {len(discovered_urls)} candidate URLs for {clean_domain}")
                     
                     # Validate candidates quickly (HEAD/GET) and only persist non-404s
-                    method = "authenticated_discovery" if (self.auth_cookie and (self.auth_domain == clean_domain)) else "ultimate_discovery"
+                    # UNIVERSAL SCANNING: Check if domain has authentication configured
+                    has_auth = clean_domain in getattr(self, 'domain_auth', {})
+                    method = "authenticated_discovery" if has_auth else "ultimate_discovery"
                     valid_statuses = set(list(range(200, 300)) + [301,302,307,308,401,403])
                     sem = asyncio.Semaphore(50)
 
@@ -616,16 +624,24 @@ class ModularVulnerabilityScanner:
                                     except Exception:
                                         pass
                                 try:
-                                    # HEAD first
+                                    # HEAD first (no bypass wrapper for HEAD; not widely supported by proxies)
                                     async with session.head(url_try, allow_redirects=True, timeout=8) as r:
                                         if r.status in valid_statuses:
                                             return url_try, r.status
                                 except Exception:
                                     pass
                                 try:
-                                    async with session.get(url_try, allow_redirects=True, timeout=10) as r:
-                                        if r.status in valid_statuses:
-                                            return url_try, r.status
+                                    # GET with 403-bypass wrapper
+                                    try:
+                                        from modules.http_bypass import smart_request as _smart_request
+                                        r, _t = await _smart_request(session, 'GET', url_try, timeout=12)
+                                        status = getattr(r, 'status', None)
+                                        if status in valid_statuses:
+                                            return url_try, status
+                                    except Exception:
+                                        async with session.get(url_try, allow_redirects=True, timeout=10) as r:
+                                            if r.status in valid_statuses:
+                                                return url_try, r.status
                                 except Exception:
                                     pass
                             return None, None
@@ -1031,6 +1047,35 @@ def kill_existing_engines():
 async def main():
     """Main entry point for modular scanner"""
     logger.info("🚀 Starting ModScan Engine with process management...")
+    # Lightweight CLI flags to simplify direct URL runs
+    try:
+        import argparse, json as _json
+        ap = argparse.ArgumentParser(add_help=False)
+        ap.add_argument("--direct", action="store_true", help="Enable direct URL testing mode (no discovery/recon)")
+        ap.add_argument("--only-direct", action="store_true", help="Stop after direct scan pipeline")
+        ap.add_argument("--urls", type=str, help="Comma-separated list of URLs or JSON array of URLs for direct mode")
+        ap.add_argument("--help", action="store_true")
+        known, _ = ap.parse_known_args()
+        if getattr(known, "help", False):
+            logger.info("Flags: --direct --only-direct --urls='<comma or JSON>'  (env still supported)")
+        if getattr(known, "direct", False):
+            os.environ['MODSCAN_DIRECT_URL_TESTING'] = '1'
+        if getattr(known, "only_direct", False):
+            os.environ['MODSCAN_ONLY_DIRECT_URLS'] = '1'
+        if getattr(known, "urls", None):
+            raw = known.urls.strip()
+            # Accept JSON array or comma-separated list
+            try:
+                parsed = _json.loads(raw)
+                if isinstance(parsed, list):
+                    os.environ['MODSCAN_DIRECT_URLS'] = _json.dumps(parsed)
+                else:
+                    os.environ['MODSCAN_DIRECT_URLS'] = _json.dumps([str(parsed)])
+            except Exception:
+                urls = [u.strip() for u in raw.split(',') if u.strip()]
+                os.environ['MODSCAN_DIRECT_URLS'] = _json.dumps(urls)
+    except Exception:
+        pass
     
     if os.environ.get("MODSCAN_SKIP_PROCESS_GUARD") == "1":
         logger.info("⏭️ Process guard skipped via environment variable")
@@ -1049,6 +1094,12 @@ async def main():
         logger.info("🛑 Modular scanner stopped by user")
     except Exception as e:
         logger.error(f"💥 Modular scanner error: {e}")
+    finally:
+        # Ensure internal scanner session is closed in all paths
+        try:
+            await scanner.vulnerability_scanner._close_internal_session()
+        except Exception:
+            pass
 
     def _should_scan(self, key: str) -> bool:
         """
