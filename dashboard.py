@@ -3,6 +3,7 @@ import os
 import json
 import sys
 import time
+import re
 from pathlib import Path
 from flask import Flask, jsonify, render_template, g, request, make_response
 try:
@@ -2611,538 +2612,145 @@ def direct_url_scan():
     - Defaults to non-blocking mode (fire-and-forget) to avoid API hangs; optional blocking with return_results=true.
     """
     try:
-        # Be tolerant to malformed JSON: silent=True avoids raising BadRequest
         data = request.get_json(silent=True)
         if not data:
             return jsonify({"success": False, "error": "No JSON data provided"}), 400
-            
+
         urls = data.get('urls', [])
         if isinstance(urls, str):
             urls = [u.strip() for u in urls.strip().split('\n') if u.strip()]
-        
+
         if not urls:
             return jsonify({"success": False, "error": "No URLs provided"}), 400
-            
-        auth_enabled = data.get('auth_enabled', False)
 
-        # Build a universal per-host cookie map from saved sessions
-        # This ensures Direct URL Testing reuses the same cookies as the engine/UI
-        from urllib.parse import urlsplit
-        cookie_map = {}
-        try:
-            with sqlite3.connect(app.config['database_path']) as _db:
-                _rows = _db.execute("SELECT domain, cookie FROM cookies").fetchall()
-                for d, c in _rows:
-                    if not c:
-                        continue
-                    d = (d or '').strip()
-                    if not d:
-                        continue
-                    # Normalize any stored value (domain or full URL) to a host
-                    if d.startswith('http://') or d.startswith('https://'):
-                        try:
-                            host = urlsplit(d).netloc.lower()
-                        except Exception:
-                            host = d.lower()
-                    else:
-                        host = d.lower()
-                    if host:
-                        # last-write wins; table is per-domain so this is fine
-                        cookie_map[host] = c
-        except Exception as _e:
-            app.logger.debug(f"Cookie map load failed: {_e}")
-
-        # Helper: per-request cookie injector using aiohttp TraceConfig
-        import aiohttp
-        cookie_used_hosts = set()
-        trace = aiohttp.TraceConfig()
-
-        async def _on_request_start(session, trace_config_ctx, params):
-            try:
-                host = urlsplit(str(params.url)).netloc.lower()
-                ck = cookie_map.get(host)
-                if ck:
-                    # Copy to avoid mutating shared headers
-                    new_headers = dict(params.headers or {})
-                    new_headers['Cookie'] = ck
-                    params.headers = new_headers
-                    if host not in cookie_used_hosts:
-                        cookie_used_hosts.add(host)
-                        app.logger.info(f"🔐 Direct testing: using saved cookies for {host}")
-            except Exception:
-                pass
-
-        # Correct registration for aiohttp TraceConfig
-        trace.on_request_start.append(_on_request_start)
-        
-        # Universal scanning: support deep (full engine) and quick (preflight) modes.
-        from asset_manager import AssetManager
-        import asyncio
-        import aiohttp
-        import os
-
-        # Optional: mark environment for other subsystems that may observe this flag
-        os.environ['MODSCAN_DIRECT_URL_TESTING'] = '1'
-
-        async def run_direct_scan_quick(target_urls):
-            """Preflight universal probes (reflected XSS + open redirect). Optional adjunct to deep mode.
-
-            Small concurrency + per-URL timeouts; does not replace deep engine scans.
-            """
-            from asset_manager import VulnerabilityFinding
-            from datetime import datetime
-
-            app.logger.info(f"🚨 DIRECT-QUICK START urls={len(target_urls)}")
-            try:
-                from asset_manager import AssetManager as _AM
-                _AM().notify_change(
-                    message="Direct scan started",
-                    payload={"mode": "quick", "urls": len(target_urls)},
-                    ntype="direct_scan"
-                )
-            except Exception:
-                pass
-
-            asset_manager = AssetManager()
-            findings_count = 0
-
-            # Concurrency and timeouts
-            concurrency = int(os.environ.get('MODSCAN_DIRECT_CONCURRENCY', '5'))
-            per_url_timeout = float(os.environ.get('MODSCAN_DIRECT_TIMEOUT', '8'))
-            connector = aiohttp.TCPConnector(limit=concurrency * 2, ssl=False)
-            timeout = aiohttp.ClientTimeout(total=per_url_timeout)
-            sem = asyncio.Semaphore(concurrency)
-
-            # Expanded universal payloads (context-agnostic)
-            payloads = [
-                "<script>alert('XSS')</script>",
-                "\"<svg/onload=alert(1)>",
-                "'-(alert(1))-'"
-            ]
-            test_params_default = ['name','q','search','s','id']
-            redirect_candidates = ['next','url','u','redirect','dest','target','return','goto','to','continue','redirect_to']
-
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout, trace_configs=[trace]) as session:
-                async def scan_one(raw_url: str):
-                    nonlocal findings_count
-                    async with sem:
-                        url = raw_url.strip()
-                        if not url:
-                            return
-                        try:
-                            # Discover candidate parameter names from the page (universal)
-                            discovered_params = []
-                            discovered_submit = None
-                            try:
-                                async with session.get(url, allow_redirects=True) as r0:
-                                    base_html = ''
-                                    if r0.status == 200:
-                                        try:
-                                            base_html = await r0.text()
-                                        except Exception:
-                                            base_html = (await r0.read()).decode('utf-8', errors='ignore')
-                                    if base_html:
-                                        # Light regex discovery to avoid heavy deps
-                                        import re as _re
-                                        for m in _re.finditer(r'name=[\"\']([a-zA-Z0-9_\-]{1,32})[\"\']', base_html):
-                                            nm = m.group(1)
-                                            if nm and nm.lower() not in discovered_params:
-                                                discovered_params.append(nm.lower())
-                                        # Look for common submit markers
-                                        for cand in ['submit','action','do','send']:
-                                            if cand in base_html.lower():
-                                                discovered_submit = discovered_submit or cand
-                            except Exception:
-                                pass
-
-                            # Build param set: discovered + defaults (limit for prudence)
-                            param_names = list(dict.fromkeys((discovered_params or []) + test_params_default))[:8]
-
-                            # Try multiple payloads and candidate param names
-                            reflected = False
-                            for p in payloads:
-                                for param in param_names:
-                                    sep = '&' if '?' in url else '?'
-                                    test_url = f"{url}{sep}{param}={p}"
-                                    # Add a submit-like marker if none present in the query and discovered
-                                    if discovered_submit and discovered_submit not in test_url.lower():
-                                        test_url += f"&{discovered_submit}=1"
-                                    app.logger.info(f"🚨 DIRECT XSS TEST: {test_url}")
-                                    async with session.get(test_url, allow_redirects=True) as response:
-                                        if response.status != 200:
-                                            continue
-                                        try:
-                                            content = await response.text()
-                                        except Exception:
-                                            content = (await response.read()).decode('utf-8', errors='ignore')
-                                        if p in content:
-                                            reflected = True
-                                            finding = VulnerabilityFinding(
-                                                url=test_url,
-                                            vuln_type="XSS",
-                                            severity="High",
-                                            confidence=0.95,
-                                            payload=f"{param}={p}",
-                                            evidence="Reflected payload present in response",
-                                            discovered_at=datetime.now(),
-                                            impact_description="Reflected XSS enables arbitrary JavaScript execution",
-                                            remediation="Validate inputs and contextually encode outputs",
-                                            affected_parameter=param
-                                        )
-                                        try:
-                                            from urllib.parse import urlparse as _urlparse
-                                            parsed = _urlparse(url)
-                                            base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                                            # Ensure we have an asset row for linkage
-                                            existing = asset_manager.get_asset_by_url(base)
-                                            if existing and existing.get('id'):
-                                                asset_id = existing['id']
-                                            else:
-                                                asset_id = asset_manager.add_asset(base, parsed.netloc, 'direct_scan') or 0
-                                            asset_manager.add_vulnerability_finding(finding, int(asset_id) if asset_id else 0)
-                                        except Exception:
-                                            # Fallback to asset_id=0 (unknown) if asset table unavailable
-                                            asset_manager.add_vulnerability_finding(finding, 0)
-                                        try:
-                                            asset_manager.notify_change(
-                                                message="Vulnerability found",
-                                                payload={
-                                                    "type": finding.vuln_type,
-                                                    "url": finding.url,
-                                                    "severity": finding.severity,
-                                                    "evidence": finding.evidence,
-                                                },
-                                                ntype="vulnerability"
-                                            )
-                                        except Exception:
-                                            pass
-                                        findings_count += 1
-                                        app.logger.info(f"🚨 XSS FOUND + STORED: {test_url}")
-                                    if reflected:
-                                        break
-                                if reflected:
-                                    break
-
-                            # Universal Open Redirect probe (no target assumptions)
-                            try:
-                                from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
-                                sp = urlsplit(url)
-                                q = dict(parse_qsl(sp.query, keep_blank_values=True))
-                                if not q:
-                                    # add a param if none present
-                                    q[redirect_candidates[0]] = 'http://example.com/'
-                                else:
-                                    # overwrite any known redirect-like param
-                                    for cand in redirect_candidates:
-                                        if cand in q or cand.lower() in q:
-                                            q[cand] = 'http://example.com/'
-                                            break
-                                    else:
-                                        q[redirect_candidates[0]] = 'http://example.com/'
-                                rq = urlencode(q, doseq=True)
-                                rtest = urlunsplit((sp.scheme, sp.netloc, sp.path, rq, sp.fragment))
-                                async with session.get(rtest, allow_redirects=False) as r:
-                                    loc = r.headers.get('Location', '')
-                                    if r.status in (301,302,303,307,308) and loc.startswith('http') and 'example.com' in loc:
-                                        finding = VulnerabilityFinding(
-                                            url=rtest,
-                                            vuln_type="OPEN_REDIRECT",
-                                            severity="Medium",
-                                            confidence=0.8,
-                                            payload=f"redirect=http://example.com/",
-                                            evidence=f"3xx to {loc}",
-                                            discovered_at=datetime.now(),
-                                            impact_description="Unvalidated redirect can be abused for phishing and token theft",
-                                            remediation="Validate and whitelist redirect destinations; use relative paths only",
-                                            affected_parameter=""
-                                        )
-                                        try:
-                                            existing = asset_manager.get_asset_by_url(f"{sp.scheme}://{sp.netloc}{sp.path}")
-                                            if existing and existing.get('id'):
-                                                asset_id = existing['id']
-                                            else:
-                                                asset_id = asset_manager.add_asset(f"{sp.scheme}://{sp.netloc}{sp.path}", sp.netloc, 'direct_scan') or 0
-                                            asset_manager.add_vulnerability_finding(finding, int(asset_id) if asset_id else 0)
-                                            findings_count += 1
-                                            asset_manager.notify_change(
-                                                "Vulnerability found",
-                                                {"type": finding.vuln_type, "url": finding.url, "severity": finding.severity, "evidence": finding.evidence},
-                                                ntype="vulnerability"
-                                            )
-                                            app.logger.info(f"🚨 OPEN REDIRECT FOUND + STORED: {rtest} -> {loc}")
-                                        except Exception as _e:
-                                            app.logger.error(f"Open redirect store error: {_e}")
-                            except Exception as _e:
-                                app.logger.debug(f"Open redirect probe error: {_e}")
-                        except Exception as e:
-                            app.logger.error(f"🚨 Direct test failed for {url}: {e}")
-
-                tasks = [asyncio.create_task(scan_one(u)) for u in target_urls]
-                await asyncio.gather(*tasks, return_exceptions=True)
-
-            app.logger.info(f"✅ DIRECT-QUICK DONE findings={findings_count}")
-            try:
-                from asset_manager import AssetManager as _AM
-                _AM().notify_change(
-                    message="Direct scan completed",
-                    payload={"mode": "quick", "urls": len(target_urls), "findings": findings_count},
-                    ntype="direct_scan"
-                )
-            except Exception:
-                pass
-            return findings_count
-
-        async def run_direct_scan_deep(target_urls, profile: str = 'normal'):
-            """Deep, in-depth universal scan using VulnerabilityScanner on provided URLs as assets.
-
-            This is the same engine used for discovered assets, ensuring parity.
-            """
-            from modules.vulnerability_scanner import VulnerabilityScanner
-            from urllib.parse import urlparse as _urlparse
-
-            am = AssetManager()
-            # Ensure assets exist and capture their IDs
-            assets = []
-            try:
-                from asset_manager import AssetManager as _AM
-                _AM().notify_change(
-                    message="Direct scan started",
-                    payload={"mode": "deep", "urls": len(target_urls), "profile": profile},
-                    ntype="direct_scan"
-                )
-            except Exception:
-                pass
-            for raw in target_urls:
-                try:
-                    u = raw.strip()
-                    if not u:
-                        continue
-                    pu = _urlparse(u)
-                    host = pu.netloc
-                    asset_id = am.add_asset(u, host, 'direct_scan') or 0
-                    assets.append({
-                        'id': int(asset_id) if asset_id else 0,
-                        'url': u,
-                        'host': host,
-                        'status_code': 200,
-                        'discovery_method': 'direct_scan'
-                    })
-                except Exception as e:
-                    app.logger.error(f"Asset prep failed for {raw}: {e}")
-
-            if not assets:
-                return 0
-
-            # Build AUTH-aware config for the scanner (universal). If many hosts, pick most common.
-            try:
-                from collections import Counter
-                hosts = [a.get('host') for a in assets if a.get('host')]
-                main_host = Counter(hosts).most_common(1)[0][0] if hosts else ''
-            except Exception:
-                main_host = ''
-
-            AUTH_CONFIG = CONFIG.copy()
-            # Optional: pass user-selected test categories from request
-            try:
-                selected_tests = data.get('tests') or []
-                if isinstance(selected_tests, list):
-                    AUTH_CONFIG['tests'] = [str(t).lower() for t in selected_tests]
-            except Exception:
-                pass
-            # If we have a cookie for the primary host, set it so external tools (sqlmap/dalfox) receive it
-            if main_host and main_host in cookie_map and cookie_map.get(main_host):
-                AUTH_CONFIG['auth_cookie'] = cookie_map.get(main_host)
-                AUTH_CONFIG['auth_domain'] = main_host
-                app.logger.info(f"🔐 Direct-deep: providing auth_cookie for {main_host} to VulnerabilityScanner")
-            scanner = VulnerabilityScanner(am, AUTH_CONFIG)
-            # Keep connector modest to avoid overwhelming small targets; scanner has its own concurrency
-            profile_key = (profile or 'normal').lower()
-            # Map profiles to reasonable connector + semaphore limits
-            prof_map = {
-                'stealth': {'conn': 20, 'sem': 100},
-                'normal':  {'conn': 50, 'sem': 500},
-                'aggressive': {'conn': 150, 'sem': 1500}
-            }
-            p = prof_map.get(profile_key, prof_map['normal'])
-            connector = aiohttp.TCPConnector(limit=p['conn'], ssl=False)
-            timeout = aiohttp.ClientTimeout(total=None)  # deep scans manage their own per-request timeouts
-            # Attach trace to inject per-host cookies into every request
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout, trace_configs=[trace]) as session:
-                try:
-                    results = await scanner.scan_assets_for_vulnerabilities(assets, session, semaphore_limit=p['sem'])
-                except Exception as e:
-                    app.logger.error(f"Deep scan error: {e}")
-                    results = []
-            try:
-                # Count findings from results (engine stores them internally already)
-                count = sum(len(lst) for lst in results if isinstance(lst, list))
-                try:
-                    from asset_manager import AssetManager as _AM
-                    _AM().notify_change(
-                        message="Direct scan completed",
-                        payload={"mode": "deep", "urls": len(target_urls), "profile": profile, "findings": count},
-                        ntype="direct_scan"
-                    )
-                except Exception:
-                    pass
-                return count
-            except Exception:
-                return 0
-        
-        # Legacy complex path removed to keep endpoint lean and non-blocking.
-        
         # Decide mode: deep (default) vs quick adjunct
         deep = True if str(data.get('deep', 'true')).lower() in ('1','true','yes','on') else False
-        # Default profile from saved global profile
-        try:
-            from pathlib import Path as _Path
-            import json as _json
-            _prof_path = _Path(__file__).resolve().parent / 'scan_profile.json'
-            _prof = 'normal'
-            if _prof_path.exists():
-                _data = _json.loads(_prof_path.read_text(encoding='utf-8') or '{}')
-                _prof = (_data.get('profile') or 'normal').lower()
-        except Exception:
-            _prof = 'normal'
-        profile = (data.get('profile') or _prof).lower()
-        quick_also = True if str(data.get('quick_probe', 'false')).lower() in ('1','true','yes','on') else False
-        force_refresh = True if str(data.get('force_refresh', 'false')).lower() in ('1','true','yes','on') else False
-        use_minimized_cookie = True if str(data.get('use_minimized_cookie', 'false')).lower() in ('1','true','yes','on') else False
+        profile = (data.get('profile') or 'normal').lower()
 
-        # Decide blocking vs non-blocking behavior
-        return_results = bool(data.get('return_results', False))
-
-        # Helper to run async refresh synchronously
-        def _run_force_refresh(auth_manager, host, pol):
+        def run_direct_scan_deep_sync(target_urls, profile: str = 'normal'):
+            """
+            Synchronous wrapper for the async deep scan logic.
+            """
+            import asyncio
             try:
-                import asyncio as _a
-                async def _do():
-                    return await auth_manager.refresh_session(host, pol)
+                asyncio.run(run_direct_scan_deep_async(target_urls, profile))
+            except Exception as e:
+                app.logger.error(f"Error running async deep scan: {e}", exc_info=True)
+
+        async def run_direct_scan_deep_async(target_urls, profile: str = 'normal'):
+            """
+            Deep, in-depth universal scan using the project's standard components.
+            """
+            from asset_manager import AssetManager
+            from modules.vulnerability_scanner import VulnerabilityScanner
+            from modules.screenshot_manager import ScreenshotManager
+            from modules.technology_detector import TechnologyDetector
+            from urllib.parse import urlparse as _urlparse
+            import aiohttp
+            import time
+
+            am = AssetManager()
+            tech_detector = TechnologyDetector(am, CONFIG)
+            screenshot_manager = ScreenshotManager(am, CONFIG)
+            
+            initial_assets = []
+            for raw_url in target_urls:
+                url = raw_url.strip()
+                if not url:
+                    continue
                 try:
-                    loop = _a.get_event_loop()
-                except RuntimeError:
-                    loop = _a.new_event_loop(); _a.set_event_loop(loop)
-                if loop.is_running():
-                    fut = _a.ensure_future(_do())
-                    # Not ideal to block, but direct endpoint can run in a background thread
-                    return _a.get_event_loop().run_until_complete(fut)
-                return loop.run_until_complete(_do())
-            except Exception:
-                return None
-
-        # Optional: force refresh of session cookies before scanning (universal)
-        if force_refresh:
-            try:
-                from modules.auth_manager import AuthManager
-                am = AuthManager(AssetManager(), CONFIG)
-                # Refresh for primary host detected in URLs
-                from urllib.parse import urlparse as _urlparse
-                hosts = []
-                for u in urls:
-                    try:
-                        hosts.append(_urlparse(u).netloc.lower())
-                    except Exception:
-                        pass
-                primary = hosts[0] if hosts else ''
-                if primary:
-                    pol_cookie, pol = am.load_policy(primary)
-                    if pol:
-                        new_cookie = _run_force_refresh(am, primary, pol)
-                        if new_cookie:
-                            cookie_map[primary] = new_cookie
-                            app.logger.info(f"🔄 Direct: refreshed session for {primary}")
-            except Exception as _e:
-                app.logger.debug(f"Force refresh error: {_e}")
-
-        # Optional: use minimized cookie only if configured or persistent/auth_keys defined
-        if use_minimized_cookie and cookie_map:
-            try:
-                minimized = {}
-                import json as _json
-                with sqlite3.connect(app.config['database_path']) as _db:
-                    for host, ck in cookie_map.items():
-                        keep = []
-                        row = _db.execute("SELECT persistent, auth_keys FROM cookies WHERE domain LIKE ? OR domain=? ORDER BY last_updated DESC LIMIT 1", (f"%{host}%", host)).fetchone()
-                        if row:
-                            try:
-                                kp = row[0]
-                                ak = row[1]
-                                if isinstance(kp, str):
-                                    kp = _json.loads(kp)
-                                if isinstance(ak, str):
-                                    ak = _json.loads(ak)
-                                keep = [*(kp or []), *(ak or [])]
-                            except Exception:
-                                keep = []
-                        # Fallback heuristic for universal auth/session keys
-                        if not keep:
-                            keep = ['phpsessid','session','sess','auth','token','csrftoken','xsrf','jwt','remember']
-                        try:
-                            from modules.auth_manager import AuthManager as _AM
-                            minimized_cookie = _AM.minimize_cookie(ck, keep)
-                        except Exception:
-                            minimized_cookie = ck
-                        minimized[host] = minimized_cookie
-                # Replace map + note
-                cookie_map.update(minimized)
-                app.logger.info("✂️ Direct: using minimized cookies for scan")
-            except Exception as _e:
-                app.logger.debug(f"Minimize-cookie error: {_e}")
-
-        if return_results:
-            # Blocking: run and return counts (uses concurrency + timeouts to avoid long hangs)
-            try:
-                if deep:
-                    v_deep = asyncio.run(run_direct_scan_deep(urls, profile=profile))
-                else:
-                    v_deep = 0
-                v_quick = asyncio.run(run_direct_scan_quick(urls)) if quick_also else 0
-                vulnerability_count = (v_deep or 0) + (v_quick or 0)
-            finally:
-                os.environ.pop('MODSCAN_DIRECT_URL_TESTING', None)
-            return jsonify({
-                "success": True,
-                "mode": "blocking",
-                "depth": "deep" if deep else "quick",
-                "profile": profile,
-                "message": f"Completed direct testing for {len(urls)} URLs",
-                "urls_processed": len(urls),
-                "vulnerabilities_found": vulnerability_count,
-                "auth_results": [f"🚀 Started {'authenticated' if auth_enabled else 'unauthenticated'} vulnerability testing"]
-            })
-        else:
-            # Non-blocking: schedule in background thread and return immediately
-            import threading
-
-            def _runner():
-                try:
-                    if deep:
-                        asyncio.run(run_direct_scan_deep(urls, profile=profile))
-                    if quick_also:
-                        asyncio.run(run_direct_scan_quick(urls))
+                    host = _urlparse(url).netloc
+                    asset_id = am.add_asset(url, host, 'direct_scan')
+                    if asset_id:
+                        initial_assets.append(am.get_asset_by_id(asset_id))
                 except Exception as e:
-                    app.logger.error(f"Background direct scan error: {e}")
-                finally:
-                    os.environ.pop('MODSCAN_DIRECT_URL_TESTING', None)
+                    app.logger.error(f"Failed to create initial asset for {url}: {e}")
 
-            threading.Thread(target=_runner, daemon=True).start()
+            if not initial_assets:
+                app.logger.warning("No valid assets to scan after initial creation.")
+                return
 
-            return jsonify({
-                "success": True,
-                "mode": "async_started",
-                "depth": "deep" if deep else "quick",
-                "profile": profile,
-                "message": f"Started direct testing for {len(urls)} URLs",
-                "urls_received": len(urls),
-                "vulnerabilities_found": None,
-                "auth_results": [f"🚀 Started {'authenticated' if auth_enabled else 'unauthenticated'} vulnerability testing"]
-            })
-        # Note: Legacy engine launch and DB insert path removed in favor of
-        # lean, universal direct testing above. Auth/engine orchestration lives
-        # in dedicated endpoints to keep this path predictable and fast.
+            app.logger.info(f"Starting enrichment for {len(initial_assets)} assets...")
+            enriched_assets = []
+            connector = aiohttp.TCPConnector(ssl=False) # Allow self-signed certs
+            async with aiohttp.ClientSession(connector=connector) as session:
+                for asset in initial_assets:
+                    try:
+                        start_time = time.time()
+                        async with session.get(asset['url'], timeout=15, allow_redirects=True) as response:
+                            response_time = int((time.time() - start_time) * 1000)
+                            headers = dict(response.headers)
+                            content = await response.text(encoding='utf-8', errors='ignore')
+
+                            update_data = {
+                                'status_code': response.status,
+                                'response_time': response_time,
+                                'content_length': len(content),
+                                'headers_collected': json.dumps(headers, default=str)
+                            }
+
+                            # Get Title
+                            title_match = re.search(r'<title[^>]*>([^<]+)</title>', content, re.IGNORECASE)
+                            if title_match:
+                                update_data['title'] = title_match.group(1).strip()[:200]
+
+                            # Get Tech Stack
+                            try:
+                                technologies = await tech_detector._comprehensive_technology_analysis(asset['url'], headers, content)
+                                if technologies:
+                                    update_data['tech_stack'] = ', '.join(technologies)
+                            except Exception as e:
+                                app.logger.warning(f"Tech detection failed for {asset['url']}: {e}")
+
+                            # Get Screenshot
+                            if 200 <= response.status < 400:
+                                try:
+                                    screenshot_path = await screenshot_manager.capture_url(asset['url'], asset_id=asset['id'])
+                                    if screenshot_path:
+                                        update_data['screenshot_path'] = screenshot_path
+                                except Exception as e:
+                                    app.logger.warning(f"Screenshot failed for {asset['url']}: {e}")
+
+                            # Save all enriched data
+                            am.update_asset_fields(asset['id'], update_data)
+                            app.logger.info(f"Enriched asset {asset['url']}: Status {update_data['status_code']}, Tech: {update_data.get('tech_stack')}")
+                            enriched_assets.append(am.get_asset_by_id(asset['id']))
+
+                    except Exception as e:
+                        am.update_asset_fields(asset['id'], {'status_code': 0, 'title': f'Scan Error: {e}'})
+                        app.logger.error(f"Failed to enrich {asset['url']}: {e}")
+
+            # 4. Run vulnerability scan
+            if not enriched_assets:
+                app.logger.info("No assets were successfully enriched. Skipping vulnerability scan.")
+                return
+
+            app.logger.info(f"Starting vulnerability scan on {len(enriched_assets)} enriched assets...")
+            scanner = VulnerabilityScanner(am, CONFIG)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                await scanner.scan_assets_for_vulnerabilities(enriched_assets, session)
+
+        # Non-blocking: schedule in background thread and return immediately
+        import threading
         
+        def _runner():
+            with app.app_context(): # Need app context for DB access etc. in the thread
+                if deep:
+                    run_direct_scan_deep_sync(urls, profile=profile)
+
+        threading.Thread(target=_runner, daemon=True).start()
+
+        return jsonify({
+            "success": True,
+            "mode": "async_started",
+            "depth": "deep" if deep else "quick",
+            "profile": profile,
+            "message": f"Started direct testing for {len(urls)} URLs in the background.",
+            "urls_received": len(urls),
+        })
+
     except Exception as e:
-        app.logger.error(f"Direct scan error: {e}")
+        app.logger.error(f"Direct scan error: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/assets/import', methods=['POST'])
