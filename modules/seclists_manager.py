@@ -76,7 +76,7 @@ class SecListsManager:
         # Tiers: surface -> standard -> deep -> comprehensive
         wordlist_configs = {
             'subdomains': {
-                'surface': ['Discovery/DNS/subdomains-top1million-5000.txt', 'Discovery/DNS/FUZZSUBS_CYFARE_1.txt'],  # Include FUZZSUBS early for dvwa
+                'surface': ['Discovery/DNS/subdomains-top1million-5000.txt', 'Discovery/DNS/FUZZSUBS_CYFARE_1.txt'],  # Universal subdomain discovery
                 'standard': ['Discovery/DNS/subdomains-top1million-20000.txt'],  # 20K 
                 'deep': ['Discovery/DNS/subdomains-top1million-110000.txt'],  # 110K+
                 'comprehensive': ['Discovery/DNS/namelist.txt', 'Discovery/DNS/bitquark-subdomains-top100000.txt', 'Discovery/DNS/dns-Jhaddix.txt']

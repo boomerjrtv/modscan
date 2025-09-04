@@ -122,6 +122,69 @@ def get_assets_summary():
         app.logger.error(f"Error in get_assets_summary: {e}")
         return jsonify({"total_assets": 0, "active_200": 0, "forbidden_403": 0, "redirects_3xx": 0, "new_today": 0, "screenshots": 0})
 
+@app.route('/api/assets/<int:asset_id>/details', methods=['GET'])
+def get_asset_details(asset_id):
+    try:
+        manager = AssetManager()
+        
+        # Get asset details
+        with manager._get_db() as db:
+            asset_query = """
+                SELECT 
+                    id, url, host, status_code, title, tech_stack, content_length,
+                    response_time, screenshot_path, last_scanned, discovery_method,
+                    discovered_at, technologies_detected, intelligence_score,
+                    headers_collected, basic_scan_complete, deep_scan_complete,
+                    scanning_stage, response_body, asn_info
+                FROM assets 
+                WHERE id = ?
+            """
+            asset = db.execute(asset_query, (asset_id,)).fetchone()
+            
+            if not asset:
+                return jsonify({"error": "Asset not found"}), 404
+            
+            # Get vulnerabilities for this asset
+            vuln_query = """
+                SELECT id, type, severity, description, evidence, payload, 
+                       confidence, detected_at
+                FROM vulnerabilities 
+                WHERE asset_id = ?
+                ORDER BY detected_at DESC
+            """
+            vulnerabilities = [dict(row) for row in db.execute(vuln_query, (asset_id,)).fetchall()]
+            
+            # Convert asset row to dict
+            asset_dict = dict(asset)
+            
+            # Parse JSON fields
+            try:
+                if asset_dict.get('headers_collected'):
+                    asset_dict['headers_collected'] = json.loads(asset_dict['headers_collected'])
+                else:
+                    asset_dict['headers_collected'] = {}
+            except:
+                asset_dict['headers_collected'] = {}
+                
+            try:
+                if asset_dict.get('technologies_detected'):
+                    asset_dict['technologies_detected'] = json.loads(asset_dict['technologies_detected'])
+                else:
+                    asset_dict['technologies_detected'] = []
+            except:
+                asset_dict['technologies_detected'] = []
+            
+            # Add vulnerabilities
+            asset_dict['vulnerabilities'] = vulnerabilities
+            asset_dict['vulnerability_count'] = len(vulnerabilities)
+            
+            app.logger.debug(f"Asset {asset_id} details: {len(vulnerabilities)} vulnerabilities")
+            return jsonify(asset_dict)
+            
+    except Exception as e:
+        app.logger.error(f"Error getting asset details for {asset_id}: {e}")
+        return jsonify({"error": "Failed to load asset details"}), 500
+
 @app.route('/api/vulns', methods=['GET'])
 def get_vulns():
     try:

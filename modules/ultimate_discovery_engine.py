@@ -431,9 +431,12 @@ class UltimateDiscoveryEngine:
             scraped_tokens = await self._scrape_target_keywords(domain)
             scraped_paths = ['/' + t for t in scraped_tokens if t]
 
-            # Combine all intelligent wordlists efficiently
-            logger.info(f"📊 Combining wordlists: {len(directory_words)} dirs, {len(file_words)} files, {len(admin_words)} admin, {len(api_words)} api, {len(scraped_paths)} scraped, {len(subdomain_paths)} subdomain-derived")
-            all_words = directory_words + file_words + admin_words + api_words + scraped_paths + subdomain_paths
+            # Combine wordlists efficiently - keep API endpoints separate for root-aware testing
+            logger.info(f"📊 Combining wordlists: {len(directory_words)} dirs, {len(file_words)} files, {len(admin_words)} admin, {len(api_words)} api (scoped), {len(scraped_paths)} scraped, {len(subdomain_paths)} subdomain-derived")
+            # API endpoints should not be appended blindly to deep application paths
+            all_words = directory_words + file_words + admin_words + scraped_paths + subdomain_paths
+            # Store API words separately for scoped testing (root-only or smart)
+            self._api_words_for_root_only = api_words
             
             # Remove duplicates and normalize paths properly
             normalized_paths = set()
@@ -1378,8 +1381,53 @@ class UltimateDiscoveryEngine:
             
             # PARALLEL SCANNING: Break up wordlists and run multiple scanners simultaneously
             parallel_tasks = []
+            
+            # Compute root-level URLs for origin-aware testing of API wordlists
+            from urllib.parse import urlparse
+            root_urls = []
+            for base_url in base_urls:
+                parsed = urlparse(base_url)
+                root_url = f"{parsed.scheme}://{parsed.netloc}"
+                if root_url not in root_urls:
+                    root_urls.append(root_url)
+
+            # Configurable API scan mode: off | root_only | smart (default)
+            api_scan_mode = (
+                (self.config.get('discovery', {}) or {}).get('api_scan_mode', 'smart')
+            ).strip().lower()
+
+            def _is_api_candidate_base(base: str) -> bool:
+                """Heuristic to decide if API paths should be tried on this base URL when in smart mode.
+                Allows:
+                - Any origin root (https://host)
+                - Paths whose base already includes an api-ish segment
+                - Targets where prior URLs indicate API usage
+                """
+                try:
+                    if base in root_urls:
+                        return True
+                    p = urlparse(base)
+                    path = p.path or ''
+                    apiish = ('/api' in path) or ('/v1' in path) or ('/v2' in path) or ('/graphql' in path) or ('/rest' in path)
+                    hinted = bool(url_patterns.get('api_endpoints')) or ('api' in tech_stack)
+                    return apiish or hinted
+                except Exception:
+                    return base in root_urls
+            
             for base_url in base_urls[:15]:  # Increased to 15 base URLs for more parallelism
                 for wordlist_name, paths in wordlists.items():
+                    # Scope API wordlists by config and heuristics (universal, not target-specific)
+                    if wordlist_name in ('api', 'api_endpoints'):
+                        if api_scan_mode == 'off':
+                            logger.debug("🚫 API scan mode=off: skipping API wordlist")
+                            continue
+                        if api_scan_mode == 'root_only' and base_url not in root_urls:
+                            logger.debug(f"🚫 API root-only: skipping {base_url}")
+                            continue
+                        if api_scan_mode == 'smart' and not _is_api_candidate_base(base_url):
+                            logger.debug(f"🚫 API smart-scope: skipping {base_url}")
+                            continue
+                        
                     logger.info(f"🔍 Setting up parallel scanning for {wordlist_name} on {base_url} ({len(paths)} paths)")
                     
                     # Break large wordlists into chunks for parallel processing
@@ -1392,6 +1440,18 @@ class UltimateDiscoveryEngine:
                     for chunk_num, path_chunk in enumerate(path_chunks[:30]):  # Increased to 30 chunks per wordlist (6000 paths max)
                         task = self._parallel_test_paths_chunk(base_url, path_chunk, f"{wordlist_name}_chunk_{chunk_num}")
                         parallel_tasks.append(task)
+                        
+            # Optional separate API root sweep, controlled by config
+            if hasattr(self, '_api_words_for_root_only') and self._api_words_for_root_only:
+                if api_scan_mode in ('root_only', 'smart'):
+                    max_roots = int((self.config.get('discovery', {}) or {}).get('api_scan_max_roots', 5))
+                    logger.info(f"🔌 API root sweep: testing {len(self._api_words_for_root_only)} endpoints across up to {max_roots} origins")
+                    for root_url in root_urls[:max_roots]:
+                        api_chunks = [self._api_words_for_root_only[i:i + 100] for i in range(0, len(self._api_words_for_root_only), 100)]
+                        for chunk_num, api_chunk in enumerate(api_chunks[:10]):  # limit chunks
+                            task = self._parallel_test_paths_chunk(root_url, api_chunk, f"api_root_chunk_{chunk_num}")
+                            parallel_tasks.append(task)
+            
             
             # Execute all parallel scanning tasks simultaneously
             if parallel_tasks:

@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Generic DOM Form Test</title>
+    <style>
+      body { font-family: sans-serif; margin: 2rem; }
+      .post { padding: .4rem .6rem; margin: .3rem 0; background: #f5f5f5; }
+      .actions { margin-top: .5rem; }
+      .clear { background: #eee; }
+      .share { background: #4caf50; color: white; }
+    </style>
+  </head>
+  <body>
+    <h1>Generic Form</h1>
+    <form id="status-form">
+      <label for="content">Content</label><br />
+      <textarea id="content" name="content" rows="4" cols="60"></textarea>
+      <div class="actions">
+        <input class="clear" type="submit" value="Clear all posts" onclick="document.getElementById('posts').innerHTML=''; return false;" />
+        <input class="share" type="submit" value="Share status!" />
+      </div>
+    </form>
+    <h2>Posts</h2>
+    <div id="posts"></div>
+    <script>
+      const form = document.getElementById('status-form');
+      const posts = document.getElementById('posts');
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const data = new FormData(form);
+        const val = data.get('content') || '';
+        // Simulate a vulnerable client-side renderer using innerHTML
+        posts.innerHTML += `<div class="post">${val}</div>`;
+      });
+    </script>
+  </body>
+  </html>
+

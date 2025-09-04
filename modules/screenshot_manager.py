@@ -610,7 +610,7 @@ Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
                     pw_cookies.append({
                         'name': name,
                         'value': value,
-                        'url': scope_url,
+                        'domain': hostname,  # Use domain instead of url (FIXED)
                         'path': '/',
                         'httpOnly': False,
                         'secure': parsed.scheme == 'https',

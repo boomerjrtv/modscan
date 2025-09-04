@@ -1421,15 +1421,7 @@
                             <button class="siem-btn" onclick="clearVulnKQL()" style="padding:12px 16px; background:#374151; border:none; border-radius:8px;">Clear</button>
                             <button class="siem-btn" onclick="exportData('vulnerabilities')" style="padding:12px 16px; background:#059669; border:none; border-radius:8px;">📤 Export</button>
                         </div>
-                        <div style="display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px;">
-                            <span style="color: #9ca3af;">Quick filters:</span>
-                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='sev:critical'; applyVulnKQL(); return false;" style="color: #ef4444; text-decoration: none; padding: 2px 6px; background: rgba(239,68,68,0.1); border-radius: 4px;">Critical</a>
-                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='sev:high'; applyVulnKQL(); return false;" style="color: #f97316; text-decoration: none; padding: 2px 6px; background: rgba(249,115,22,0.1); border-radius: 4px;">High</a>
-                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='type:xss'; applyVulnKQL(); return false;" style="color: #8b5cf6; text-decoration: none; padding: 2px 6px; background: rgba(139,92,246,0.1); border-radius: 4px;">XSS</a>
-                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='type:sqli'; applyVulnKQL(); return false;" style="color: #06b6d4; text-decoration: none; padding: 2px 6px; background: rgba(6,182,212,0.1); border-radius: 4px;">SQL</a>
-                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='url:dvwa'; applyVulnKQL(); return false;" style="color: #10b981; text-decoration: none; padding: 2px 6px; background: rgba(16,185,129,0.1); border-radius: 4px;">DVWA</a>
-                            <a href="#" onclick="document.getElementById('vuln-kql-input').value='conf:>=0.8'; applyVulnKQL(); return false;" style="color: #f59e0b; text-decoration: none; padding: 2px 6px; background: rgba(245,158,11,0.1); border-radius: 4px;">High Confidence</a>
-                        </div>
+                        <div id="quick-filters" style="display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px;"></div>
                     </div>
                 </div>
 
@@ -1773,24 +1765,10 @@
                     <!-- Filters bar moved here (under Vulnerabilities tab) -->
                     <div id="vuln-filters" style="margin:10px 0; display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
                         <select id="flt-type" multiple size="1" style="min-width:160px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:4px 6px;">
-                            <option value="xss">XSS</option>
-                            <option value="sql_injection">SQLi</option>
-                            <option value="command_injection">CMDi</option>
-                            <option value="file_inclusion">LFI/RFI</option>
-                            <option value="csrf">CSRF</option>
-                            <option value="open_redirect">Open Redirect</option>
-                            <option value="headers">Headers</option>
-                            <option value="authorization_bypass">AuthZ</option>
-                            <option value="idor">IDOR</option>
-                            <option value="info">Info</option>
-                            <option value="probe">Probes</option>
+                            <!-- Options populated dynamically from dataset to stay universal -->
                         </select>
                         <div id="flt-sev" style="display:flex; gap:6px;">
-                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="CRITICAL" checked> Critical</label>
-                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="HIGH" checked> High</label>
-                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="MEDIUM" checked> Medium</label>
-                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="LOW"> Low</label>
-                            <label style="color:#d1d5db; font-size:12px"><input type="checkbox" value="INFO"> Info</label>
+                            <!-- Checkboxes populated dynamically from dataset to stay universal -->
                         </div>
                         <div>
                             <label style="color:#9ca3af; font-size:11px">Min Confidence</label>
@@ -3625,6 +3603,8 @@
             response = await fetch(`/api/vulnerabilities?_cache_bust=${timestamp}`);
             data = await response.json();
         }
+        // Keep filter options in sync with the actual dataset (universal behavior)
+        try { refreshVulnFilterOptions(data.vulnerabilities || []); } catch(e) { console.warn('filter option refresh failed', e); }
         
         const container = document.getElementById('vulnerabilities-table');
         if (!container) {
@@ -3651,7 +3631,7 @@
             // Apply filters first
             console.log('🔍 [VULN DEBUG] Before filtering:', data.vulnerabilities.length);
             console.log('🔧 [VULN DEBUG] Current filters:', vulnFilters);
-            let filteredVulnerabilities = filterVulnerabilities(data.vulnerabilities);
+            let filteredVulnerabilities = (data.vulnerabilities || []).slice();
             // Apply Verified-only and Collapse-campaigns toggles (client-side, universal)
             try {
                 const verifiedOnly = !!document.getElementById('vuln-verified-only')?.checked;
@@ -3783,10 +3763,15 @@
                 
                   // Parse structured evidence if JSONL-like
                   let curlCmd = '';
+                  let reqRaw = '';
+                  let respRaw = '';
                   try {
                       const evObj = JSON.parse(rawEvidence);
                       curlCmd = evObj['curl-command'] || evObj['curl_command'] || '';
+                      reqRaw = evObj['request'] || '';
+                      respRaw = evObj['response'] || '';
                   } catch(e) {}
+                  const hasReqResp = !!(reqRaw || respRaw || curlCmd);
 
                   // Extract screenshot from evidence if available (handle both Screenshot: and Screenshots: formats)
                   const screenshotMatch = safeEvidence.match(/Screenshots?:\s*([^\s,]+)/);
@@ -3864,7 +3849,8 @@
                                       style="cursor: pointer; color: #fbbf24; text-decoration: underline;">
                                     ${truncate(safeEvidence, 120)}
                                 </span>
-                                ${curlCmd ? `<button class=\"siem-btn\" title=\"Copy curl\" onclick=\"try{navigator.clipboard.writeText(\'${(curlCmd||'').replace(/\\/g, "\\\\").replace(/'/g, "\\'")}\'); showToast('Copied cURL', 'info', 1500);}catch(e){alert('Copy failed');}\" style=\"font-size:10px; padding:2px 6px; background:#334155; color:#e5e7eb; border:none; border-radius:3px;\">copy curl</button>` : ''}
+                                ${curlCmd ? (()=>{ const enc=encodeURIComponent(curlCmd); return `<button class=\"siem-btn\" title=\"Copy curl\" onclick=\"try{navigator.clipboard.writeText(decodeURIComponent('${enc}')); showToast('Copied cURL', 'info', 1500);}catch(e){alert('Copy failed');}\" style=\"font-size:10px; padding:2px 6px; background:#334155; color:#e5e7eb; border:none; border-radius:3px;\">copy curl</button>`; })() : ''}
+                                ${hasReqResp ? `<button class=\"siem-btn\" onclick=\"showReqRespModalFromStrings(decodeURIComponent('${encodeURIComponent(curlCmd)}'), decodeURIComponent('${encodeURIComponent(reqRaw)}'), decodeURIComponent('${encodeURIComponent(respRaw)}'))\" style=\"font-size:10px; padding:2px 6px; background:#475569; color:#e5e7eb; border:none; border-radius:3px;\">Req/Resp</button>` : ''}
                                 ${hasScreenshot ? '<span title="Screenshot evidence available" style="color: #10b981;">📸</span>' : ''}
                             </div>
                         </td>
@@ -3878,6 +3864,9 @@
                                     style="font-size:10px; padding:4px 8px; margin-left:6px; background:#f59e0b; border:none; color:white; border-radius:3px; cursor:pointer;">
                               🌐 Open PoC
                             </button>` : ''}
+                            ${pocUrl ? `<button class=\"siem-btn\" onclick=\"try{navigator.clipboard.writeText(decodeURIComponent('${encodeURIComponent(pocUrl)}')); showToast('PoC URL copied', 'info', 1500);}catch(e){alert('Copy failed');}\" 
+                                    style=\"font-size:10px; padding:4px 8px; margin-left:6px; background:#334155; border:none; color:white; border-radius:3px; cursor:pointer;\">Copy PoC</button>` : ''}
+                            ${((safeType||'').toLowerCase().includes('xss') || (safeType||'').toLowerCase().includes('csrf')) ? `<button class=\"siem-btn\" onclick=\"generateHtmlPoc(decodeURIComponent('${encodeURIComponent(pocUrl || (vuln.test_url || safeUrl))}'))\" style=\"font-size:10px; padding:4px 8px; margin-left:6px; background:#0ea5e9; border:none; color:white; border-radius:3px; cursor:pointer;\">Generate HTML PoC</button>` : ''}
                             <button class="siem-btn secondary" onclick="reverifyVuln(${vuln.id || 'null'})" 
                                     style="font-size:10px; padding:4px 8px; margin-left:6px; background:#2563eb; border:none; color:white; border-radius:3px; cursor:pointer;">
                               🔁 Re-verify
@@ -3987,6 +3976,59 @@
 
     async function aiRevalidate(vulnId) { return reverifyVuln(vulnId); }
 
+    function showReqRespModalFromStrings(curl, req, resp) {
+        try {
+            const obj = {curl: curl || '', request: req || '', response: resp || ''};
+            const pretty = (s) => typeof s === 'string' ? s : (s ? JSON.stringify(s, null, 2) : '');
+            let html = `<div style='display:flex; flex-direction:column; gap:10px;'>`;
+            if (obj.curl) {
+                const curlEnc = encodeURIComponent(pretty(obj.curl));
+                html += `<div><div style='font-weight:bold; color:#93c5fd; margin-bottom:4px;'>cURL</div><pre style='white-space:pre-wrap; background:#0b1220; color:#e5e7eb; padding:8px; border:1px solid #334155; border-radius:6px;'>${escapeHtml(pretty(obj.curl))}</pre><button class='siem-btn' onclick="navigator.clipboard.writeText(decodeURIComponent('${curlEnc}'))">Copy cURL</button></div>`;
+            }
+            if (obj.request) {
+                const reqEnc = encodeURIComponent(pretty(obj.request));
+                html += `<div><div style='font-weight:bold; color:#93c5fd; margin-bottom:4px;'>Request</div><pre style='white-space:pre-wrap; background:#0b1220; color:#e5e7eb; padding:8px; border:1px solid #334155; border-radius:6px;'>${escapeHtml(pretty(obj.request))}</pre><button class='siem-btn' onclick="navigator.clipboard.writeText(decodeURIComponent('${reqEnc}'))">Copy Request</button></div>`;
+            }
+            if (obj.response) {
+                const truncated = String(pretty(obj.response)).substring(0, 50000);
+                const respEnc = encodeURIComponent(pretty(obj.response));
+                html += `<div><div style='font-weight:bold; color:#93c5fd; margin-bottom:4px;'>Response</div><pre style='white-space:pre-wrap; max-height:40vh; overflow:auto; background:#0b1220; color:#e5e7eb; padding:8px; border:1px solid #334155; border-radius:6px;'>${escapeHtml(truncated)}</pre><button class='siem-btn' onclick="navigator.clipboard.writeText(decodeURIComponent('${respEnc}'))">Copy Response</button></div>`;
+            }
+            html += `</div>`;
+            showGenericModal('Request/Response', html);
+        } catch(e) { alert('Failed to render request/response'); }
+    }
+
+    function generateHtmlPoc(pocUrl) {
+        try {
+            if (!pocUrl) { alert('No PoC URL available'); return; }
+            const safeUrl = String(pocUrl);
+            const html = '<!doctype html><html><head><meta charset="utf-8"><title>ModScan PoC</title></head>' +
+                         '<body style="font-family:system-ui,Arial,sans-serif; background:#0f172a; color:#e5e7eb;">' +
+                         '<h2>Universal PoC</h2>' +
+                         '<p>This PoC opens the vulnerable endpoint in a new window with the exploit payload applied.</p>' +
+                         '<p><a id="poc" href="' + safeUrl.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener" style="color:#93c5fd;">Open Vulnerable URL</a></p>' +
+                         '<script>setTimeout(function(){try{document.getElementById("poc").click();}catch(e){}}, 500);<\/script>' +
+                         '</body></html>';
+            const blob = new Blob([html], {type:'text/html'});
+            const dl = URL.createObjectURL(blob);
+            const body = '<div style="display:flex; gap:8px;">' +
+                         '<button class="siem-btn" onclick="window.open(\'' + safeUrl.replace(/"/g,'').replace(/'/g, '\\\'') + '\', \'_blank\')">Open PoC URL</button>' +
+                         '<button class="siem-btn" onclick="navigator.clipboard.writeText(\'' + html.replace(/\\/g, '\\\\').replace(/'/g, '\\\'').replace(/\n/g, ' ') + '\')">Copy HTML</button>' +
+                         '<a class="siem-btn" download="modscan_poc.html" href="' + dl + '">Download HTML</a>' +
+                         '</div>';
+            showGenericModal('Generated HTML PoC', body);
+        } catch(e) { alert('Failed to generate PoC HTML: ' + e.message); }
+    }
+
+    function showReqRespByIndex(i) {
+        try {
+            const arr = Array.isArray(window.__reqRespStore) ? window.__reqRespStore : [];
+            const obj = (i >= 0 && i < arr.length) ? arr[i] : {curl:'', request:'', response:''};
+            showReqRespModalFromStrings(obj.curl || '', obj.request || '', obj.response || '');
+        } catch(e) { alert('Failed to open details'); }
+    }
+
     async function showAssetCVEs(assetId) {
         if (!assetId) return alert('Invalid asset id');
         try {
@@ -4015,6 +4057,63 @@
     }
 
     // ===== Vuln Filters Logic =====
+    function normalizeSeverity(val) {
+        return (val || '').toString().trim().toUpperCase();
+    }
+    function severityWeight(s) {
+        const order = { 'CRITICAL': 5, 'HIGH': 4, 'MEDIUM': 3, 'LOW': 2, 'INFO': 1 };
+        return order[normalizeSeverity(s)] || 0;
+    }
+    function displayLabelForType(type) {
+        const raw = (type || '').toString();
+        const mapping = (globalConfig && globalConfig.vulnerability_display) || {};
+        if (mapping[raw]) return mapping[raw];
+        try { return raw.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); } catch(e) { return raw; }
+    }
+    function extractType(v) {
+        const m = (globalConfig && globalConfig.vulnerability_mappings) || {};
+        return v[m.vuln_type] || v.type || '';
+    }
+    function extractSeverity(v) {
+        const m = (globalConfig && globalConfig.vulnerability_mappings) || {};
+        return v[m.severity] || v.severity || '';
+    }
+    function refreshVulnFilterOptions(vulns) {
+        try {
+            const typeEl = document.getElementById('flt-type');
+            const sevWrap = document.getElementById('flt-sev');
+            if (!typeEl || !sevWrap) return;
+
+            const prevSelected = new Set(Array.from(typeEl.selectedOptions || []).map(o => o.value));
+            const prevSevChecked = new Set(Array.from(sevWrap.querySelectorAll('input[type=checkbox]:checked')).map(i => i.value));
+
+            const typeSet = new Set();
+            const sevSet = new Set();
+            (Array.isArray(vulns) ? vulns : []).forEach(v => {
+                const t = (extractType(v) || '').toString();
+                const s = normalizeSeverity(extractSeverity(v) || '');
+                if (t) typeSet.add(t);
+                if (s) sevSet.add(s);
+            });
+
+            const types = Array.from(typeSet).sort((a,b)=>displayLabelForType(a).localeCompare(displayLabelForType(b)));
+            typeEl.innerHTML = types.map(t => {
+                const sel = prevSelected.has(t) ? ' selected' : '';
+                return `<option value="${t}">${displayLabelForType(t)}</option>`;
+            }).join('');
+            if (prevSelected.size === 0) typeEl.selectedIndex = -1;
+
+            let severities = Array.from(sevSet);
+            if (severities.length === 0) severities = ['CRITICAL','HIGH','MEDIUM','LOW','INFO'];
+            severities.sort((a,b)=>severityWeight(b)-severityWeight(a) || a.localeCompare(b));
+            sevWrap.innerHTML = severities.map(s => {
+                const checked = prevSevChecked.size
+                    ? (prevSevChecked.has(s) ? ' checked' : '')
+                    : (['CRITICAL','HIGH','MEDIUM'].includes(s) ? ' checked' : '');
+                return `<label style=\"color:#d1d5db; font-size:12px\"><input type=\"checkbox\" value=\"${s}\"${checked}> ${s.charAt(0)+s.slice(1).toLowerCase()}</label>`;
+            }).join('');
+        } catch(e) { console.warn('refreshVulnFilterOptions failed', e); }
+    }
     function getActiveVulnFilters() {
         const typeSel = document.getElementById('flt-type');
         const types = Array.from(typeSel?.selectedOptions || []).map(o => o.value);
@@ -4062,8 +4161,17 @@
     }
     function resetVulnFilters() {
         try {
-            document.getElementById('flt-type').selectedIndex = -1;
-            document.querySelectorAll('#flt-sev input[type=checkbox]').forEach(i => i.checked = ['CRITICAL','HIGH','MEDIUM'].includes(i.value));
+            const typeEl = document.getElementById('flt-type');
+            if (typeEl) typeEl.selectedIndex = -1;
+            const sevBoxes = Array.from(document.querySelectorAll('#flt-sev input[type=checkbox]'));
+            if (sevBoxes.length) {
+                const defaults = new Set(['CRITICAL','HIGH','MEDIUM']);
+                const anyDefaultPresent = sevBoxes.some(i => defaults.has(normalizeSeverity(i.value)));
+                sevBoxes.forEach(i => {
+                    const val = normalizeSeverity(i.value);
+                    i.checked = anyDefaultPresent ? defaults.has(val) : true;
+                });
+            }
             document.getElementById('flt-conf').value = '0.5';
             document.getElementById('flt-time').value = '';
             document.getElementById('flt-q').value = '';

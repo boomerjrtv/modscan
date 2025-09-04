@@ -42,6 +42,8 @@ class ValidationManager:
                 return await self._validate_lfi(finding, session)
             if 'command' in vt and 'injection' in vt:
                 return await self._validate_command_injection(finding, session)
+            if 'sql' in vt:
+                return await self._validate_sqli(finding, session)
             if 'ssrf' in vt:
                 return await self._validate_ssrf(finding, session)
             if 'idor' in vt or 'insecure_direct' in vt:
@@ -50,6 +52,78 @@ class ValidationManager:
                 return await self._validate_csrf(finding, session)
         except Exception as e:
             logger.debug(f"Validation failed ({finding.vuln_type}): {e}")
+        return finding
+
+    async def _validate_sqli(self, finding, session):
+        """Deterministic SQLi validation with control requests.
+
+        Strategy:
+        - Reissue baseline (benign) request and then the payload request.
+        - Compare error signatures and/or content length changes.
+        - For time-based, measure delta vs. benign request.
+        """
+        try:
+            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            url = finding.url
+            parsed = urlparse(url)
+            q = parse_qs(parsed.query, keep_blank_values=True)
+            if not q:
+                return finding
+            target_param = finding.affected_parameter or next(iter(q.keys()))
+            payload_val = q.get(target_param, [''])[0]
+
+            # Build benign control value
+            benign = '1'
+            q_b = q.copy(); q_b[target_param] = [benign]
+            ctrl_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(q_b, doseq=True), parsed.fragment))
+            q_t = q.copy(); q_t[target_param] = [payload_val]
+            test_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(q_t, doseq=True), parsed.fragment))
+
+            h = await self.scanner._get_auth_headers(test_url)
+            # Control
+            import time as _t
+            t0 = _t.time()
+            try:
+                from modules.http_bypass import smart_request as _smart_request
+                rc, ctrl_txt = await _smart_request(session, 'GET', ctrl_url, headers=h, timeout=15)
+            except Exception:
+                async with session.get(ctrl_url, headers=h, timeout=12) as rc:
+                    ctrl_txt = await rc.text()
+            t1 = _t.time()
+            # Test
+            try:
+                from modules.http_bypass import smart_request as _smart_request
+                rt, test_txt = await _smart_request(session, 'GET', test_url, headers=h, timeout=15)
+            except Exception:
+                async with session.get(test_url, headers=h, timeout=12) as rt:
+                    test_txt = await rt.text()
+            t2 = _t.time()
+
+            ctrl_len, test_len = len(ctrl_txt or ''), len(test_txt or '')
+            sql_errors = ['sql syntax', 'mysql', 'ora-', 'postgres', 'sqlite', 'unclosed quotation', 'odbc']
+            errors_ctrl = any(e in (ctrl_txt or '').lower() for e in sql_errors)
+            errors_test = any(e in (test_txt or '').lower() for e in sql_errors)
+
+            verified = False
+            note = []
+            if errors_test and not errors_ctrl:
+                verified = True
+                note.append('error signature only on payload request')
+            if abs(test_len - ctrl_len) > 250 and not errors_ctrl:
+                verified = True
+                note.append(f'content length diff {ctrl_len}->{test_len}')
+            # Time-based hint
+            if (t2 - t1) - (t1 - t0) > 3.5:
+                verified = True
+                note.append(f'timing delta {(t2 - t1) - (t1 - t0):.2f}s')
+
+            if verified:
+                finding.evidence = f"{finding.evidence} | Verification: SQLi confirmed ({'; '.join(note)})".strip()
+                finding.confidence = max(finding.confidence, 0.88)
+                shot = await self.scanner._take_screenshot(test_url)
+                finding.screenshot_path = shot or finding.screenshot_path
+        except Exception as e:
+            logger.debug(f"SQLi validation error: {e}")
         return finding
 
     async def _validate_xss_reflected(self, finding, session):
@@ -221,8 +295,12 @@ class ValidationManager:
             new_query = urlencode(q, doseq=True)
             test_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
             h = await self.scanner._get_auth_headers(test_url)
-            async with session.get(test_url, headers=h, timeout=12) as r:
-                _ = await r.text()
+            try:
+                from modules.http_bypass import smart_request as _smart_request
+                r, _ = await _smart_request(session, 'GET', test_url, headers=h, timeout=15)
+            except Exception:
+                async with session.get(test_url, headers=h, timeout=12) as r:
+                    _ = await r.text()
             finding.evidence = f"{finding.evidence} | Verification: OOB SSRF beacon sent to {callback} (monitor collaborator logs)".strip()
             finding.confidence = max(finding.confidence, 0.7)
         except Exception as e:
@@ -248,10 +326,18 @@ class ValidationManager:
             new_query = urlencode(q, doseq=True)
             test_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
             h = await self.scanner._get_auth_headers(test_url)
-            async with session.get(url, headers=h, timeout=12) as r0:
-                a = await r0.text()
-            async with session.get(test_url, headers=h, timeout=12) as r1:
-                b = await r1.text()
+            try:
+                from modules.http_bypass import smart_request as _smart_request
+                r0, a = await _smart_request(session, 'GET', url, headers=h, timeout=15)
+            except Exception:
+                async with session.get(url, headers=h, timeout=12) as r0:
+                    a = await r0.text()
+            try:
+                from modules.http_bypass import smart_request as _smart_request
+                r1, b = await _smart_request(session, 'GET', test_url, headers=h, timeout=15)
+            except Exception:
+                async with session.get(test_url, headers=h, timeout=12) as r1:
+                    b = await r1.text()
             # State diff heuristics: content length, JSON token counts, key hints
             verified = False
             diff_note = ''
@@ -293,8 +379,12 @@ class ValidationManager:
         url = finding.url
         try:
             h = await self.scanner._get_auth_headers(url)
-            async with session.get(url, headers=h, timeout=12) as r:
-                html = await r.text()
+            try:
+                from modules.http_bypass import smart_request as _smart_request
+                r, html = await _smart_request(session, 'GET', url, headers=h, timeout=15)
+            except Exception:
+                async with session.get(url, headers=h, timeout=12) as r:
+                    html = await r.text()
             if '<form' in html.lower():
                 tokens = ['csrf','token','_token','authenticity_token','xsrf','requestverificationtoken','csrfmiddlewaretoken','form_token','security_token']
                 has_token = any(tok in html.lower() for tok in tokens)

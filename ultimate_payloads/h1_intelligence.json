@@ -1,0 +1,321 @@
+{
+  "vulnerability_statistics": {
+    "web_application": 4361,
+    "info_disclosure": 1397,
+    "command_injection": 1219,
+    "authentication_bypass": 981,
+    "xss": 955,
+    "xss_reflected": 771,
+    "xss_stored": 644,
+    "csrf": 548,
+    "sql_injection": 542,
+    "privilege_escalation": 456,
+    "ssrf": 428,
+    "business_logic": 354,
+    "open_redirect": 333,
+    "idor": 327,
+    "file_upload": 312,
+    "lfi": 230,
+    "xss_dom": 218,
+    "sql_injection_blind": 44,
+    "rfi": 17,
+    "sql_injection_time": 4
+  },
+  "top_programs": {
+    "Mail.ru": 896,
+    "U.S. Dept Of Defense": 817,
+    "Internet Bug Bounty": 794,
+    "HackerOne": 599,
+    "Nextcloud": 534,
+    "Shopify": 459,
+    "Node.js third-party modules": 307,
+    "GitLab": 257,
+    "X / xAI": 248,
+    "curl": 240,
+    "Uber": 239,
+    "GitHub Security Lab": 217,
+    "New Relic": 209,
+    "VK.com": 172,
+    "Automattic": 165,
+    "shopify-scripts": 161,
+    "Legal Robot": 155,
+    "Weblate": 145,
+    "Gratipay": 136,
+    "Slack": 133,
+    "MTN Group": 128,
+    "Acronis": 128,
+    "Eternal": 128,
+    "Starbucks": 128,
+    "Open-Xchange": 121,
+    "TikTok": 115,
+    "Brave Software": 114,
+    "h1-ctf": 110,
+    "LocalTapiola": 107,
+    "Rockstar Games": 104,
+    "Node.js": 99,
+    "Ubiquiti Inc.": 98,
+    "ownCloud": 94,
+    "Pornhub": 94,
+    "QIWI": 89,
+    "Concrete CMS": 87,
+    "8x8 Bounty": 84,
+    "Valve": 82,
+    "Yahoo!": 82,
+    "WordPress": 81,
+    "Rocket.Chat": 81,
+    "Coinbase": 80,
+    "Kubernetes": 75,
+    "Paragon Initiative Enterprises": 75,
+    "Ruby": 73,
+    "Phabricator": 73,
+    "Yelp": 72,
+    "Reddit": 72,
+    "Sifchain": 71,
+    "Vimeo": 71
+  },
+  "bounty_analysis": {
+    "web_application": {
+      "total_reports": 4361,
+      "paid_reports": 958,
+      "avg_bounty": 1509.7314718162836,
+      "max_bounty": 50000.0,
+      "bounty_rate": 0.21967438660857602
+    },
+    "authentication_bypass": {
+      "total_reports": 981,
+      "paid_reports": 226,
+      "avg_bounty": 1509.41592920354,
+      "max_bounty": 15300.0,
+      "bounty_rate": 0.23037716615698267
+    },
+    "xss_stored": {
+      "total_reports": 644,
+      "paid_reports": 204,
+      "avg_bounty": 1457.514705882353,
+      "max_bounty": 16000.0,
+      "bounty_rate": 0.3167701863354037
+    },
+    "info_disclosure": {
+      "total_reports": 1397,
+      "paid_reports": 285,
+      "avg_bounty": 1203.8463157894737,
+      "max_bounty": 15000.0,
+      "bounty_rate": 0.2040085898353615
+    },
+    "sql_injection": {
+      "total_reports": 542,
+      "paid_reports": 132,
+      "avg_bounty": 1740.5757575757575,
+      "max_bounty": 25000.0,
+      "bounty_rate": 0.24354243542435425
+    },
+    "command_injection": {
+      "total_reports": 1219,
+      "paid_reports": 321,
+      "avg_bounty": 2607.7696261682245,
+      "max_bounty": 33510.0,
+      "bounty_rate": 0.26333059885151766
+    },
+    "ssrf": {
+      "total_reports": 428,
+      "paid_reports": 143,
+      "avg_bounty": 1835.6853146853148,
+      "max_bounty": 25000.0,
+      "bounty_rate": 0.3341121495327103
+    },
+    "file_upload": {
+      "total_reports": 312,
+      "paid_reports": 80,
+      "avg_bounty": 1341.325,
+      "max_bounty": 10000.0,
+      "bounty_rate": 0.2564102564102564
+    },
+    "business_logic": {
+      "total_reports": 354,
+      "paid_reports": 87,
+      "avg_bounty": 1118.1149425287356,
+      "max_bounty": 10000.0,
+      "bounty_rate": 0.2457627118644068
+    },
+    "xss": {
+      "total_reports": 955,
+      "paid_reports": 194,
+      "avg_bounty": 1196.520618556701,
+      "max_bounty": 20000.0,
+      "bounty_rate": 0.2031413612565445
+    },
+    "lfi": {
+      "total_reports": 230,
+      "paid_reports": 41,
+      "avg_bounty": 3063.7073170731705,
+      "max_bounty": 29000.0,
+      "bounty_rate": 0.1782608695652174
+    },
+    "xss_reflected": {
+      "total_reports": 771,
+      "paid_reports": 133,
+      "avg_bounty": 683.3196240601504,
+      "max_bounty": 5000.0,
+      "bounty_rate": 0.17250324254215305
+    },
+    "privilege_escalation": {
+      "total_reports": 456,
+      "paid_reports": 136,
+      "avg_bounty": 1134.1838970588235,
+      "max_bounty": 21000.0,
+      "bounty_rate": 0.2982456140350877
+    },
+    "csrf": {
+      "total_reports": 548,
+      "paid_reports": 99,
+      "avg_bounty": 733.1111111111111,
+      "max_bounty": 10000.0,
+      "bounty_rate": 0.18065693430656934
+    },
+    "idor": {
+      "total_reports": 327,
+      "paid_reports": 84,
+      "avg_bounty": 2138.6666666666665,
+      "max_bounty": 20000.0,
+      "bounty_rate": 0.25688073394495414
+    },
+    "open_redirect": {
+      "total_reports": 333,
+      "paid_reports": 69,
+      "avg_bounty": 460.2028985507246,
+      "max_bounty": 3000.0,
+      "bounty_rate": 0.2072072072072072
+    },
+    "xss_dom": {
+      "total_reports": 218,
+      "paid_reports": 59,
+      "avg_bounty": 680.7118644067797,
+      "max_bounty": 3000.0,
+      "bounty_rate": 0.2706422018348624
+    },
+    "sql_injection_blind": {
+      "total_reports": 44,
+      "paid_reports": 16,
+      "avg_bounty": 2239.625,
+      "max_bounty": 5000.0,
+      "bounty_rate": 0.36363636363636365
+    },
+    "rfi": {
+      "total_reports": 17,
+      "paid_reports": 3,
+      "avg_bounty": 1775.0,
+      "max_bounty": 5000.0,
+      "bounty_rate": 0.17647058823529413
+    },
+    "sql_injection_time": {
+      "total_reports": 4,
+      "paid_reports": 3,
+      "avg_bounty": 5150.0,
+      "max_bounty": 15000.0,
+      "bounty_rate": 0.75
+    }
+  },
+  "payload_intelligence": {
+    "command_injection": {
+      "count": 34,
+      "top_payloads": [
+        "`www.\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588`",
+        "`sshpk`",
+        "`https-proxy-agent`",
+        "`active-support`",
+        "`protobufjs`",
+        "`io.kubernetes.client.util.generic.dynamic.Dynamics`",
+        "`DOCKER_AUTH_CONFIG`",
+        "`http-proxy-agent`",
+        "`ActiveSupport::MessageVerifier`",
+        "`macaddress`",
+        "`command-exists`",
+        "`gm convert`",
+        "`values_at`",
+        "`exceptions_app`",
+        "&& DoS",
+        "exec()",
+        "`__proto__`",
+        "`rubyluabridge`",
+        "`rgb2hex`",
+        "`--engine`",
+        "| twitter",
+        "`memjs`",
+        "`foreman`",
+        "`\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588`",
+        "`.rdoc_options`",
+        "`ActiveSupport::MessageEncryptor`",
+        "`whereis`",
+        "`fs-path`",
+        "`mrb_str_format`",
+        "`useragent`",
+        "`stripe-billing-typographic`",
+        "`Shell#test`",
+        "`/edit/process?a=crop`",
+        "`Shell#[]`"
+      ]
+    },
+    "xss_reflected": {
+      "count": 13,
+      "top_payloads": [
+        "msgId=PAYLOAD",
+        "ss_country_filter=PAYLOAD",
+        "alert(1)",
+        "advanced_val=PAYLOAD",
+        "callback=PAYLOAD",
+        "from=PAYLOAD",
+        "color=PAYLOAD",
+        "index.php/svg/core/logo/logo=PAYLOAD",
+        "q=PAYLOAD",
+        "javascript:alert(1)",
+        "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588=PAYLOAD",
+        "__e2e_action_id=PAYLOAD",
+        "url=PAYLOAD"
+      ]
+    },
+    "web_application": {
+      "count": 1,
+      "top_payloads": [
+        "oseid=PAYLOAD"
+      ]
+    },
+    "business_logic": {
+      "count": 1,
+      "top_payloads": [
+        "order_id=PAYLOAD"
+      ]
+    },
+    "xss_dom": {
+      "count": 2,
+      "top_payloads": [
+        "returnUrl=PAYLOAD",
+        "alert(document.domain)"
+      ]
+    },
+    "sql_injection": {
+      "count": 4,
+      "top_payloads": [
+        "order_id=PAYLOAD",
+        "order_id",
+        "list[]=PAYLOAD",
+        "user_id=PAYLOAD"
+      ]
+    },
+    "xss": {
+      "count": 5,
+      "top_payloads": [
+        "alert(0)",
+        "javascript:alert(8007)",
+        "Javascript:alert(0)",
+        "alert(8007)",
+        "alert()"
+      ]
+    },
+    "file_upload": {
+      "count": 1,
+      "top_payloads": [
+        "brave://=PAYLOAD"
+      ]
+    }
+  }
+}

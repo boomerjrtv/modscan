@@ -18,6 +18,8 @@
         "response": "response_body",
         "source": "host",
         "id": "id",
+        "last_scanned": "last_scanned",
+        "discovered_at": "discovered_at",
         "takeover_risk": "subdomain_takeover_risk",
         "discovered_params": "discovered_parameters",
         "api_endpoints": "discovered_apis",

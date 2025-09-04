@@ -17,7 +17,7 @@ import os
 from .browser_runtime import get_launch_options, extend_args, detect_lan_ip
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
-import google.generativeai as genai
+from .ai_client import AIClient
 from pathlib import Path
 
 # Try to import Playwright for browser automation
@@ -54,15 +54,26 @@ class MLVulnerabilityEngine:
         import os as _os
         self.gemini_key = (config.get('gemini_api_key') or _os.environ.get('GEMINI_API_KEY') or '').strip()
         
-        # Initialize Gemini if key is provided
-        if self.gemini_key:
-            genai.configure(api_key=self.gemini_key)
-            # Use the cheapest Flash family by default
-            self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
-            logger.info("🤖 Gemini Flash 2.5 initialized for AI-assisted vulnerability analysis")
+        # Initialize AI client for analysis
+        ai_cfg = (config.get('ai_assistance') or {}) if isinstance(config, dict) else {}
+        ai_enabled = bool(ai_cfg.get('enabled', True))
+        if ai_enabled and self.gemini_key:
+            try:
+                self.ai_client = AIClient(config)
+                logger.info("🤖 Pure Gemini AI Client initialized for vulnerability analysis")
+                print("🤖 Pure Gemini AI Client initialized for vulnerability analysis")
+            except Exception as e:
+                self.ai_client = None
+                logger.warning(f"⚠️ Failed to initialize AI client: {e}")
+                print(f"⚠️ Failed to initialize AI client: {e}")
         else:
-            self.gemini_model = None
-            logger.warning("⚠️ No Gemini API key provided - running without AI assistance")
+            self.ai_client = None
+            if not ai_enabled:
+                logger.info("🤖 AI assistance disabled by config — running without AI")
+                print("🤖 AI assistance disabled by config — running without AI")
+            else:
+                logger.warning("⚠️ No Gemini API key provided — running without AI assistance")
+                print("⚠️ No Gemini API key provided — running without AI assistance")
         
         # ML patterns for vulnerability detection
         self.vulnerability_patterns = {
@@ -239,9 +250,10 @@ class MLVulnerabilityEngine:
                 logger.error(f"ML analysis failed for {asset.get('url', 'unknown')}: {e}")
         
         # Enhance findings with AI analysis if available
-        if self.gemini_model and findings:
+        if self.ai_client and findings:
             enhanced_findings = await self._enhance_findings_with_ai(findings)
             logger.info(f"🧠 ML Analysis Complete: {len(enhanced_findings)} vulnerabilities with ML intelligence")
+            print(f"🧠 ML Analysis Complete: {len(enhanced_findings)} vulnerabilities with ML intelligence")
             return enhanced_findings
         
         return findings
@@ -410,6 +422,9 @@ class MLVulnerabilityEngine:
         if payload not in response_text:
             logger.debug(f"XSS payload not reflected in response for {test_url}")
             return None
+        
+        print(f"🎯 XSS payload reflected in response, analyzing context...")
+        logger.info(f"🎯 XSS payload reflected in response, analyzing context...")
         
         # Check if payload appears in executable context (not just as text)
         config = self.vulnerability_patterns['xss']
@@ -674,13 +689,10 @@ class MLVulnerabilityEngine:
                 return header + body + tail
             prompt = _build_prompt(vt)
             import asyncio as _asyncio
-            def _call():
-                try:
-                    resp = self.gemini_model.generate_content(prompt)
-                    return resp.text if hasattr(resp, 'text') else str(resp)
-                except Exception as e:
-                    return f"ERROR: {e}"
-            raw = await _asyncio.to_thread(_call)
+            try:
+                raw = await self.ai_client.generate_text(prompt, temperature=0.1, max_tokens=2048)
+            except Exception as e:
+                raw = f"ERROR: {e}"
             try:
                 import json as _json
                 text = (raw or '').strip()
@@ -726,11 +738,12 @@ class MLVulnerabilityEngine:
             return 'LOW'
 
     async def _enhance_findings_with_ai(self, findings: List[MLVulnerabilityFinding]) -> List[MLVulnerabilityFinding]:
-        """Enhance findings with AI analysis using Gemini"""
-        if not self.gemini_model:
+        """Enhance findings with AI analysis using pure Gemini API"""
+        if not self.ai_client:
             return findings
         
         logger.info(f"🤖 GEMINI ANALYSIS: Enhancing {len(findings)} findings with AI insights")
+        print(f"🤖 GEMINI ANALYSIS: Enhancing {len(findings)} findings with AI insights")
         
         enhanced_findings = []
         
@@ -782,11 +795,24 @@ class MLVulnerabilityEngine:
         """
         
         try:
-            response = await asyncio.get_event_loop().run_in_executor(
-                None, self.gemini_model.generate_content, prompt
-            )
+            logger.info("🤖 Sending findings to AI for analysis...")
+            print("🤖 Sending findings to AI for analysis...")
+            response = await self.ai_client.generate_text(prompt, temperature=0.2, max_tokens=2048)
             
-            ai_analysis = json.loads(response.text)
+            print(f"🤖 AI Response received: {response[:200]}...")
+            logger.info(f"🤖 AI Response received: {response[:200]}...")
+            
+            # Clean up AI response - remove markdown code blocks if present
+            response_clean = response.strip()
+            if response_clean.startswith('```json'):
+                response_clean = response_clean[7:]  # Remove ```json
+            if response_clean.startswith('```'):
+                response_clean = response_clean[3:]   # Remove ```
+            if response_clean.endswith('```'):
+                response_clean = response_clean[:-3]  # Remove trailing ```
+            response_clean = response_clean.strip()
+            
+            ai_analysis = json.loads(response_clean)
             
             # Enhance findings with AI insights
             for i, finding in enumerate(findings):
@@ -796,9 +822,12 @@ class MLVulnerabilityEngine:
                     finding.business_impact = analysis.get('business_impact', 'Assessment pending')
                     finding.remediation_priority = analysis.get('remediation_priority', 3)
                     finding.ai_analysis = analysis.get('ai_analysis', 'AI analysis completed')
+                    print(f"🤖 Enhanced finding {i+1}: {finding.vuln_type} - {analysis.get('ai_analysis', 'No analysis')}")
+                    logger.info(f"🤖 Enhanced finding {i+1}: {finding.vuln_type} - {analysis.get('ai_analysis', 'No analysis')}")
         
         except Exception as e:
-            logger.debug(f"AI analysis failed: {e}")
+            logger.error(f"🚨 AI analysis failed: {e}")
+            print(f"🚨 AI analysis failed: {e}")
             # Set default values on error
             for finding in findings:
                 finding.exploitation_complexity = 'MEDIUM'
