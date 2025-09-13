@@ -38,9 +38,12 @@ class ScreenshotManager:
         try:
             parsed_url = urlparse(url)
             host = parsed_url.netloc
-            # Sanitize filename
+            # Sanitize filename with unique identifier 
             safe_host = "".join([c if c.isalnum() else "_" for c in host])
-            filename = f"screenshot_{safe_host}_{int(time.time())}.png"
+            # Use asset_id if available, otherwise hash URL for uniqueness
+            unique_id = str(asset_id) if asset_id else str(abs(hash(url)))[:8]
+            timestamp = int(time.time() * 1000)  # milliseconds for better uniqueness
+            filename = f"screenshot_{safe_host}_{unique_id}_{timestamp}.png"
             path = os.path.join(self.screenshot_dir, filename)
 
             if not force and os.path.exists(path):
@@ -54,6 +57,15 @@ class ScreenshotManager:
             page.goto(url, wait_until='domcontentloaded', timeout=15000)
             page.screenshot(path=path)
             page.close()
+            
+            # Update asset database with new screenshot path
+            if asset_id:
+                try:
+                    self.asset_manager.update_asset_fields(asset_id, {'screenshot_path': path})
+                    logger.info(f"Updated asset {asset_id} with screenshot: {path}")
+                except Exception as update_e:
+                    logger.error(f"Failed to update database with screenshot path: {update_e}")
+            
             return path
         except Exception as e:
             logger.error(f"Error capturing screenshot for {url}: {e}")
@@ -67,7 +79,10 @@ class ScreenshotManager:
             parsed_url = urlparse(url)
             host = parsed_url.netloc
             safe_host = "".join([c if c.isalnum() else "_" for c in host])
-            filename = f"screenshot_{safe_host}_{int(time.time())}.png"
+            # Use asset_id if available, otherwise hash URL for uniqueness
+            unique_id = str(asset_id) if asset_id else str(abs(hash(url)))[:8]
+            timestamp = int(time.time() * 1000)  # milliseconds for better uniqueness
+            filename = f"screenshot_{safe_host}_{unique_id}_{timestamp}.png"
             path = os.path.join(self.screenshot_dir, filename)
 
             if not force and os.path.exists(path):
@@ -81,6 +96,15 @@ class ScreenshotManager:
             await page.goto(url, wait_until='domcontentloaded', timeout=15000)
             await page.screenshot(path=path)
             await page.close()
+            
+            # Update asset database with new screenshot path
+            if asset_id:
+                try:
+                    self.asset_manager.update_asset_fields(asset_id, {'screenshot_path': path})
+                    logger.info(f"Updated asset {asset_id} with screenshot: {path}")
+                except Exception as update_e:
+                    logger.error(f"Failed to update database with screenshot path: {update_e}")
+            
             return path
         except Exception as e:
             logger.error(f"Error capturing screenshot for {url}: {e}")

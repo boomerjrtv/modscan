@@ -944,7 +944,7 @@
             <!-- Assets View -->
             <div id="assets-view">
                 <div style="margin: 6px 0;">
-                    <span id="assets-profile-pill" style="display:inline-block; padding:3px 8px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:9999px; font-size:11px;">profile: normal</span>
+                    <span id="assets-parallel-status" style="display:inline-block; padding:3px 8px; background:#10b981; color:#ffffff; border:1px solid #059669; border-radius:9999px; font-size:11px;">🚀 parallel scanning</span>
                 </div>
                 <!-- Search Bar -->
                 <div class="siem-search-bar">
@@ -956,9 +956,8 @@
                     <button class="siem-btn" onclick="clearSearch()">Clear</button>
                     <button class="siem-btn" onclick="showScannedOnly()">Filter: Scanned</button>
                     <button class="siem-btn" onclick="refreshAssets()">Refresh</button>
-                    <button class="siem-btn" onclick="enrichAssets()">Enrich Assets</button>
+                    <button class="siem-btn primary" onclick="scanScopeNow()" title="Immediately queue deep scans for in-scope assets">Scan Now</button>
                     <button class="siem-btn" onclick="exportData('assets')">Export CSV</button>
-                    <button class="siem-btn" onclick="captureScreenshots()">Capture Screenshots</button>
                 </div>
 
                 <!-- Filter Controls -->
@@ -973,25 +972,16 @@
                     <button class="siem-btn secondary" onclick="toggleFullUrls()" title="Show/Hide Full URLs" id="toggle-urls-btn">🔗 Full URLs</button>
                     <button class="siem-btn danger" onclick="cleanupTestPaths()" title="Remove obvious test/random paths">🗑️ Cleanup Test Paths</button>
                     <span style="color: #666; margin: 0 15px;">|</span>
-                    <label for="enrich-domain-select" style="color:#ccc; margin-right:6px;">Enrich Target:</label>
-                    <select id="enrich-domain-select" style="background:#1a1a1a; color:#00ff41; border:1px solid #333; padding:5px; min-width:220px;">
-                        <option value="">All Domains</option>
-                    </select>
-                    <button class="siem-btn" onclick="enrichAssets()">Enrich Domain</button>
-                    <button class="siem-btn" onclick="enrichAllAssets()">Enrich All</button>
+                    <!-- Enrich controls removed: profiling and screenshots run automatically -->
                 </div>
 
                 <!-- Fallback Hint (shown when displaying discovered assets instead of scanned) -->
                 <div id="assets-fallback-hint" style="display:none; margin: 10px 0; padding: 8px 12px; background: #1f2937; border-left: 3px solid #f59e0b; color: #f3f4f6; font-size: 12px; border-radius: 4px; display:flex; align-items:center; gap:10px;">
-                    <span>Showing discovered assets while scans run. Use "Enrich Assets" to populate status codes faster.</span>
-                    <button class="siem-btn" onclick="enrichAssets()">Enrich Now</button>
+                    <span>Scanning and profiling run automatically. Use "Scan Now" to queue deep scans immediately.</span>
+                    <button class="siem-btn primary" onclick="scanScopeNow()">Scan Now</button>
                 </div>
 
-                <!-- Enrichment Progress Banner -->
-                <div id="enrich-progress" style="display:none; margin: 10px 0; padding: 8px 12px; background: #1e293b; border-left: 3px solid #38bdf8; color: #e5e7eb; font-size: 12px; border-radius: 4px; display:flex; align-items:center; gap:10px;">
-                    <span id="enrich-status-text">Enriching discovered assets...</span>
-                    <span id="enrich-counts" style="color:#93c5fd;"></span>
-                </div>
+                <!-- Enrichment progress removed -->
 
                 <!-- Column Visibility Selector -->
                 <div id="column-selector" class="column-selector" style="display: none;">
@@ -1142,7 +1132,7 @@
             <!-- Scope Management View -->
             <div id="scope-view" style="display: none;">
                 <div style="margin: 6px 0;">
-                    <span id="scope-profile-pill" style="display:inline-block; padding:3px 8px; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:9999px; font-size:11px;">profile: normal</span>
+                    <span id="scope-parallel-status" style="display:inline-block; padding:3px 8px; background:#10b981; color:#ffffff; border:1px solid #059669; border-radius:9999px; font-size:11px;">🚀 parallel scanning</span>
                 </div>
                 <div class="siem-search-bar">
                     <button class="siem-btn primary" onclick="loadScope()">Refresh Scope</button>
@@ -1386,18 +1376,12 @@
             <!-- Vulnerabilities View -->
             <div id="vulnerabilities-view" style="display: none;">
                 <div id="vuln-status-banner" style="margin: 8px 0; padding: 8px 12px; background:#1f2937; color:#e5e7eb; border:1px solid #374151; border-radius:6px; font-size:12px; display:flex; align-items:center; gap:10px;">
-                    <span>Scanner Profile:</span>
-                    <select id="vuln-profile-select" style="background:#374151;color:#e5e7eb;border:1px solid #4b5563;border-radius:4px;padding:2px 6px;" onchange="updateScannerProfileFromBanner(this.value)">
-                        <option value="stealth">stealth</option>
-                        <option value="normal" selected>normal</option>
-                        <option value="aggressive">aggressive</option>
-                    </select>
+                    <span style="padding:3px 8px; background:#10b981; color:#ffffff; border-radius:4px;">🚀 Parallel Scanning</span>
                     <span style="opacity:0.7">· Last Refresh: <span id="vuln-banner-refresh">—</span></span>
                     <label style="margin-left:16px; display:inline-flex; align-items:center; gap:6px;">
                         <input type="checkbox" id="pause-discovery-toggle" onchange="setPauseDiscovery(this.checked)"/>
                         Pause discovery while testing
                     </label>
-                    <span id="vuln-profile-save-status" style="margin-left:auto; color:#93c5fd;"></span>
                 </div>
                 <div style="display:flex; align-items:center; gap:16px; margin: 6px 0 10px 0; font-size:12px; color:#e5e7eb;">
                     <label style="display:inline-flex; align-items:center; gap:6px;">
@@ -1943,6 +1927,22 @@
     </div> <!-- End screenshot-modal -->
 
 <script>
+                async function scanScopeNow(limit) {
+                    try {
+                        const body = limit ? { limit: Number(limit) } : {};
+                        const resp = await fetch('/api/scan/scope-now', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body)
+                        });
+                        const data = await resp.json();
+                        const msg = data && data.message ? data.message : 'Scan queued.';
+                        showNotification(msg, 'success');
+                    } catch (e) {
+                        console.error('scanScopeNow error', e);
+                        showNotification('Failed to queue scan: ' + e, 'error');
+                    }
+                }
         // Global State
         let currentView = 'assets';
         let assetsData = [];
@@ -2151,11 +2151,10 @@
             currentView = viewName;
 
             // Load view-specific data
-            try { updateProfileBadges(); } catch(e) { console.warn('profile badge update failed', e); }
+            try { updateParallelStatus(); } catch(e) { console.warn('parallel status update failed', e); }
             switch(viewName) {
                 case 'assets':
                     loadAssetData();
-                    populateEnrichDomains();
                     break;
                 case 'scope':
                     loadScope();
@@ -2186,6 +2185,9 @@
                 });
             } catch (e) {}
         }
+        
+        // Make showView globally available
+        window.showView = showView;
 
         function openDirectTesting() {
             try {
@@ -2429,98 +2431,7 @@
             }
         }
 
-        // Quickly populate missing status/title/size for discovered assets
-        async function enrichAssets() {
-            try {
-                // Show progress and start polling summary to simulate progress
-                const banner = document.getElementById('enrich-progress');
-                const counts = document.getElementById('enrich-counts');
-                let poll = null;
-                if (banner && counts) {
-                    banner.style.display = 'flex';
-                    counts.textContent = '';
-                    let last = '';
-                    poll = setInterval(async () => {
-                        try {
-                            const s = await fetch('/api/assets/summary');
-                            const d = await s.json();
-                            const total = d.total_assets || 0;
-                            const scanned = d.scanned_assets || 0;
-                            const missing = Math.max(0, total - scanned);
-                            const line = `Scanned: ${scanned}/${total} • Missing: ${missing}`;
-                            if (line !== last) { counts.textContent = line; last = line; }
-                        } catch (e) {}
-                    }, 1000);
-                }
-                const selected = document.getElementById('enrich-domain-select');
-                const domain = selected ? (selected.value || '') : '';
-                const res = await fetch('/api/enrich_assets', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ limit: 500, domain })
-                });
-                const result = await res.json();
-                if (!result.success) {
-                    alert('Enrichment failed: ' + (result.error || 'Unknown error'));
-                    return;
-                }
-                // Reload data to reflect updates
-                await loadAssetData();
-                const msg = `Enriched ${result.enriched || 0} of ${result.attempted || 0} assets`;
-                console.log('✅ ' + msg);
-                // Lightweight toast via alert for now
-                alert('✅ ' + msg);
-                if (poll) { clearInterval(poll); }
-                if (banner) { banner.style.display = 'none'; }
-            } catch (e) {
-                alert('Network error enriching assets: ' + e.message);
-                const banner = document.getElementById('enrich-progress');
-                if (banner) banner.style.display = 'none';
-            }
-        }
-
-        async function enrichAllAssets() {
-            try {
-                const banner = document.getElementById('enrich-progress');
-                if (banner) banner.style.display = 'flex';
-                const res = await fetch('/api/enrich_assets', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ limit: 500 })
-                });
-                const result = await res.json();
-                await loadAssetData();
-                alert(result.success ? `✅ Enriched ${result.enriched || 0} of ${result.attempted || 0}` : `❌ ${result.error || 'Failed'}`);
-            } catch (e) {
-                alert('Network error enriching assets: ' + e.message);
-            } finally {
-                const banner = document.getElementById('enrich-progress');
-                if (banner) banner.style.display = 'none';
-            }
-        }
-
-        async function populateEnrichDomains() {
-            try {
-                const sel = document.getElementById('enrich-domain-select');
-                if (!sel) return;
-                const r = await fetch('/api/tabs/scope');
-                const d = await r.json();
-                const scope = (d && d.scope) ? d.scope : [];
-                sel.innerHTML = '';
-                const allOpt = document.createElement('option');
-                allOpt.value = '';
-                allOpt.textContent = 'All Domains';
-                sel.appendChild(allOpt);
-                scope.forEach(s => {
-                    const opt = document.createElement('option');
-                    opt.value = s.domain;
-                    opt.textContent = s.domain + (s.is_active ? '' : ' (inactive)');
-                    sel.appendChild(opt);
-                });
-            } catch (e) {
-                console.warn('Failed to populate enrich domains', e);
-            }
-        }
+        // Enrich functions removed — profiling runs automatically in engine
 
         async function loadAssetData(page = currentPage, searchQuery = null) {
             try {
@@ -2683,7 +2594,6 @@
                                 `<a href="#" class="screenshot-indicator" onclick="viewScreenshot('${asset[assetMapping.url]}', '${asset[assetMapping.screenshot]}')">VIEW</a>` :
                                 '<span class="no-screenshot">NONE</span>'
                             }
-                            <a href="#" class="screenshot-indicator" style="margin-left: 6px; background: #8b5cf6;" onclick="showAssetDetails('${asset[assetMapping.id]}')">DETAILS</a>
                         </td>
                         <!-- RESPONSE -->
                         <td>
@@ -3037,26 +2947,7 @@
             }
         }
 
-        // Screenshot Capture
-        async function captureScreenshots() {
-            try {
-                const response = await fetch('/api/capture_screenshot', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ batch_capture: true })
-                });
-                const result = await response.json();
-                
-                if (result.success) {
-                    alert('Screenshot capture initiated for ' + result.queued + ' assets');
-                    setTimeout(loadAssetData, 2000); // Refresh after 2 seconds
-                } else {
-                    alert('Error starting screenshot capture: ' + result.error);
-                }
-            } catch (error) {
-                alert('Error starting screenshot capture: ' + error.message);
-            }
-        }
+        // Screenshot capture removed — handled automatically
 
         // Export Functions
         function exportData(type) {
@@ -3580,13 +3471,7 @@
         async function loadVulnerabilityData() {
     console.log('🚀 [VULN DEBUG] loadVulnerabilityData() function started');
     try {
-        // Fetch scanner profile for banner
-        try {
-            const profResp = await fetch('/api/scanner/profile');
-            const profData = await profResp.json();
-            const sel = document.getElementById('vuln-profile-select');
-            if (sel && profData && profData.profile) sel.value = profData.profile;
-        } catch(e) { console.warn('profile load failed', e); }
+        // Parallel scanning is now active by default
         try {
             const polResp = await fetch('/api/scanner/policy');
             const pol = await polResp.json();
@@ -5669,36 +5554,32 @@
                 });
         }
 
-        async function updateProfileBadges() {
+        async function updateParallelStatus() {
             try {
-                const resp = await fetch('/api/scanner/profile');
+                const resp = await fetch('/api/scanner/status');
                 const data = await resp.json();
-                const prof = (data && data.profile) ? data.profile : 'normal';
-                const a = document.getElementById('assets-profile-pill');
-                const s = document.getElementById('scope-profile-pill');
-                if (a) a.textContent = `profile: ${prof}`;
-                if (s) s.textContent = `profile: ${prof}`;
-                const sel = document.getElementById('vuln-profile-select');
-                if (sel) sel.value = prof;
+                const mode = (data && data.mode) ? data.mode : 'parallel';
+                const status = (data && data.status) ? data.status : 'active';
+                
+                const a = document.getElementById('assets-parallel-status');
+                const s = document.getElementById('scope-parallel-status');
+                
+                if (status === 'active') {
+                    const text = '🚀 parallel scanning';
+                    if (a) a.textContent = text;
+                    if (s) s.textContent = text;
+                } else {
+                    const text = '⏸️ scanning paused';
+                    if (a) a.textContent = text;
+                    if (s) s.textContent = text;
+                }
             } catch (e) {
-                console.warn('Failed updating profile badges', e);
-            }
-        }
-
-        async function updateScannerProfileFromBanner(profile) {
-            try {
-                const resp = await fetch('/api/scanner/profile', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ profile })
-                });
-                const data = await resp.json();
-                if (!resp.ok || data.error) throw new Error(data.error || 'Failed to set profile');
-                const status = document.getElementById('vuln-profile-save-status');
-                if (status) { status.textContent = `Profile set to ${data.profile}`; setTimeout(()=> status.textContent='', 2000); }
-                updateProfileBadges();
-            } catch (e) {
-                alert('Failed to set profile: ' + e.message);
+                console.warn('Failed updating parallel status', e);
+                // Fallback to showing parallel mode
+                const a = document.getElementById('assets-parallel-status');
+                const s = document.getElementById('scope-parallel-status');
+                if (a) a.textContent = '🚀 parallel scanning';
+                if (s) s.textContent = '🚀 parallel scanning';
             }
         }
 
@@ -5742,11 +5623,39 @@
             const decodeHtml = (s) => { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; };
             if (/payload/i.test(safeTitle)) {
                 const decoded = decodeHtml(safeContent);
+                
+                // Store payload data for copy functions
+                window.currentPayloadData = {
+                    encoded: safeContent,
+                    decoded: decoded
+                };
+                
+                // Copy function for payload data
+                window.copyToClipboard = function(type) {
+                    try {
+                        const text = type === 'decoded' ? window.currentPayloadData.decoded : window.currentPayloadData.encoded;
+                        navigator.clipboard.writeText(text).then(() => {
+                            showToast(`Copied ${type} payload`, 'success', 1500);
+                        }).catch(() => {
+                            // Fallback for older browsers
+                            const textArea = document.createElement('textarea');
+                            textArea.value = text;
+                            document.body.appendChild(textArea);
+                            textArea.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(textArea);
+                            showToast(`Copied ${type} payload`, 'success', 1500);
+                        });
+                    } catch (e) {
+                        alert('Copy failed: ' + e.message);
+                    }
+                };
+                
                 container.innerHTML = `
                     <div style="font-size:12px; color:#4b5563; margin-bottom:8px;">Dashboard safely escapes payloads to avoid executing them here.</div>
                     <div style="display:flex; gap:8px; margin-bottom:10px;">
-                        <button class="siem-btn" style="padding:4px 8px; font-size:12px;" onclick="navigator.clipboard.writeText('${safeContent.replace(/'/g, "\\'")}');">Copy (encoded)</button>
-                        <button class="siem-btn primary" style="padding:4px 8px; font-size:12px;" onclick="navigator.clipboard.writeText('${decoded.replace(/'/g, "\\'").replace(/\\/g, "\\\\")}');">Copy (decoded)</button>
+                        <button class="siem-btn" style="padding:4px 8px; font-size:12px;" onclick="copyToClipboard('encoded')">Copy (encoded)</button>
+                        <button class="siem-btn primary" style="padding:4px 8px; font-size:12px;" onclick="copyToClipboard('decoded')">Copy (decoded)</button>
                     </div>
                     <div style="margin-bottom:6px; font-weight:600;">Encoded:</div>
                     <pre style="white-space: pre-wrap; word-wrap: break-word; background: #fff; padding: 10px; border:1px solid #e5e7eb; border-radius:4px;">${escapeHtml(safeContent)}</pre>

@@ -182,10 +182,15 @@ class AssetManager:
         self.activity_mappings = ASSET_MAPPING.get('activity_mappings', {})
 
     def _get_db(self):
-        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, timeout=60.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA synchronous=NORMAL')
+        try:
+            conn.execute('PRAGMA busy_timeout=8000')  # wait up to 8s on lock contention
+            conn.execute('PRAGMA foreign_keys=ON')
+        except Exception:
+            pass
         return conn
 
     def get_asset_fields(self):
@@ -682,6 +687,11 @@ class AssetManager:
         if not url or not isinstance(url, str):
             return True
             
+        # SAFETY: Validate URL format before processing
+        if not self._is_valid_url_format(url):
+            print(f"🚨 REJECTED CORRUPTED URL: {url[:100]}...")
+            return True
+            
         url_lower = url.lower()
         
         # Skip common noise patterns
@@ -708,6 +718,48 @@ class AssetManager:
             return True
             
         return False
+
+    def _is_valid_url_format(self, url):
+        """SAFETY: Validate URL format to prevent corruption from causing scanner hangs."""
+        try:
+            import re
+            from urllib.parse import urlparse
+            
+            # Basic format validation
+            if not url.startswith(('http://', 'https://')):
+                return False
+                
+            # Check for corruption patterns we've seen
+            corruption_patterns = [
+                r'M\d{4,}',  # Pattern like M11540, M115411
+                r'[a-zA-Z]{10,}[A-Z]{2,}[a-zA-Z]{5,}',  # Patterns like rieilgakM115411
+                r',\d+,\d+,\d+,active',  # Patterns like ,1,1813,0,active
+                r'http://[^/]*http://',  # Double http://
+                r'[^.]\.[^/]*\.[^/]*http://',  # Domain followed by http://
+            ]
+            
+            for pattern in corruption_patterns:
+                if re.search(pattern, url):
+                    return False
+                    
+            # Parse URL to validate structure
+            parsed = urlparse(url)
+            if not parsed.netloc or not parsed.scheme:
+                return False
+                
+            # Check domain format
+            if not re.match(r'^[a-zA-Z0-9.-]+$', parsed.netloc.split(':')[0]):
+                return False
+                
+            # Check for reasonable length
+            if len(url) > 1000:
+                return False
+                
+            return True
+            
+        except Exception as e:
+            print(f"🚨 URL validation error for {url[:50]}: {e}")
+            return False
 
     def add_asset(self, url, host, discovery_method):
         """Adds or updates an asset and RETURNS its ID (universal helper)."""
@@ -766,24 +818,35 @@ class AssetManager:
             if not url_list:
                 return []
                 
-            # Filter out noise URLs
-            filtered_urls = []
+            # Handle pre-validated assets (already have status codes, titles, etc.)
+            processed_assets = []
             for url_data in url_list:
-                if isinstance(url_data, dict):
-                    url = url_data.get('url')
-                    host = url_data.get('host', '')
+                if isinstance(url_data, dict) and url_data.get('validated'):
+                    # Pre-validated asset with status code, title, etc.
+                    processed_assets.append(url_data)
                 else:
-                    url = str(url_data)
-                    from urllib.parse import urlparse
-                    host = urlparse(url).netloc
+                    # Legacy URL-only format (fallback)
+                    if isinstance(url_data, dict):
+                        url = url_data.get('url')
+                        host = url_data.get('host', '')
+                    else:
+                        url = str(url_data)
+                        from urllib.parse import urlparse
+                        host = urlparse(url).netloc
                     
-                if not self._should_skip_url(url):
-                    filtered_urls.append((url, host))
+                    # Normalize URL universally (dedup + fix malformed inputs)
+                    try:
+                        url = self.normalize_url(url)
+                    except Exception:
+                        url = str(url)
+                    
+                    if not self._should_skip_url(url):
+                        processed_assets.append({'url': url, 'host': host})
             
-            if not filtered_urls:
+            if not processed_assets:
                 return []
                 
-            print(f"📊 Filtered {len(url_list)} URLs down to {len(filtered_urls)} valid assets")
+            print(f"📊 Processing {len(processed_assets)} validated assets for database storage")
             
             added_ids = []
             with self._get_db() as db:
@@ -791,29 +854,49 @@ class AssetManager:
                 
                 # Get existing URLs to avoid duplicates
                 existing_urls = set()
-                if filtered_urls:
-                    url_placeholders = ','.join('?' * len(filtered_urls))
-                    urls_only = [url for url, _ in filtered_urls]
+                if processed_assets:
+                    url_placeholders = ','.join('?' * len(processed_assets))
+                    urls_only = [asset.get('url', asset) if isinstance(asset, dict) else asset for asset in processed_assets]
                     existing_query = f"SELECT {fields['url']} FROM assets WHERE {fields['url']} IN ({url_placeholders})"
                     existing_urls = set(row[0] for row in db.execute(existing_query, urls_only).fetchall())
                 
                 # Process in batches
-                for i in range(0, len(filtered_urls), batch_size):
-                    batch = filtered_urls[i:i+batch_size]
-                    new_assets = [(url, host) for url, host in batch if url not in existing_urls]
+                for i in range(0, len(processed_assets), batch_size):
+                    batch = processed_assets[i:i+batch_size]
+                    new_assets = [asset for asset in batch if asset.get('url') not in existing_urls]
                     
                     if new_assets:
-                        # Bulk insert new assets
-                        insert_query = f"""
-                            INSERT INTO assets ({fields['url']}, {fields['host']}, {fields['discovery_method']}, 
-                                               {fields['last_scanned']}, discovered_at) 
-                            VALUES (?, ?, ?, ?, ?)
-                        """
-                        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-                        insert_data = [(url, host, discovery_method, timestamp, timestamp) for url, host in new_assets]
+                        # Handle pre-validated assets with rich data
+                        if new_assets[0].get('validated'):
+                            # Rich validated assets with status codes, titles, etc.
+                            insert_query = f"""
+                                INSERT INTO assets ({fields['url']}, {fields['host']}, {fields['discovery_method']}, 
+                                                   {fields['status_code']}, {fields['title']}, {fields['tech_stack']},
+                                                   {fields['content_length']}, {fields['last_scanned']}, discovered_at) 
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """
+                            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+                            insert_data = [
+                                (asset['url'], asset['host'], discovery_method, 
+                                 asset.get('status_code'), asset.get('title'), asset.get('tech_stack'),
+                                 asset.get('content_length', 0), timestamp, timestamp)
+                                for asset in new_assets
+                            ]
+                        else:
+                            # Legacy URL-only format
+                            insert_query = f"""
+                                INSERT INTO assets ({fields['url']}, {fields['host']}, {fields['discovery_method']}, 
+                                                   {fields['last_scanned']}, discovered_at) 
+                                VALUES (?, ?, ?, ?, ?)
+                            """
+                            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+                            insert_data = [
+                                (asset.get('url'), asset.get('host'), discovery_method, timestamp, timestamp)
+                                for asset in new_assets
+                            ]
                         
                         db.executemany(insert_query, insert_data)
-                        print(f"✅ Added {len(new_assets)} new assets (batch {i//batch_size + 1})")
+                        print(f"✅ Added {len(new_assets)} validated assets (batch {i//batch_size + 1})")
                 
                 db.commit()
                 return added_ids
@@ -962,7 +1045,7 @@ class AssetManager:
                 query = f'''
                     SELECT {fields['id']}, {fields['url']}, {fields['status_code']}
                     FROM assets 
-                    WHERE {fields['status_code']} = 200 
+                    WHERE {fields['status_code']} IN (200, 401, 403) 
                     AND (tech_stack IS NULL OR tech_stack = '' OR tech_stack = 'Unknown')
                     ORDER BY {fields['last_scanned']} DESC 
                     LIMIT ?
@@ -974,25 +1057,90 @@ class AssetManager:
             return []
 
     def get_assets_ready_for_deep_scan(self, limit=75):
-        """Prefer validated assets for deep scan to reduce noise.
-        Select assets with status_code=200 AND basic_scan_complete=1.
+        """Universal selection for deep scanning.
+        Priority order:
+        1) Newly discovered, unscanned in-scope assets (status_code IS NULL, deep_scan_complete=0)
+        2) Validated in-scope assets (status_code=200, basic_scan_complete=1, deep_scan_complete=0)
         """
         try:
             with self._get_db() as db:
                 fields = self.get_asset_fields()
-                query = f'''
+                # Build in-scope filter (schema tolerant; matches exact host and common variants)
+                scope_domains = []
+                try:
+                    scope_domains = list(self.get_scope_domains() or [])
+                except Exception:
+                    scope_domains = []
+
+                scope_clause = ""
+                scope_params = []
+                if scope_domains:
+                    # Build OR conditions for each domain: exact, with port, and subdomain variants
+                    or_parts = []
+                    for d in scope_domains:
+                        d = (d or "").strip().lower().lstrip('.')
+                        if not d:
+                            continue
+                        # host = d OR host LIKE 'd:%' OR host LIKE '%.d' OR host LIKE '%.d:%'
+                        or_parts.append(f"({fields['host']} = ? OR {fields['host']} LIKE ? OR {fields['host']} LIKE ? OR {fields['host']} LIKE ?)")
+                        scope_params.extend([d, f"{d}:%", f"%.{d}", f"%.{d}:%"])
+                    if or_parts:
+                        scope_clause = " WHERE (" + " OR ".join(or_parts) + ")"
+
+                # PRIORITY 1: Newly discovered in-scope assets
+                base_new_query = f"""
                     SELECT {fields['id']}, {fields['url']}, {fields['status_code']}, {fields['tech_stack']}
-                    FROM assets 
-                    WHERE {fields['status_code']} = 200 
-                    AND IFNULL(basic_scan_complete, 0) = 1
-                    AND IFNULL(deep_scan_complete, 0) = 0
-                    ORDER BY {fields['intelligence_score']} DESC, {fields['last_scanned']} ASC 
-                    LIMIT ?
-                '''
-                cursor = db.execute(query, (limit,))
-                return [{
+                    FROM assets
+                """
+                where_new = f"{fields['status_code']} IS NULL AND IFNULL(deep_scan_complete, 0) = 0"
+                params_new = list(scope_params)
+                if scope_clause:
+                    # Inject additional AND after existing scope WHERE
+                    new_assets_query = base_new_query + scope_clause + f" AND {where_new} " + f"ORDER BY {fields['discovered_at']} DESC LIMIT ?"
+                else:
+                    new_assets_query = base_new_query + f" WHERE {where_new} ORDER BY {fields['discovered_at']} DESC LIMIT ?"
+                params_new.append(limit)
+
+                cursor = db.execute(new_assets_query, tuple(params_new))
+                new_assets = [{
                     'id': row[0], 'url': row[1], 'status_code': row[2], 'tech_stack': row[3] or ''
                 } for row in cursor.fetchall()]
+                
+                # If we have enough new assets, return them immediately
+                if len(new_assets) >= limit:
+                    try:
+                        print(f"🎯 Prioritizing {len(new_assets)} newly discovered in-scope assets for scanning")
+                    except Exception:
+                        pass
+                    return new_assets
+                
+                # PRIORITY 2: Fill remaining slots with ANY assets that have a status code and aren't deep scanned yet
+                remaining_limit = limit - len(new_assets)
+                base_validated_query = f"""
+                    SELECT {fields['id']}, {fields['url']}, {fields['status_code']}, {fields['tech_stack']}
+                    FROM assets
+                """
+                # MUCH MORE INCLUSIVE: Any asset with status_code (not just 200) that hasn't been deep scanned
+                where_valid = f"{fields['status_code']} IS NOT NULL AND IFNULL(deep_scan_complete, 0) = 0"
+                params_valid = list(scope_params)
+                if scope_clause:
+                    validated_query = base_validated_query + scope_clause + f" AND {where_valid} " + f"ORDER BY {fields['intelligence_score']} DESC, {fields['last_scanned']} ASC LIMIT ?"
+                else:
+                    validated_query = base_validated_query + f" WHERE {where_valid} ORDER BY {fields['intelligence_score']} DESC, {fields['last_scanned']} ASC LIMIT ?"
+                params_valid.append(remaining_limit)
+
+                cursor = db.execute(validated_query, tuple(params_valid))
+                validated_assets = [{
+                    'id': row[0], 'url': row[1], 'status_code': row[2], 'tech_stack': row[3] or ''
+                } for row in cursor.fetchall()]
+                
+                combined_assets = new_assets + validated_assets
+                try:
+                    print(f"🎯 Selected {len(new_assets)} new + {len(validated_assets)} validated in-scope assets = {len(combined_assets)} total")
+                except Exception:
+                    pass
+                return combined_assets
+                
         except Exception as e:
             print(f"Error getting assets ready for deep scan: {e}")
             return []
@@ -1214,7 +1362,7 @@ class AssetManager:
                 # Find assets missing status_code, title, or content_length
                 query = f'''
                     SELECT {fields['id']}, {fields['url']}, {fields['status_code']}, 
-                           {fields['title']}, {fields['content_length']}, {fields['tech_stack']}
+                           {fields['title']}, {fields['content_length']}, {fields['tech_stack']}, {fields['last_scanned']}
                     FROM assets 
                     WHERE {fields['status_code']} IS NULL 
                        OR {fields['title']} IS NULL 
@@ -1224,6 +1372,10 @@ class AssetManager:
                        OR {fields['tech_stack']} IS NULL
                        OR {fields['tech_stack']} = ''
                        OR {fields['tech_stack']} = '-'
+                       OR (
+                           {fields['last_scanned']} IS NULL OR 
+                           datetime({fields['last_scanned']}) < datetime('now', '-2 minutes')
+                       )
                     ORDER BY {fields['last_scanned']} ASC
                     LIMIT ?
                 '''
@@ -1661,7 +1813,7 @@ class AssetManager:
         self.ensure_verification_table()
         attempts = 0
         last_err = None
-        while attempts < 3:
+        while attempts < 10:
             try:
                 with self._get_db() as db:
                     db.execute(
@@ -1676,7 +1828,9 @@ class AssetManager:
                 last_err = e
                 # Retry on transient locking
                 if 'locked' in str(e).lower():
-                    time.sleep(0.15 * (attempts + 1))
+                    # Exponential backoff with cap ~1.2s
+                    delay = min(1.2, 0.12 * (2 ** attempts))
+                    time.sleep(delay)
                     attempts += 1
                     continue
                 break

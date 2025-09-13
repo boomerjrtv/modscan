@@ -301,34 +301,233 @@ class UltimateDiscoveryEngine:
         }
     
     async def comprehensive_discovery(self, domain: str) -> List[str]:
-        """Fast SecLists-powered directory discovery with recursion - PRIMARY METHOD"""
-        logger.info(f"🚀 FAST SECLISTS DISCOVERY: {domain}")
+        """Smart multi-tier discovery: Historical first, then targeted brute force"""
+        logger.info(f"🚀 COMPREHENSIVE DISCOVERY: {domain}")
         discovered_urls = set()
         
-        # PRIMARY: Fast SecLists Directory Brute Force with Recursion
-        seclists_urls = await self._fast_seclists_discovery(domain)
-        discovered_urls.update(seclists_urls)
-        logger.info(f"⚡ Fast SecLists: {len(seclists_urls)} URLs discovered")
+        # PRIMARY: Historical discovery for external targets (fastest, highest value)
+        if not self._is_internal_ip(domain):
+            historical_urls = await self._tier1_historical_discovery(domain)
+            discovered_urls.update(historical_urls)
+            logger.info(f"📚 Historical: {len(historical_urls)} URLs from GAU/Wayback")
         
-        # SECONDARY: Authenticated crawling if available (use freshest DB cookie/policy)
+        # SECONDARY: Authenticated crawling if available
         auth_headers_probe = self._build_auth_headers_for_host(domain)
         if auth_headers_probe.get('Cookie'):
             same_domain_seeds = self._existing_urls_for_domain(domain)
             crawled_urls = await self._auth_smart_crawl(domain, extra_seeds=same_domain_seeds)
             discovered_urls.update(crawled_urls)
             logger.info(f"🔐 Auth Crawl: {len(crawled_urls)} additional URLs")
+            
+        # TERTIARY: Comprehensive discovery with massive wordlists  
+        logger.info(f"🔍 DEBUG: Starting enhanced discovery for {domain}")
+        targeted_urls = await self._targeted_common_discovery(domain)
+        discovered_urls.update(targeted_urls)
+        logger.info(f"🎯 Comprehensive: {len(targeted_urls)} URLs from enhanced wordlists")
         
-        # TERTIARY: Historical discovery for external targets only
-        if not self._is_internal_ip(domain):
-            historical_urls = await self._tier1_historical_discovery(domain)
-            discovered_urls.update(historical_urls)
-            logger.info(f"📚 Historical: {len(historical_urls)} URLs from GAU/Wayback")
+        # QUATERNARY: MASSIVE parallel discovery if still under 1000 URLs
+        if len(discovered_urls) < 1000:
+            massive_urls = await self._massive_parallel_discovery(domain)
+            discovered_urls.update(massive_urls)
+            logger.info(f"🚀 MASSIVE: {len(massive_urls)} URLs from parallel chunked wordlists")
 
         # Avoid target-specific priority paths; rely on SecLists + smart crawling
         
         final_urls = list(discovered_urls)
         logger.info(f"🎯 DISCOVERY COMPLETE: {len(final_urls)} total URLs for {domain}")
         return final_urls
+        
+    async def _targeted_common_discovery(self, domain: str) -> Set[str]:
+        """Fast discovery using small, common wordlists"""
+        urls = set()
+        
+        # Use SecLists with COMPREHENSIVE wordlists - no artificial limits
+        from modules.seclists_manager import SecListsManager
+        seclists = SecListsManager(None, {})
+        
+        # Get reasonable wordlists for fast but comprehensive discovery  
+        common_paths = seclists.get_intelligent_wordlist({}, 'directory', limit=2000)  # 20x increase - balanced
+        
+        # Add critical files that walkthroughs expect
+        critical_files = [
+            'phpinfo.php', 'info.php', 'test.php', 'phpinfo.txt',
+            'showimage.php', 'download.php', 'file.php', 'view.php',
+            'config.php', 'settings.php', 'database.php', 'db.php',
+            'admin.php', 'login.php', 'panel.php', 'manager.php',
+            'robots.txt', 'sitemap.xml', '.git/config', '.svn/entries',
+            'web.config', 'app.config', 'appsettings.json',
+            'crossdomain.xml', 'clientaccesspolicy.xml'
+        ]
+        
+        # Add file extensions discovery for universal coverage
+        base_files = ['index', 'default', 'main', 'home', 'admin', 'test', 'info', 'config', 'backup']
+        extensions = ['.php', '.asp', '.aspx', '.jsp', '.txt', '.xml', '.config', '.bak', '.old', '.log']
+        
+        for base in base_files:
+            for ext in extensions:
+                critical_files.append(f"{base}{ext}")
+        
+        # Combine comprehensive paths
+        common_paths = list(set(common_paths + critical_files))
+        
+        # Test both HTTP and HTTPS
+        for protocol in ['http', 'https']:
+            base_url = f"{protocol}://{domain}"
+            
+            # Use ffuf with small wordlist
+            ffuf_bin = self._find_binary('ffuf', config_key='ffuf_path', env_key='FFUF_PATH')
+            if ffuf_bin:
+                # Create temporary wordlist
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                    for path in common_paths:
+                        f.write(f"{path}\n")
+                    temp_wordlist = f.name
+                
+                try:
+                    cmd = [
+                        ffuf_bin,
+                        "-u", f"{base_url}/FUZZ",
+                        "-w", temp_wordlist,
+                        "-mc", "200,204,301,302,307,403",
+                        "-t", "100",  # Maximum parallelism
+                        "-timeout", "3", 
+                        "-maxtime", "60",  # 1 minute max - reasonable for discovery
+                        "-s",  # Silent flag
+                        "-o", "/tmp/ffuf_targeted.json",
+                        "-of", "json"
+                    ]
+                    
+                    logger.info(f"🎯 Running targeted ffuf on {base_url}")
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    
+                    if result.returncode == 0 and os.path.exists("/tmp/ffuf_targeted.json"):
+                        with open("/tmp/ffuf_targeted.json", 'r') as f:
+                            import json
+                            ffuf_data = json.load(f)
+                            for result_item in ffuf_data.get('results', []):
+                                url = result_item.get('url', '')
+                                if url:
+                                    urls.add(url)
+                                    
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"Targeted ffuf timeout on {base_url}")
+                except Exception as e:
+                    logger.debug(f"Targeted ffuf error: {e}")
+                finally:
+                    try:
+                        os.unlink(temp_wordlist)
+                        os.unlink("/tmp/ffuf_targeted.json")
+                    except:
+                        pass
+                        
+                # Break after first successful protocol to avoid duplicates
+                if urls:
+                    break
+                    
+        return urls
+    
+    async def _massive_parallel_discovery(self, domain: str) -> Set[str]:
+        """MASSIVE parallel discovery using chunked RockyYou-style wordlists"""
+        urls = set()
+        
+        # Find large SecLists wordlists for comprehensive coverage
+        seclists_path = "/home/michael/SecLists"
+        massive_wordlists = [
+            f"{seclists_path}/Discovery/Web-Content/directory-list-lowercase-2.3-big.txt",
+            f"{seclists_path}/Discovery/Web-Content/big.txt", 
+            f"{seclists_path}/Discovery/Web-Content/raft-large-directories-lowercase.txt",
+            f"{seclists_path}/Discovery/Web-Content/raft-medium-files.txt",
+            f"{seclists_path}/Discovery/Web-Content/raft-medium-words.txt"
+        ]
+        
+        # Check which wordlists exist
+        available_wordlists = []
+        for wordlist in massive_wordlists:
+            if os.path.exists(wordlist):
+                available_wordlists.append(wordlist)
+                
+        if not available_wordlists:
+            logger.warning(f"No massive wordlists found for {domain}")
+            return urls
+            
+        logger.info(f"🚀 MASSIVE DISCOVERY: Running {len(available_wordlists)} chunked wordlists on {domain}")
+        
+        # Run multiple parallel ffuf instances with different wordlists
+        import asyncio
+        tasks = []
+        
+        for i, wordlist in enumerate(available_wordlists):
+            for protocol in ['http', 'https']:
+                base_url = f"{protocol}://{domain}"
+                task = asyncio.create_task(
+                    self._run_massive_ffuf_instance(base_url, wordlist, i)
+                )
+                tasks.append(task)
+        
+        # Execute all massive discovery tasks in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Collect URLs from all results
+        for result in results:
+            if isinstance(result, set):
+                urls.update(result)
+            elif isinstance(result, Exception):
+                logger.warning(f"Massive discovery task failed: {result}")
+                
+        logger.info(f"🎯 MASSIVE DISCOVERY COMPLETE: {len(urls)} URLs from parallel wordlists")
+        return urls
+        
+    async def _run_massive_ffuf_instance(self, base_url: str, wordlist: str, instance_id: int) -> Set[str]:
+        """Run a single ffuf instance with massive wordlist"""
+        urls = set()
+        
+        ffuf_bin = self._find_binary('ffuf', config_key='ffuf_path', env_key='FFUF_PATH')
+        if not ffuf_bin:
+            return urls
+            
+        output_file = f"/tmp/ffuf_massive_{instance_id}.json"
+        
+        cmd = [
+            ffuf_bin,
+            "-u", f"{base_url}/FUZZ",
+            "-w", wordlist,
+            "-mc", "200,204,301,302,307,403,401",  # Include auth required
+            "-t", "50",  # Reasonable parallelism 
+            "-timeout", "5",
+            "-maxtime", "120",  # 2 minutes max per wordlist - reasonable
+            "-silent",
+            "-o", output_file,
+            "-of", "json",
+            "-H", "User-Agent: ModScan-Discovery/2.0"
+        ]
+        
+        try:
+            logger.info(f"🔥 MASSIVE FFUF #{instance_id}: {os.path.basename(wordlist)} -> {base_url}")
+            
+            # Run in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, 
+                lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=650)
+            )
+            
+            if result.returncode == 0 and os.path.exists(output_file):
+                with open(output_file, 'r') as f:
+                    import json
+                    ffuf_data = json.load(f)
+                    for result_item in ffuf_data.get('results', []):
+                        url = result_item.get('url', '')
+                        if url:
+                            urls.add(url)
+                            
+                os.unlink(output_file)  # Clean up
+                logger.info(f"✅ MASSIVE FFUF #{instance_id}: Found {len(urls)} URLs")
+                
+        except Exception as e:
+            logger.warning(f"Massive ffuf instance {instance_id} failed: {e}")
+            
+        return urls
     
     def _is_internal_ip(self, domain: str) -> bool:
         """Check if domain is internal IP (skip external tools like GAU/waymore)"""
@@ -1733,18 +1932,19 @@ class UltimateDiscoveryEngine:
                 for base_url in base_urls[:5]:  # Limit to 5 base URLs to avoid too much noise
                     logger.info(f"🔁 Running ffuf recursive discovery on {base_url}")
                     
-                    # ffuf command with recursion
+                    # ffuf command with reduced intensity for faster discovery
                     cmd = [
                         ffuf_bin,
                         "-u", f"{base_url}/FUZZ",
                         "-w", temp_wordlist_path,
                         "-recursion",
-                        "-recursion-depth", "3",  # Max 3 levels deep
-                        "-recursion-strategy", "greedy",  # Recurse on all matches
-                        "-mc", "200,204,301,302,307,403,401",  # Include useful status codes
-                        "-t", "100",  # 100 threads for speed
-                        "-timeout", "10",
-                        "-silent",  # Reduce noise
+                        "-recursion-depth", "2",  # Reduced from 3 to 2
+                        "-recursion-strategy", "default",  # Less aggressive than greedy
+                        "-mc", "200,204,301,302,307,403",  # Reduced status codes
+                        "-t", "20",  # Reduced from 100 to 20 threads
+                        "-timeout", "5",  # Reduced timeout
+                        "-maxtime", "120",  # 2 minute maximum per base URL
+                        "-s",  # Silent flag  # Reduce noise
                         "-o", "/tmp/ffuf_output.json",
                         "-of", "json"
                     ]
@@ -2131,8 +2331,16 @@ Example: {{"paths": ["/admin", "/api", "/login", "/config"]}}
                     session = aiohttp.ClientSession(connector=connector, timeout=timeout)
             
             async with session:
-                # Create semaphore for controlled concurrency within chunk
-                semaphore = asyncio.Semaphore(100)  # 100 concurrent requests per chunk
+                # Create semaphore for controlled concurrency within chunk (tuned for high-throughput)
+                try:
+                    max_tests = int((self.config.get('max_concurrent_tests') or self.config.get('performance', {}).get('network_bandwidth_gbps') or 0) or 0)
+                except Exception:
+                    max_tests = 0
+                # Default to 200; allow config to increase within safe bounds
+                per_chunk = 200
+                if max_tests and isinstance(max_tests, int) and max_tests > 0:
+                    per_chunk = max(50, min(max_tests, 400))
+                semaphore = asyncio.Semaphore(per_chunk)
                 
                 # Test all URLs in this chunk simultaneously
                 tasks = [self._test_single_url_parallel(session, url, semaphore) for url in test_urls]

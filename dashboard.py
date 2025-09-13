@@ -5,7 +5,7 @@ import sys
 import time
 import re
 from pathlib import Path
-from flask import Flask, jsonify, render_template, g, request, make_response
+from flask import Flask, jsonify, render_template, g, request, make_response, send_from_directory
 try:
     from flask_socketio import SocketIO, emit
     SOCKETIO_AVAILABLE = True
@@ -28,6 +28,8 @@ with open(CONFIG_PATH, 'r') as f:
     CONFIG = json.load(f)
 with open(ASSET_MAPPING_PATH, 'r') as f:
     ASSET_MAPPING = json.load(f)
+
+# Profile system removed - using parallel scanning instead
 
 # --- Flask App Initialization ---
 app = Flask(__name__, template_folder=os.path.abspath(os.path.join(os.path.dirname(__file__), 'templates')))
@@ -2200,102 +2202,7 @@ def auto_refresh_session():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# ===== Asset Enrichment & Cleanup =====
-
-@app.route('/api/enrich_assets', methods=['POST'])
-def enrich_assets():
-    """Fetch details for assets with NULL status_code (unscanned seeds)."""
-    try:
-        import asyncio
-        import aiohttp
-        data = request.get_json() or {}
-        domain = (data.get('domain') or '').strip()
-        cookie_string = data.get('cookie_string') or ''
-        limit = int(data.get('limit', 100))
-
-        # If no cookie passed and a domain was provided, try to load stored cookie and merge persistent keys
-        if domain and not cookie_string:
-            try:
-                with sqlite3.connect(app.config['database_path']) as db:
-                    row = db.execute("SELECT cookie, persistent FROM cookies WHERE domain=?", (domain,)).fetchone()
-                    if row:
-                        cookie_string = row[0] or ''
-                        if row[1]:
-                            cookie_string = _merge_persistent_cookie(cookie_string, row[1])
-            except Exception as e:
-                app.logger.warning(f"Could not load cookie for {domain}: {e}")
-
-        headers = {"User-Agent": "ModScan Enricher/1.0"}
-        if cookie_string:
-            headers["Cookie"] = cookie_string
-
-        # Pull seeds needing enrichment
-        with sqlite3.connect(app.config['database_path']) as db:
-            db.row_factory = sqlite3.Row
-            if domain:
-                cursor = db.execute(
-                    """
-                    SELECT id, url FROM assets 
-                    WHERE status_code IS NULL AND url LIKE ?
-                    ORDER BY id DESC LIMIT ?
-                    """, (f"%://{domain}/%", limit)
-                )
-            else:
-                cursor = db.execute(
-                    "SELECT id, url FROM assets WHERE status_code IS NULL ORDER BY id DESC LIMIT ?",
-                    (limit,)
-                )
-            targets = [(row[0], row[1]) for row in cursor.fetchall()]
-
-        async def fetch_update(session, item):
-            asset_id, url = item
-            t0 = _time.monotonic()
-            try:
-                async with session.get(url, allow_redirects=True, timeout=15) as resp:
-                    txt = await resp.text()
-                    dt = int((_time.monotonic() - t0) * 1000)
-                    # extract <title>
-                    m = re.search(r"<title[^>]*>(.*?)</title>", txt, re.I | re.S)
-                    title = (m.group(1).strip() if m else 'Unknown')
-                    content_len = len(txt.encode('utf-8', 'ignore'))
-                    with sqlite3.connect(app.config['database_path']) as db:
-                        db.execute(
-                            """
-                            UPDATE assets
-                            SET status_code=?, title=?, content_length=?, response_time=?, last_scanned=datetime('now')
-                            WHERE id=?
-                            """,
-                            (resp.status, title, content_len, dt, asset_id)
-                        )
-                        db.commit()
-                    return True
-            except Exception:
-                # mark last_scanned so we don't hammer
-                try:
-                    with sqlite3.connect(app.config['database_path']) as db:
-                        db.execute("UPDATE assets SET last_scanned=datetime('now') WHERE id=?", (asset_id,))
-                        db.commit()
-                except Exception:
-                    pass
-                return False
-
-        async def run_enrichment():
-            conn = aiohttp.TCPConnector(limit=20, ssl=False)
-            async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
-                tasks = [fetch_update(session, it) for it in targets]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                ok = sum(1 for r in results if r is True)
-                return ok, len(targets)
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        ok, total = loop.run_until_complete(run_enrichment())
-        loop.close()
-
-        return jsonify({"success": True, "enriched": ok, "attempted": total})
-    except Exception as e:
-        app.logger.error(f"Asset enrichment error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+# ===== Asset Cleanup =====
 
 @app.route('/api/assets/cleanup', methods=['POST'])
 def cleanup_assets():
@@ -2489,6 +2396,20 @@ def index():
     response.headers['Expires'] = '0'
     return response
 
+@app.route('/favicon.ico')
+def favicon():
+    """Simple favicon to prevent 404 errors"""
+    # Return a simple transparent PNG as favicon
+    response = make_response()
+    response.headers['Content-Type'] = 'image/x-icon'
+    response.headers['Cache-Control'] = 'public, max-age=86400'  # Cache for 24 hours
+    # Simple 16x16 transparent icon
+    import base64
+    # Minimal favicon data
+    icon_data = base64.b64decode('AAABAAEAEBAAAAEAIABoBAAAFgAAACgAAAAQAAAAIAAAAAEAIAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAA')
+    response.data = icon_data
+    return response
+
 def _load_oob_api_key():
     try:
         import json
@@ -2670,7 +2591,7 @@ def direct_url_scan():
                 app.logger.warning("No valid assets to scan after initial creation.")
                 return
 
-            app.logger.info(f"Starting enrichment for {len(initial_assets)} assets...")
+            app.logger.info(f"Starting profiling for {len(initial_assets)} assets...")
             enriched_assets = []
             connector = aiohttp.TCPConnector(ssl=False) # Allow self-signed certs
             async with aiohttp.ClientSession(connector=connector) as session:
@@ -2711,24 +2632,24 @@ def direct_url_scan():
                                 except Exception as e:
                                     app.logger.warning(f"Screenshot failed for {asset['url']}: {e}")
 
-                            # Save all enriched data
+                            # Save all profiled data
                             am.update_asset_fields(asset['id'], update_data)
-                            app.logger.info(f"Enriched asset {asset['url']}: Status {update_data['status_code']}, Tech: {update_data.get('tech_stack')}")
+                            app.logger.info(f"Profiled asset {asset['url']}: Status {update_data['status_code']}, Tech: {update_data.get('tech_stack')}")
                             enriched_assets.append(am.get_asset_by_id(asset['id']))
 
                     except Exception as e:
                         am.update_asset_fields(asset['id'], {'status_code': 0, 'title': f'Scan Error: {e}'})
-                        app.logger.error(f"Failed to enrich {asset['url']}: {e}")
+                        app.logger.error(f"Failed to profile {asset['url']}: {e}")
 
             # 4. Run vulnerability scan
             if not enriched_assets:
-                app.logger.info("No assets were successfully enriched. Skipping vulnerability scan.")
+                app.logger.info("No assets were successfully profiled. Skipping vulnerability scan.")
                 return
 
-            app.logger.info(f"Starting vulnerability scan on {len(enriched_assets)} enriched assets...")
+            app.logger.info(f"Starting vulnerability scan on {len(enriched_assets)} profiled assets...")
             scanner = VulnerabilityScanner(am, CONFIG)
-            async with aiohttp.ClientSession(connector=connector) as session:
-                await scanner.scan_assets_for_vulnerabilities(enriched_assets, session)
+            await scanner.scan_assets_for_vulnerabilities(enriched_assets)
+            await scanner.close_session()
 
         # Non-blocking: schedule in background thread and return immediately
         import threading
@@ -2751,6 +2672,78 @@ def direct_url_scan():
 
     except Exception as e:
         app.logger.error(f"Direct scan error: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/scan/scope-now', methods=['POST'])
+def scan_scope_now():
+    """Queue and run an immediate deep vulnerability scan for in-scope assets.
+
+    - Selects assets via AssetManager.get_assets_ready_for_deep_scan()
+    - Runs scanning in a background thread so the API returns immediately
+    - Honors current persistence/dedup to avoid duplicates
+    """
+    try:
+        from asset_manager import AssetManager
+        from modules.vulnerability_scanner import VulnerabilityScanner
+        import psutil
+        import asyncio
+        
+        body = request.get_json(silent=True) or {}
+        limit = body.get('limit')
+        try:
+            limit = int(limit) if limit is not None else None
+        except Exception:
+            limit = None
+
+        am = AssetManager()
+        # Dynamic default: ~4x logical cores, capped 125
+        if limit is None:
+            try:
+                cores = psutil.cpu_count(logical=True) or 8
+            except Exception:
+                cores = 8
+            limit = max(50, min(125, cores * 4))
+        ready = am.get_assets_ready_for_deep_scan(limit=limit)
+        if not ready:
+            return jsonify({"success": True, "message": "No assets currently eligible for deep scan.", "queued": 0})
+
+        # Normalize to the asset dict shape the scanner expects
+        assets = []
+        for a in ready:
+            assets.append({
+                'id': a.get('id'),
+                'url': a.get('url'),
+                'tech_stack': a.get('tech_stack', ''),
+                'status_code': a.get('status_code')
+            })
+
+        async def _run_now(_assets):
+            scanner = VulnerabilityScanner(am, CONFIG)
+            try:
+                await scanner.scan_assets_for_vulnerabilities(_assets)
+            finally:
+                try:
+                    await scanner.close_session()
+                except Exception:
+                    pass
+
+        # Launch in background thread
+        import threading
+        def _runner():
+            with app.app_context():
+                try:
+                    asyncio.run(_run_now(assets))
+                except Exception as e:
+                    app.logger.error(f"scan_scope_now async failed: {e}", exc_info=True)
+        threading.Thread(target=_runner, daemon=True).start()
+
+        return jsonify({
+            "success": True,
+            "message": f"Started scope deep scan for {len(assets)} assets in background.",
+            "queued": len(assets)
+        })
+    except Exception as e:
+        app.logger.error(f"scan_scope_now error: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/assets/import', methods=['POST'])
@@ -3482,119 +3475,14 @@ def restart_services():
         subprocess.Popen(['python3', 'engine.py'], env=env)
         app.logger.info(f"Engine restarted. Killed={killed}, Logs cleared={len(removed)}")
 
-        # Kick off background enrichment for quick status/title population
-        try:
-            import threading
-            threading.Thread(target=_background_enrich, args=(domain, cookie_string, 500), daemon=True).start()
-            app.logger.info("Background enrichment started")
-        except Exception as e:
-            app.logger.warning(f"Failed to start background enrichment: {e}")
+        # Background enrichment removed — profiling is handled by the engine automatically
 
         return jsonify({"success": True, "killed": killed, "logs_cleared": len(removed)})
     except Exception as e:
         app.logger.error(f"Restart services error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-def _background_enrich(domain: str, cookie_string: str, limit: int = 150):
-    """Populate status/title/time for assets missing status_code in background."""
-    try:
-        import asyncio, aiohttp, re, time as _time
-        # Pull targets
-        with sqlite3.connect(app.config['database_path']) as db:
-            db.row_factory = sqlite3.Row
-            if domain:
-                cursor = db.execute(
-                    """
-                    SELECT id, url FROM assets 
-                    WHERE status_code IS NULL AND url LIKE ?
-                    ORDER BY id DESC LIMIT ?
-                    """, (f"%://{domain}/%", limit)
-                )
-            else:
-                cursor = db.execute(
-                    "SELECT id, url FROM assets WHERE status_code IS NULL ORDER BY id DESC LIMIT ?",
-                    (limit,)
-                )
-            targets = [(row[0], row[1]) for row in cursor.fetchall()]
-        if not targets:
-            return
-
-        headers = {"User-Agent": "ModScan Enricher/1.0"}
-        if cookie_string:
-            headers["Cookie"] = cookie_string
-
-        async def fetch_update(session, item):
-            asset_id, url = item
-            t0 = _time.monotonic()
-            try:
-                async with session.get(url, allow_redirects=True, timeout=15) as resp:
-                    txt = await resp.text()
-                    dt = int((_time.monotonic() - t0) * 1000)
-                    m = re.search(r"<title[^>]*>(.*?)</title>", txt, re.I | re.S)
-                    title = (m.group(1).strip() if m else 'Unknown')
-                    content_len = len(txt.encode('utf-8', 'ignore'))
-                    with sqlite3.connect(app.config['database_path']) as db:
-                        db.execute(
-                            """
-                            UPDATE assets
-                            SET status_code=?, title=?, content_length=?, response_time=?, last_scanned=datetime('now')
-                            WHERE id=?
-                            """,
-                            (resp.status, title, content_len, dt, asset_id)
-                        )
-                        db.commit()
-                    return True
-            except Exception:
-                try:
-                    # Fallback: if HTTPS fails, try HTTP for same path
-                    from urllib.parse import urlsplit, urlunsplit
-                    sp = urlsplit(url)
-                    if sp.scheme.lower() == 'https':
-                        http_url = urlunsplit(('http', sp.netloc, sp.path or '/', sp.query, ''))
-                        try:
-                            async with session.get(http_url, allow_redirects=True, timeout=10) as r2:
-                                txt2 = await r2.text()
-                                dt2 = int((_time.monotonic() - t0) * 1000)
-                                import re as _re
-                                m2 = _re.search(r"<title[^>]*>(.*?)</title>", txt2, _re.I | _re.S)
-                                title2 = (m2.group(1).strip() if m2 else 'Unknown')
-                                clen2 = len(txt2.encode('utf-8', 'ignore'))
-                                with sqlite3.connect(app.config['database_path']) as db2:
-                                    db2.execute(
-                                        """
-                                        UPDATE assets
-                                        SET status_code=?, title=?, content_length=?, response_time=?, last_scanned=datetime('now')
-                                        WHERE id=?
-                                        """,
-                                        (r2.status, title2, clen2, dt2, asset_id)
-                                    )
-                                    db2.commit()
-                                return True
-                        except Exception:
-                            pass
-                    # Final: just bump last_scanned to avoid hammering
-                    with sqlite3.connect(app.config['database_path']) as db3:
-                        db3.execute("UPDATE assets SET last_scanned=datetime('now') WHERE id=?", (asset_id,))
-                        db3.commit()
-                except Exception:
-                    pass
-                return False
-
-        async def run_enrichment():
-            conn = aiohttp.TCPConnector(limit=20, ssl=False)
-            async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
-                tasks = [fetch_update(session, it) for it in targets]
-                await asyncio.gather(*tasks, return_exceptions=True)
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(run_enrichment())
-        loop.close()
-    except Exception as e:
-        try:
-            app.logger.warning(f"Background enrich error: {e}")
-        except Exception:
-            pass
+# Background enrichment removed — handled by engine
 
 # ===== IDOR Testing API Endpoints =====
 
@@ -3868,37 +3756,9 @@ def compare_responses():
         app.logger.error(f"Response comparison error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-# ===== Scanner Profile API =====
+# Profile system removed - scanner now uses parallel scanning by default
 
-@app.route('/api/scanner/profile', methods=['GET', 'POST'])
-def scanner_profile():
-    """Get or set the global scanner profile (stealth|normal|aggressive)."""
-    from pathlib import Path as _Path
-    import json as _json
-    prof_path = _Path(__file__).resolve().parent / 'scan_profile.json'
-    prof_map = {"stealth": {"inline": 1, "tier3": 100}, "normal": {"inline": 5, "tier3": 500}, "aggressive": {"inline": 20, "tier3": 1500}}
-    if request.method == 'GET':
-        try:
-            if prof_path.exists():
-                data = _json.loads(prof_path.read_text(encoding='utf-8') or '{}')
-                prof = (data.get('profile') or 'normal').lower()
-            else:
-                prof = 'normal'
-            return jsonify({"profile": prof, "limits": prof_map.get(prof, prof_map['normal'])})
-        except Exception as e:
-            app.logger.error(f"Profile GET error: {e}")
-            return jsonify({"profile": 'normal', "limits": prof_map['normal']}), 200
-    else:
-        try:
-            data = request.get_json() or {}
-            prof = (data.get('profile') or 'normal').lower()
-            if prof not in prof_map:
-                return jsonify({"error": "Invalid profile"}), 400
-            prof_path.write_text(_json.dumps({"profile": prof}), encoding='utf-8')
-            return jsonify({"profile": prof, "limits": prof_map[prof]})
-        except Exception as e:
-            app.logger.error(f"Profile SET error: {e}")
-            return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/scanner/policy', methods=['GET', 'POST'])
 def scanner_policy():
