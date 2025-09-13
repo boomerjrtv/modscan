@@ -369,46 +369,46 @@ class Engine:
             async def validate_url(url):
                 async with sem:
                     try:
-                        # Quick HEAD request to check if URL exists
-                        async with session.head(url) as response:
-                            status_code = response.status
-                            content_length = response.headers.get('content-length', 0)
-                            
-                            # Only save URLs that return valid HTTP responses
-                            # Skip 404s and timeouts - these are noise
-                            if status_code in [200, 201, 301, 302, 401, 403, 405, 500, 503]:
-                                # For 200 responses, get title with small GET request
+                        from urllib.parse import urlsplit, urlparse
+                        sp = urlsplit(url)
+                        path = sp.path or '/'
+                        segs = [seg for seg in path.split('/') if seg]
+                        # Skip synthetic-looking paths: file-with-dot before last segment or repeated segments
+                        if any('.' in seg for seg in segs[:-1]):
+                            return
+                        from collections import Counter
+                        c = Counter(segs)
+                        if any(v > 3 for v in c.values()) or len(segs) > 10:
+                            return
+                        # Validate with GET and follow redirects; require terminal 200/201/202/204/401/403 and same path
+                        async with session.get(url, allow_redirects=True) as get_response:
+                            status_code = get_response.status
+                            final_url = str(get_response.url)
+                            if status_code in (200, 201, 202, 204, 401, 403) and urlsplit(final_url).path == path:
                                 title = f'HTTP {status_code}'
                                 tech_stack = ''
-                                
-                                if status_code == 200:
-                                    try:
-                                        async with session.get(url) as get_response:
-                                            html = await get_response.text()
-                                            # Extract title
-                                            if '<title>' in html.lower():
-                                                start = html.lower().find('<title>') + 7
-                                                end = html.lower().find('</title>', start)
-                                                if end > start:
-                                                    title = html[start:end].strip()[:50]
-                                            
-                                            # Basic tech detection
-                                            html_lower = html.lower()
-                                            techs = []
-                                            if 'asp.net' in html_lower or '.aspx' in url.lower():
-                                                techs.append('ASP.NET')
-                                            if 'server: microsoft-iis' in str(get_response.headers).lower():
-                                                techs.append('IIS')
-                                            if 'joomla' in html_lower:
-                                                techs.append('Joomla')
-                                            tech_stack = ', '.join(techs)
-                                            
-                                    except Exception:
-                                        pass
-                                
-                                from urllib.parse import urlparse
+                                content_length = get_response.headers.get('content-length', 0)
+                                try:
+                                    html = await get_response.text()
+                                    # Extract title
+                                    if '<title>' in html.lower():
+                                        start = html.lower().find('<title>') + 7
+                                        end = html.lower().find('</title>', start)
+                                        if end > start:
+                                            title = html[start:end].strip()[:50]
+                                    # Basic tech detection
+                                    html_lower = html.lower()
+                                    techs = []
+                                    if 'asp.net' in html_lower or '.aspx' in url.lower():
+                                        techs.append('ASP.NET')
+                                    if 'server: microsoft-iis' in str(get_response.headers).lower():
+                                        techs.append('IIS')
+                                    if 'joomla' in html_lower:
+                                        techs.append('Joomla')
+                                    tech_stack = ', '.join(techs)
+                                except Exception:
+                                    pass
                                 parsed = urlparse(url)
-                                
                                 return {
                                     'url': url,
                                     'host': parsed.netloc,
@@ -418,7 +418,6 @@ class Engine:
                                     'content_length': int(content_length) if content_length else 0,
                                     'validated': True
                                 }
-                                
                     except Exception as e:
                         # Skip URLs that timeout, fail DNS, etc.
                         logger.debug(f"Validation failed for {url}: {e}")

