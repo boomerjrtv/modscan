@@ -235,8 +235,11 @@ class TechnologyDetector:
             },
             'languages': {
                 'php': [r'x-powered-by.*php', r'set-cookie.*phpsessid', r'\.php'],
-                'asp.net': [r'x-powered-by.*asp\.net', r'x-aspnet-version', r'\.aspx'],
-                'python': [r'server.*python', r'django', r'flask'],
+                'asp.net': [r'x-powered-by.*asp\.net', r'x-aspnet-version', r'\.aspx', r'\.asp\b'],
+                # Broaden Python heuristics to include common servers/frameworks
+                'python': [
+                    r'server.*python', r'django', r'flask', r'werkzeug', r'gunicorn', r'uvicorn', r'waitress', r'tornado', r'starlette'
+                ],
                 'ruby': [r'x-powered-by.*ruby', r'server.*ruby', r'rails'],
                 'node.js': [r'x-powered-by.*express', r'server.*node']
             },
@@ -245,6 +248,7 @@ class TechnologyDetector:
                 'drupal': [r'/sites/default/', r'drupal', r'x-drupal-cache'],
                 'joomla': [r'/components/', r'/templates/', r'joomla'],
                 'django': [r'django', r'csrfmiddlewaretoken'],
+                'flask': [r'flask', r'werkzeug'],
                 'laravel': [r'laravel', r'_token', r'illuminate'],
                 'react': [r'react', r'reactdom', r'__react'],
                 'angular': [r'angular', r'ng-app', r'ng-controller'],
@@ -258,6 +262,7 @@ class TechnologyDetector:
             'databases': {
                 'mysql': [r'mysql', r'mariadb'],
                 'postgresql': [r'postgresql', r'postgres'],
+                'couchdb': [r'couchdb', r'server:\s*couchdb', r'x-couchdb'],
                 'mongodb': [r'mongodb', r'mongo'],
                 'redis': [r'redis']
             },
@@ -343,6 +348,13 @@ class TechnologyDetector:
                 if self._match_technology_patterns(patterns, headers_lower, content_lower):
                     detected_technologies.add(tech_name.title())
         
+        # URL-based hints (lightweight, non-binding)
+        try:
+            if any(ext in url.lower() for ext in ['.aspx', '.asp']):
+                detected_technologies.add('ASP.NET')
+        except Exception:
+            pass
+
         # Additional analysis methods
         detected_technologies.update(await self._analyze_headers(headers))
         detected_technologies.update(await self._analyze_meta_tags(content))
@@ -373,8 +385,9 @@ class TechnologyDetector:
         """Analyze response headers for technology indicators"""
         technologies = set()
         
-        server = headers.get('server', '').lower()
-        powered_by = headers.get('x-powered-by', '').lower()
+        # Normalize server/X-Powered-By lookups (case-insensitive)
+        server = (headers.get('server') or headers.get('Server') or '').lower()
+        powered_by = (headers.get('x-powered-by') or headers.get('X-Powered-By') or '').lower()
         
         # Server analysis
         if 'nginx' in server:
@@ -388,8 +401,9 @@ class TechnologyDetector:
             apache_version = re.search(r'apache/([\d.]+)', server)
             if apache_version:
                 technologies.add(f'Apache {apache_version.group(1)}')
-        elif 'iis' in server:
+        elif 'iis' in server or 'microsoft-iis' in server:
             technologies.add('Microsoft IIS')
+            technologies.add('ASP.NET')
         
         # X-Powered-By analysis
         if 'php' in powered_by:
@@ -399,6 +413,21 @@ class TechnologyDetector:
                 technologies.add(f'PHP {php_version.group(1)}')
         elif 'asp.net' in powered_by:
             technologies.add('ASP.NET')
+
+        # Python/Flask common servers
+        if any(sig in server for sig in ['werkzeug', 'gunicorn', 'uvicorn', 'waitress', 'tornado']):
+            technologies.add('Python')
+            # Flask often coexists with Werkzeug/gunicorn
+            if 'werkzeug' in server:
+                technologies.add('Flask')
+
+        # Node/Express hint
+        if 'express' in powered_by or 'express' in server:
+            technologies.add('Node.js')
+
+        # CouchDB server header
+        if 'couchdb' in server or headers.get('x-couchdb', '').lower():
+            technologies.add('CouchDB')
         
         # Security headers analysis
         if 'content-security-policy' in headers:

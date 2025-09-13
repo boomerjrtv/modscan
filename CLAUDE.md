@@ -26,6 +26,42 @@ This vulnerability scanning platform is designed to work **UNIVERSALLY** against
 - **ENHANCE EXISTING SYSTEMS** rather than creating duplicates
 - If something doesn't work, fix the core module, don't build around it
 
+### 🔍 ALWAYS CHECK FOR EXISTING INFRASTRUCTURE FIRST
+
+- **SEARCH BEFORE CREATING** - Use `grep`, `find`, or code search to find existing functionality
+- **EXAMINE EXISTING MODULES** - Check modules/, engine.py, dashboard.py for similar features
+- **READ THE CODEBASE** - Understand what's already implemented before adding new code
+- **ENHANCE, DON'T DUPLICATE** - If 80% of functionality exists, enhance it rather than rewrite
+
+### 🧹 Process Lifecycle & Cleanup (Universal)
+- **Spawn Process Groups**: All external tools (`nuclei`, `dalfox`, `ffuf`, browser engines) start in their own process group so we can terminate the entire tree on timeout/cancel.
+- **Enforce Timeouts**: Every external command runs under a strict timeout. On timeout, we send `SIGTERM`, then `SIGKILL` to the process group after a short grace period.
+- **Track & Reap**: The scanner tracks active process groups and reaps them on engine shutdown to prevent zombie accumulation.
+- **Watchdog Sweeps**: The `process_watchdog.py` runs periodically to kill hung/stacked processes and now also covers headless browser executables.
+- **Universal, Not Target‑Specific**: These controls apply to all tools generically—no app‑specific logic or assumptions.
+
+#### What changed (high level)
+- Centralized `_run_tool()` now uses process groups + timeouts and cleans up on `TimeoutError`/cancellation.
+- Nuclei integration switched to `_run_tool()` with a configurable timeout (`MODSCAN_NUCLEI_TIMEOUT`).
+- Universal XSS scanner (Dalfox) uses process groups and kills the group on timeout.
+- Engine adds a graceful shutdown that closes Playwright, terminates tracked tool processes, and runs a final watchdog health check.
+- Removed unused legacy XSS modules (`modules/universal_xss_scanner.py`, `modules/xss_alert_detector.py`, `modules/form_xss_detector.py`) to avoid confusion. All XSS scanning runs through `VulnerabilityScanner` (`_test_xss_vulnerabilities`, `_context_aware_xss_testing`, and Dalfox via `_run_tool`).
+
+#### Operational guidance
+- Prefer `_run_tool()` for any new external integrations to inherit safety guarantees.
+- Keep Playwright sessions short‑lived or pooled; always close contexts and browsers.
+- Avoid bespoke kill logic in modules; let the runner + watchdog enforce lifecycle consistently.
+
+### 🧭 Engine CLI Scope Seeding
+- Positional targets: Pass domains or URLs as arguments to `engine.py` to seed scope on startup.
+- Flags:
+  - `--no-add-scope`: Do not add positional targets to scope.
+  - `--no-ttl`: Set `MODSCAN_TTL_HOURS=0` for a fresh run (no discovery TTL).
+  - `--max-cycles N`: Override scan cycle limit for this run.
+- Behavior: Targets are normalized (strip scheme/port/wildcard) and added via `AssetManager.add_scope_target` universally (no hardcoding).
+- **ASK: "Does this already exist?"** - Load balancing, resource management, process monitoring may already be implemented
+- **CHECK CLAUDE.MD HISTORY** - Previous implementations may be documented in this file
+
 ### ❌ NEVER MANAGE PROCESSES - USER CONTROLS STARTUP
 
 - **NO** Starting/stopping dashboard.py or engine.py processes
@@ -44,6 +80,14 @@ This vulnerability scanning platform is designed to work **UNIVERSALLY** against
 - **Adaptive vulnerability testing** - Test what makes sense for each discovered endpoint
 - **Robust crawling integration** - Discovery should leverage crawling for comprehensive coverage
 - **Automatic authentication refresh** - When auth cookies expire, auto-refresh with stored credentials
+
+### 🎯 ALWAYS CODE WITH INTRICATE PRECISION
+
+- **NEVER use lazy, generic solutions** - Every implementation must be purposeful and comprehensive
+- **TECHNOLOGY-SPECIFIC INTELLIGENCE** - Adapt behavior based on detected technology stack
+- **COVER ALL BASIS** - Consider edge cases, error conditions, and real-world scenarios
+- **INTRICATE IMPLEMENTATION** - Build sophisticated, nuanced solutions that handle complexity
+- **NO SHORTCUTS** - Generic "admin/admin" approaches are unprofessional and ineffective
 
 ## Platform Architecture Principles
 
@@ -293,6 +337,28 @@ Standard vulnerability types (use these exact strings):
 - `"PATH_TRAVERSAL"` - Directory traversal
 - `"OPEN_REDIRECT"` - Open redirect
 
+## Technology-Specific Intelligence
+
+### 🎯 INTELLIGENT AUTHENTICATION TESTING
+
+**NEVER use generic "admin/admin" approaches. ALWAYS adapt based on detected technology stack.**
+
+### ⚡ Core Requirements
+
+- **FINGERPRINT FIRST** - Always detect technology stack before testing anything
+- **TECHNOLOGY-SPECIFIC PAYLOADS** - Use appropriate default credentials for PHP/MySQL, ASP.NET/MSSQL, Java/Tomcat, Node.js, Python/Django stacks
+- **CONTEXT AWARE** - Different approaches for admin panels vs API endpoints vs database interfaces
+- **RATE LIMITED** - Max 3 attempts per technology stack per host to avoid noise
+- **INTELLIGENT STOPPING** - Stop on first success, don't continue blindly
+- **NO GENERIC FALLBACKS** - If technology can't be detected, skip rather than guess
+
+### 🔍 Implementation Principles
+
+- Detect stack via HTTP headers, response content, URL patterns, and technology fingerprints
+- Use technology-appropriate credential sets (PHPMyAdmin defaults for PHP, SQL Server defaults for ASP.NET, etc.)
+- Implement technology-specific success detection (Django admin interfaces look different than Tomcat manager)
+- Build comprehensive fingerprinting that covers edge cases and mixed technology environments
+
 ## Debug and Validation Testing
 
 ### 🔧 TEMPORARY DEBUG SCRIPTS ONLY
@@ -317,10 +383,117 @@ When debugging core issues, you may create temporary validation scripts, but:
 # 4. Test fix works in main application
 ```
 
+## CRITICAL: BE BRUTALLY HONEST ABOUT PERFORMANCE
+
+### 🚨 NEVER GIVE FALSE POSITIVE ASSESSMENTS 🚨
+
+**When the scanner is broken, SAY IT'S BROKEN. Don't be misleading with "checkmarks" and positive language.**
+
+Example of BRUTAL HONESTY needed:
+
+**THE BRUTAL TRUTH**:
+- The scanner is not working at all
+- It's not finding the known XSS vulnerabilities in testhtml5.vulnweb.com  
+- It's not finding the XXE vulnerabilities
+- It's just running in circles, burning CPU, and failing every single vulnerability test
+- The TTL system implemented to prevent repeats isn't working
+- The engine architecture has fundamental flaws
+
+**ALWAYS be critical and honest**:
+- ❌ "✅ Vulnerability scanning completed successfully" (when nothing was found)
+- ✅ "Scanner is fundamentally broken - all HTTP requests failing with _ProxySession errors"
+- ❌ "Making good progress on vulnerability detection"  
+- ✅ "Zero vulnerabilities detected due to async context manager failures"
+
+### 🎯 Performance Validation
+
+Before claiming success, verify:
+- Are vulnerabilities actually being detected and stored?
+- Do the findings match known vulnerable targets?
+- Is the scanner avoiding repetitive work on same assets?
+- Are HTTP requests succeeding or silently failing?
+
+## Safety Systems and Process Management
+
+### 🔒 COMPREHENSIVE SAFETY ARCHITECTURE
+
+ModScan includes multiple safety systems to prevent and automatically fix issues:
+
+#### URL Validation Safety (`asset_manager.py`)
+- **URL Format Validation** - Detects and blocks corrupted URLs before they reach scanners
+- **Corruption Pattern Detection** - Identifies patterns like `M11540`, `rieilgakM115411`, `,1,1813,0,active`
+- **Domain Structure Validation** - Prevents malformed domains and double HTTP protocols
+- **Automatic Rejection** - Corrupted URLs are logged and blocked from database storage
+
+#### Process Watchdog (`process_watchdog.py`)
+- **Hung Process Detection** - Kills scanner processes running longer than 10 minutes
+- **Process Stacking Prevention** - Limits concurrent processes per tool (max 10 SQLMap, etc.)
+- **Corrupted URL Process Cleanup** - Identifies and kills processes running on malformed URLs
+- **System Health Monitoring** - Tracks CPU, memory, and active scanner processes
+- **Automatic Execution** - Integrated into engine, runs every 5 minutes
+
+#### Database Health Monitor (`database_health.py`)  
+- **Corruption Detection** - Finds and removes corrupted asset URLs from database
+- **Orphaned Data Cleanup** - Removes vulnerabilities linked to deleted assets
+- **Duplicate Asset Consolidation** - Merges duplicate assets and preserves vulnerability data
+- **Stale Data Identification** - Identifies assets not scanned in 7+ days
+- **Comprehensive Statistics** - Provides database health metrics
+
+### 🚨 SAFETY INTEGRATION
+
+The safety systems are **automatically integrated** into the main engine:
+
+```python
+# Engine automatically runs safety checks every 5 minutes
+SAFETY_CHECK_INTERVAL = 300  # 5 minutes
+self.process_watchdog = ProcessWatchdog()
+
+# During scan cycles
+await loop.run_in_executor(None, self.process_watchdog.run_health_check)
+```
+
+### 🔧 MANUAL SAFETY OPERATIONS
+
+Run safety checks independently:
+
+```bash
+# Process cleanup (kill hung/corrupted processes)
+python process_watchdog.py --once
+
+# Database health check and cleanup
+python database_health.py
+
+# Check for corrupted URLs in real-time
+python -c "from asset_manager import AssetManager; am = AssetManager(); am._should_skip_url('test_url')"
+```
+
+### 🛡️ PREVENTION MEASURES
+
+1. **URL Validation** - All URLs validated before database storage
+2. **Process Timeouts** - Scanner processes auto-killed after reasonable timeouts
+3. **Resource Limits** - Maximum concurrent processes per scanner tool
+4. **Pattern Recognition** - Known corruption patterns blocked proactively
+5. **Health Monitoring** - Continuous system resource monitoring
+
+### ⚡ AUTOMATIC RECOVERY
+
+The safety systems provide **automatic recovery** from common issues:
+- ✅ **Hung SQLMap processes** → Automatically detected and killed
+- ✅ **Corrupted URLs** → Blocked from reaching scanners  
+- ✅ **Database corruption** → Orphaned data cleaned automatically
+- ✅ **Process stacking** → Excess processes terminated
+- ✅ **Resource leaks** → System health monitored and maintained
+
+This ensures the scanner **never gets stuck** and **always operates efficiently**.
+
 ## Final Note
 
 **NEVER** compromise the universal nature of this platform by adding target-specific logic. If something doesn't work on a specific target, enhance the universal capabilities rather than creating exceptions.
 
 **ALWAYS** use the centralized VulnerabilityFinding structure from `asset_manager.py` for consistency.
+
+**ALWAYS** be brutally honest about scanner performance - false positives in assessment are worse than no scanner at all.
+
+**ALWAYS** rely on the integrated safety systems to prevent and fix process/database issues automatically.
 
 The goal is a single platform that works everywhere, not a collection of target-specific tools.

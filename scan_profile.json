@@ -1,8 +1,0 @@
-{
-    "profile": "aggressive",
-    "agent_enabled": {
-        "stealth": false,
-        "normal": false,
-        "aggressive": true
-    }
-}

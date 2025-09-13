@@ -281,7 +281,12 @@ class ValidationManager:
         url = finding.url
         try:
             # Use configured collaborator domain
-            collab = (self.scanner.config.get('collaborator', {}) or {}).get('base_domain') or self.scanner.config.get('blind_xss_domain')
+            import os as _os
+            collab = (
+                (self.scanner.config.get('collaborator', {}) or {}).get('base_domain')
+                or self.scanner.config.get('blind_xss_domain')
+                or _os.environ.get('COLLABORATOR_DOMAIN')
+            )
             if not collab:
                 return finding
             marker = self._marker('SSRF')

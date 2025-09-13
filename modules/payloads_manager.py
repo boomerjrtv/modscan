@@ -36,6 +36,10 @@ class PayloadsManager:
             p = os.getenv(k)
             if p and Path(p).exists():
                 return Path(p)
+        # Fallback to known PayloadsAllTheThings location
+        fallback = Path("/home/michael/payloads/PayloadsAllTheThings")
+        if fallback.exists():
+            return fallback
         return Path("")
 
     def _load_lines(self, files: Iterable[Path]) -> List[str]:
@@ -58,6 +62,54 @@ class PayloadsManager:
                 seen.add(s)
                 dedup.append(s)
         return dedup
+
+    def _extract_ssti_from_markdown(self, files: Iterable[Path]) -> List[str]:
+        """Extract SSTI payloads from markdown files by finding code blocks and template expressions"""
+        import re
+        payloads: List[str] = []
+        
+        template_patterns = [
+            r'\{\{[^}]+\}\}',  # {{ ... }}
+            r'\$\{[^}]+\}',    # ${ ... }
+            r'<%[^>]+%>',      # <% ... %>
+            r'#\{[^}]+\}',     # #{ ... }
+            r'@\([^)]+\)',     # @( ... )
+            r'\[\[[^\]]+\]\]', # [[ ... ]]
+        ]
+        
+        for f in files:
+            try:
+                with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                    content = fh.read()
+                    
+                    # Extract code blocks and inline code
+                    code_blocks = re.findall(r'```[^`]*```|`[^`]+`', content, re.DOTALL)
+                    for block in code_blocks:
+                        # Clean up markdown formatting
+                        clean = block.replace('```', '').replace('`', '').strip()
+                        if clean and any(re.search(pattern, clean) for pattern in template_patterns):
+                            payloads.append(clean)
+                    
+                    # Direct pattern matching in content
+                    for pattern in template_patterns:
+                        matches = re.findall(pattern, content)
+                        payloads.extend(matches)
+                        
+            except Exception:
+                continue
+                
+        # Deduplicate and filter
+        seen: Set[str] = set()
+        unique_payloads: List[str] = []
+        for payload in payloads:
+            clean_payload = payload.strip()
+            if (clean_payload and len(clean_payload) < 500 and 
+                clean_payload not in seen and
+                not clean_payload.startswith('#')):
+                seen.add(clean_payload)
+                unique_payloads.append(clean_payload)
+                
+        return unique_payloads
 
     def get(self, category: str) -> List[str]:
         """Return additional payloads for a category (e.g., 'xss','sqli','lfi','ssrf','redirect','cmdi').
@@ -91,7 +143,7 @@ class PayloadsManager:
                     if d.exists():
                         candidates.extend(sorted(d.rglob("*.txt")))
             elif cat in ("ssrf",):
-                for sub in ("SSRF",):
+                for sub in ("Server Side Request Forgery", "SSRF"):
                     d = base / sub
                     if d.exists():
                         candidates.extend(sorted(d.rglob("*.txt")))
@@ -105,6 +157,19 @@ class PayloadsManager:
                     d = base / sub
                     if d.exists():
                         candidates.extend(sorted(d.rglob("*.txt")))
+            elif cat in ("ssti", "template", "template-injection"):
+                # Enhanced SSTI payload extraction
+                for sub in ("Server Side Template Injection", "SSTI", "Template Injection"):
+                    d = base / sub
+                    if d.exists():
+                        # Get .fuzz files first (pre-built payloads)
+                        candidates.extend(sorted(d.rglob("*.fuzz")))
+                        candidates.extend(sorted(d.rglob("*.txt")))
+                        # Process markdown files specially for SSTI
+                        md_files = list(d.rglob("*.md"))
+                        if md_files:
+                            ssti_payloads = self._extract_ssti_from_markdown(md_files)
+                            return ssti_payloads[:1000]  # Return extracted payloads directly
         except Exception:
             candidates = []
 
