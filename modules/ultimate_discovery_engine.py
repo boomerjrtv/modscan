@@ -942,6 +942,31 @@ class UltimateDiscoveryEngine:
         """Parallel async testing as ffuf fallback"""
         urls = set()
         
+        def _suspicious_path_token(p: str) -> bool:
+            try:
+                s = (p or '').strip()
+                if not s:
+                    return True
+                if not s.startswith('/'):
+                    s = '/' + s
+                segs = [seg for seg in s.split('/') if seg]
+                if not segs:
+                    return True
+                # If any non-final segment has a file dot, skip (e.g., 'categories.php/dir')
+                if any('.' in seg for seg in segs[:-1]):
+                    return True
+                # Prevent repeated segment explosions
+                from collections import Counter
+                c = Counter(segs)
+                if any(v > 3 for v in c.values()):
+                    return True
+                # Avoid absurd depth
+                if len(segs) > 8:
+                    return True
+            except Exception:
+                return True
+            return False
+        
         try:
             # Headers for authentication
             from urllib.parse import urlsplit
@@ -961,6 +986,8 @@ class UltimateDiscoveryEngine:
                     tasks = []
                     
                     for path in chunk:
+                        if _suspicious_path_token(path):
+                            continue
                         url = base_url.rstrip('/') + (path if path.startswith('/') else '/' + path)
                         task = self._test_url_async(session, url, semaphore)
                         tasks.append(task)
@@ -970,8 +997,9 @@ class UltimateDiscoveryEngine:
                     for j, result in enumerate(results):
                         if result is True:
                             token = chunk[j]
-                            found_url = base_url.rstrip('/') + (token if token.startswith('/') else '/' + token)
-                            urls.add(found_url)
+                            if not _suspicious_path_token(token):
+                                found_url = base_url.rstrip('/') + (token if token.startswith('/') else '/' + token)
+                                urls.add(found_url)
                     
                     logger.info(f"⚡ Parallel chunk {i//chunk_size + 1}: {sum(1 for r in results if r is True)} found")
                     
