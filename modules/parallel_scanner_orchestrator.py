@@ -52,13 +52,14 @@ class ParallelScannerOrchestrator:
         if num_workers is not None:
             self.num_workers = int(num_workers)
         elif override_workers and override_workers > 0:
-            # Respect config but cap to protect memory/FDs
-            self.num_workers = int(min(override_workers, 64))
+            # PERFORMANCE FIX: Cap workers to prevent ML engine initialization bottleneck
+            self.num_workers = int(min(override_workers, 8))
         else:
             cpu_count = psutil.cpu_count(logical=True) or psutil.cpu_count(logical=False) or 8
             memory_gb = psutil.virtual_memory().total // (1024**3)
-            # Use ~4x logical cores but cap by memory and a hard ceiling
-            self.num_workers = int(min(cpu_count * 4, (memory_gb - 4) * 2, 64))
+            # PERFORMANCE FIX: Reduce workers dramatically to prevent ML engine initialization bottleneck
+            # Each worker creates full ML engine + AI client, so use much fewer workers
+            self.num_workers = int(min(cpu_count // 2, 8))
             
         logger.info(f"🚀 Parallel Scanner Orchestrator: {self.num_workers} worker threads")
         
@@ -67,6 +68,7 @@ class ParallelScannerOrchestrator:
         # Larger queue for high-throughput environments
         self.task_queue = asyncio.Queue(maxsize=5000)
         self.active_tasks = {}  # task_id -> ScanTask
+        self._queued_keys: set[str] = set()  # dedupe: url+scan_types
         self.worker_stats = {i: {'tasks_completed': 0, 'total_time': 0.0} for i in range(self.num_workers)}
         
         # Performance monitoring
@@ -85,15 +87,21 @@ class ParallelScannerOrchestrator:
         for i in range(self.num_workers):
             scanner = VulnerabilityScanner(self.asset_manager, self.config)
             self.scanner_pool.append(scanner)
-            logger.info(f"✅ Initialized scanner worker #{i+1}")
+            logger.debug(f"✅ Initialized scanner worker #{i+1}")
     
     async def add_scan_task(self, asset_id: int, url: str, scan_types: List[str], priority: int = 1, tech_stack: str = "", status_code: int | None = None):
         """Add a new scan task to the queue"""
         task = ScanTask(asset_id=asset_id, url=url, scan_types=scan_types, priority=priority, tech_stack=tech_stack or "", status_code=status_code)
-        
+
+        # Dedupe: avoid queueing same url+scan_types multiple times concurrently
         try:
+            key = f"{url}|{','.join(sorted(scan_types))}"
+            if key in self._queued_keys:
+                logger.debug(f"⏭️ Deduped scan task already queued: {url} ({', '.join(scan_types)})")
+                return False
             await self.task_queue.put(task)
-            logger.info(f"📋 Queued scan task: {url} ({', '.join(scan_types)})")
+            self._queued_keys.add(key)
+            logger.debug(f"📋 Queued scan task: {url} ({', '.join(scan_types)})")
             return True
         except asyncio.QueueFull:
             logger.warning(f"⚠️ Task queue full, dropping scan for {url}")
@@ -126,7 +134,7 @@ class ParallelScannerOrchestrator:
         scanner = self.scanner_pool[worker_id]
         worker_stats = self.worker_stats[worker_id]
         
-        logger.info(f"🏃 Worker #{worker_id+1} started")
+        logger.debug(f"🏃 Worker #{worker_id+1} started")
         
         while True:
             try:
@@ -162,6 +170,12 @@ class ParallelScannerOrchestrator:
                 # Clean up
                 del self.active_tasks[task_id]
                 self.task_queue.task_done()
+                # Remove from queued keys
+                try:
+                    qkey = f"{task.url}|{','.join(sorted(task.scan_types))}"
+                    self._queued_keys.discard(qkey)
+                except Exception:
+                    pass
                 
                 logger.info(f"✅ Worker #{worker_id+1} completed {task.url} in {scan_duration:.1f}s - Found {len(vulnerabilities_found)} vulnerabilities")
                 

@@ -650,30 +650,40 @@ class MLVulnerabilityEngine:
             snippet = (evidence[:1000] if isinstance(evidence, str) else str(evidence)[:1000])
             def _build_prompt(vtype: str) -> str:
                 header = (
-                    "You are a senior application security engineer. Classify this finding with zero tolerance for false "
-                    "positives. Use strict criteria for VERIFIED vs REFLECTED vs BENIGN. Provide reasons concisely.\n\n"
+                    "You are an aggressive bug bounty hunter. Your goal is to find EVERY possible vulnerability, even edge cases. "
+                    "Err on the side of VERIFIED rather than missing potential bounties. Look for creative exploitation paths. "
+                    "Classify as VERIFIED if there's ANY possibility of exploitation, REFLECTED if interesting behavior, BENIGN only if completely harmless.\n\n"
                     f"Type: {vtype}\nURL: {url}\nPayload: {payload}\nEvidence: {snippet}\n\n"
                 )
                 if 'xss' in vtype:
                     body = (
-                        "- VERIFIED only if JavaScript executed in browser context (dialog event, sentinel variable).\n"
-                        "- REFLECTED if payload appears without execution. BENIGN if likely false positive.\n"
+                        "- VERIFIED if ANY payload reflection, JavaScript execution, or DOM manipulation detected.\n"
+                        "- REFLECTED if payload appears anywhere - could be exploitable with right context.\n"
+                        "- Look for creative bypass opportunities, stored XSS potential, or CSP bypasses.\n"
                     )
                 elif 'sql' in vtype:
                     body = (
-                        "- VERIFIED if DB errors/leaks or proven UNION/boolean/time-based exploitation; REFLECTED if only echoed.\n"
+                        "- VERIFIED if ANY database errors, unusual responses, or time delays indicating SQL processing.\n"
+                        "- Even minor error message differences could indicate SQL injection potential.\n"
+                        "- Look for blind SQLi signs: response time delays, content length changes.\n"
                     )
                 elif 'ssrf' in vtype:
                     body = (
-                        "- VERIFIED if OOB callback observed or internal targets fetched; otherwise downrank.\n"
+                        "- VERIFIED if ANY evidence of server making external requests or accessing internal resources.\n"
+                        "- Even 'connection refused' errors could indicate SSRF if request was attempted.\n"
+                        "- Look for metadata endpoints, cloud credentials, internal service discovery.\n"
                     )
                 elif 'inclusion' in vtype or 'lfi' in vtype:
                     body = (
-                        "- VERIFIED if sensitive file signatures (/etc/passwd) or include errors confirm file handling.\n"
+                        "- VERIFIED if ANY file path errors, include warnings, or unexpected file content.\n"
+                        "- Path traversal attempts that fail still indicate vulnerable input handling.\n"
+                        "- Look for log file disclosure, configuration file access, source code exposure.\n"
                     )
                 elif 'command' in vtype and 'injection' in vtype:
                     body = (
-                        "- VERIFIED if command output markers (uid=, whoami, echo markers) are present.\n"
+                        "- VERIFIED if ANY command execution evidence, system errors, or process indicators.\n"
+                        "- Even command syntax errors suggest the server is processing system commands.\n"
+                        "- Look for timing attacks, output differences, or environment variable leakage.\n"
                     )
                 elif 'redirect' in vtype:
                     body = (

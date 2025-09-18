@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import time
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -180,6 +181,188 @@ class AssetManager:
         self.field_mappings = ASSET_MAPPING.get('field_mappings', {})
         self.vuln_mappings = ASSET_MAPPING.get('vulnerability_mappings', {})
         self.activity_mappings = ASSET_MAPPING.get('activity_mappings', {})
+        
+        # Initialize database tables immediately
+        self._initialize_database()
+
+    def _initialize_database(self):
+        """Initialize all required database tables"""
+        try:
+            with self._get_db() as db:
+                # Create assets table
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS assets (
+                        id INTEGER PRIMARY KEY,
+                        url TEXT,
+                        host TEXT,
+                        status_code INTEGER,
+                        title TEXT,
+                        tech_stack TEXT,
+                        content_length INTEGER,
+                        response_time REAL,
+                        response_body TEXT,
+                        screenshot_path TEXT,
+                        last_scanned TEXT,
+                        discovery_method TEXT,
+                        discovered_at TEXT
+                    )
+                """)
+
+                # Ensure critical asset columns exist (SQLite lacks IF NOT EXISTS for columns)
+                try:
+                    cols = {row[1] for row in db.execute('PRAGMA table_info(assets)').fetchall()}
+                except Exception:
+                    cols = set()
+                # Common scanning state columns
+                if 'basic_scan_complete' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN basic_scan_complete INTEGER DEFAULT 0")
+                if 'deep_scan_complete' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN deep_scan_complete INTEGER DEFAULT 0")
+                if 'last_basic_scan' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN last_basic_scan TEXT")
+                if 'last_deep_scan' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN last_deep_scan TEXT")
+                if 'last_nuclei_scan_at' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN last_nuclei_scan_at TEXT")
+                if 'intelligence_score' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN intelligence_score REAL DEFAULT 0")
+                if 'scanning_stage' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN scanning_stage TEXT")
+                if 'completion_attempts' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN completion_attempts INTEGER DEFAULT 0")
+                if 'state' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN state TEXT")
+                if 'asn_info' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN asn_info TEXT")
+                if 'headers_collected' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN headers_collected TEXT")
+                if 'technologies_detected' not in cols:
+                    db.execute("ALTER TABLE assets ADD COLUMN technologies_detected TEXT")
+                
+                db.commit()
+                
+                # Create scope table
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS scope (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        domain TEXT NOT NULL UNIQUE,
+                        is_active INTEGER NOT NULL DEFAULT 1
+                    )
+                """)
+                
+                # Create vulnerabilities table with canonical_key for proper deduplication
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS vulnerabilities (
+                        id INTEGER PRIMARY KEY,
+                        asset_id INTEGER,
+                        type TEXT,
+                        description TEXT,
+                        severity TEXT,
+                        evidence TEXT,
+                        payload TEXT,
+                        detected_at TEXT,
+                        confidence REAL,
+                        canonical_key TEXT
+                    )
+                """)
+
+                # Add canonical_key column if it doesn't exist (for existing databases)
+                try:
+                    db.execute("ALTER TABLE vulnerabilities ADD COLUMN canonical_key TEXT")
+                    db.commit()
+                except:
+                    pass  # Column already exists
+
+                # Create index on canonical_key for fast deduplication lookups
+                try:
+                    db.execute("CREATE INDEX IF NOT EXISTS idx_vulnerabilities_canonical_key ON vulnerabilities(canonical_key)")
+                    db.commit()
+                except:
+                    pass
+                # Enforce dedup at DB-level for any code path that might bypass AssetManager
+                try:
+                    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_vulnerabilities_canonical_key ON vulnerabilities(canonical_key) WHERE canonical_key IS NOT NULL")
+                    db.commit()
+                except Exception:
+                    pass
+                
+                # Create activities table
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS activities (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT,
+                        action TEXT,
+                        details TEXT
+                    )
+                """)
+                
+                db.commit()
+                logger.info("✅ Database tables initialized successfully")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize database tables: {e}")
+            raise
+
+    # ---- Global Parameter Dictionary (universal, accumulates across targets) ----
+    def _ensure_param_dictionary_table(self):
+        try:
+            with self._get_db() as db:
+                db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS param_dictionary (
+                        name TEXT PRIMARY KEY,
+                        first_seen TEXT,
+                        last_seen TEXT,
+                        seen_count INTEGER DEFAULT 1,
+                        last_source_url TEXT
+                    )
+                    """
+                )
+                db.execute("CREATE INDEX IF NOT EXISTS idx_param_dict_seen ON param_dictionary(seen_count DESC, last_seen DESC)")
+                db.commit()
+        except Exception as e:
+            print(f"Error ensuring param_dictionary: {e}")
+
+    def record_observed_param_names(self, names: list[str], source_url: str = ""):
+        """Record parameter names observed in forms/URLs globally for future scans."""
+        if not names:
+            return
+        self._ensure_param_dictionary_table()
+        from datetime import datetime
+        ts = datetime.now().isoformat()
+        try:
+            with self._get_db() as db:
+                for n in names:
+                    if not isinstance(n, str) or not n:
+                        continue
+                    try:
+                        db.execute(
+                            "INSERT INTO param_dictionary(name, first_seen, last_seen, seen_count, last_source_url) VALUES(?,?,?,?,?)",
+                            (n, ts, ts, 1, source_url[:500])
+                        )
+                    except Exception:
+                        # Update existing
+                        db.execute(
+                            "UPDATE param_dictionary SET last_seen=?, seen_count=seen_count+1, last_source_url=? WHERE name=?",
+                            (ts, source_url[:500], n)
+                        )
+                db.commit()
+        except Exception as e:
+            print(f"Warning: failed recording param names: {e}")
+
+    def get_param_dictionary(self, limit: int = 500) -> list[str]:
+        """Return globally observed parameter names ordered by frequency/time."""
+        self._ensure_param_dictionary_table()
+        try:
+            with self._get_db() as db:
+                cur = db.execute(
+                    "SELECT name FROM param_dictionary ORDER BY seen_count DESC, last_seen DESC LIMIT ?",
+                    (int(limit),)
+                )
+                return [r[0] for r in cur.fetchall()]
+        except Exception as e:
+            print(f"Error loading param dictionary: {e}")
+            return []
 
     def _get_db(self):
         conn = sqlite3.connect(self.db_path, timeout=60.0, check_same_thread=False)
@@ -452,23 +635,52 @@ class AssetManager:
             return []
     
     def add_scope_target(self, domain, is_active=1):
-        """Add a new scope target (handles both schema variants)."""
+        """Add a new scope target (handles both schema variants) with de-duplication.
+
+        Returns the new row id if inserted, or None if it already existed or on error.
+        """
         try:
+            if not domain:
+                return None
+            domain = str(domain).strip().lstrip('.')
+            if domain.startswith('*.'):
+                domain = domain[2:]
+            if not domain:
+                return None
+
             with self._get_db() as db:
                 cols = {row[1] for row in db.execute("PRAGMA table_info(scope)").fetchall()}
+                cursor = None
                 if 'domain' in cols:
                     if 'is_active' in cols:
-                        cursor = db.execute("INSERT INTO scope (domain, is_active) VALUES (?, ?)", (domain, is_active))
+                        cursor = db.execute(
+                            "INSERT OR IGNORE INTO scope (domain, is_active) VALUES (?, ?)",
+                            (domain, is_active)
+                        )
                     elif 'active' in cols:
-                        cursor = db.execute("INSERT INTO scope (domain, active) VALUES (?, ?)", (domain, is_active))
+                        cursor = db.execute(
+                            "INSERT OR IGNORE INTO scope (domain, active) VALUES (?, ?)",
+                            (domain, is_active)
+                        )
                     else:
-                        cursor = db.execute("INSERT INTO scope (domain) VALUES (?)", (domain,))
+                        cursor = db.execute(
+                            "INSERT OR IGNORE INTO scope (domain) VALUES (?)",
+                            (domain,)
+                        )
                 elif 'target' in cols:
-                    cursor = db.execute("INSERT INTO scope (target, is_wildcard) VALUES (?, 0)", (domain,))
+                    cursor = db.execute(
+                        "INSERT OR IGNORE INTO scope (target, is_wildcard) VALUES (?, 0)",
+                        (domain,)
+                    )
                 else:
                     return None
+
                 db.commit()
-                return cursor.lastrowid
+
+                # If INSERT OR IGNORE did not insert, rowcount will be 0 -> already exists
+                if cursor and cursor.rowcount and cursor.lastrowid:
+                    return cursor.lastrowid
+                return None
         except Exception as e:
             print(f"Error adding scope target: {e}")
             return None
@@ -610,6 +822,130 @@ class AssetManager:
         
         values = (asset_id, vuln_type, severity, description, evidence, payload, confidence, detected_at)
         return query, values
+
+    # --- Canonical vulnerability key support (universal, target-agnostic) ---
+    def ensure_canonical_table(self):
+        try:
+            with self._get_db() as db:
+                db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS vulnerability_canonical (
+                        id INTEGER PRIMARY KEY,
+                        type TEXT,
+                        endpoint TEXT,
+                        param TEXT,
+                        location TEXT,
+                        first_vuln_id INTEGER,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                db.execute("CREATE INDEX IF NOT EXISTS idx_vc_key ON vulnerability_canonical(type, endpoint, param, location)")
+                db.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_vc_key ON vulnerability_canonical(type, endpoint, param, location)")
+        except Exception as e:
+            print(f"Error ensuring canonical table: {e}")
+
+    @staticmethod
+    def _normalize_endpoint(url: str) -> str:
+        try:
+            from urllib.parse import urlparse
+            p = urlparse(str(url or '').strip())
+            # scheme://host/path (lower-cased host, strip trailing slash except root)
+            path = p.path or '/'
+            if len(path) > 1 and path.endswith('/'):
+                path = path[:-1]
+            host = (p.netloc or '').lower()
+            scheme = (p.scheme or 'http').lower()
+            return f"{scheme}://{host}{path}"
+        except Exception:
+            return str(url or '').strip()
+
+    @staticmethod
+    def _guess_location(finding_evidence: str, asset_url: str) -> str:
+        ev = (finding_evidence or '').lower()
+        url = (asset_url or '').lower()
+        if 'header parameter' in ev:
+            return 'header'
+        if 'cookie parameter' in ev or 'set-cookie' in ev:
+            return 'cookie'
+        if 'body parameter' in ev or 'form field' in ev:
+            return 'body'
+        if '?' in url:
+            return 'query'
+        return 'path'
+
+    @staticmethod
+    def _extract_param_name(payload: str, evidence: str, asset_url: str) -> str:
+        try:
+            # 1) Header style: "X-Forwarded-For: value"
+            if ':' in (payload or '') and (payload or '').split(':', 1)[0].strip().lower().startswith(('x-','true-','forwarded','content-','accept','client','host','origin','referer','user-agent','cookie')):
+                return (payload or '').split(':', 1)[0].strip()
+        except Exception:
+            pass
+        # 2) Prefer URL query param when present (most reliable)
+        try:
+            from urllib.parse import urlparse, parse_qsl
+            qs = urlparse(asset_url or '').query
+            params = [name for name, _ in parse_qsl(qs, keep_blank_values=True)]
+            if params:
+                # If payload mentions any of the URL params explicitly, pick that one
+                lp = (payload or '').lower()
+                for name in params:
+                    if name.lower() in lp:
+                        return name
+                # Otherwise, choose the first URL param
+                return params[0]
+        except Exception:
+            pass
+        try:
+            # 3) Evidence phrases like: "Header parameter X-Real-IP ..."
+            if 'parameter ' in (evidence or ''):
+                after = (evidence or '').split('parameter ', 1)[1].strip()
+                # token up to space or affects
+                token = after.split()[0].strip().strip(':').strip()
+                if token:
+                    return token
+        except Exception:
+            pass
+        try:
+            # 4) Payload with key=value pattern
+            if '=' in (payload or ''):
+                left = (payload or '').split('=', 1)[0]
+                # Sometimes payload starts with key=..., or contains " account_id=..."
+                candidate = left.strip().split()[-1] if left.strip() else left
+                # Sanitize common noise like quotes or separators
+                candidate = candidate.strip("'\";&:,{}[]()")
+                if candidate:
+                    return candidate
+        except Exception:
+            pass
+        return ''
+
+    def _compute_canonical_key(self, finding, asset_url: str):
+        try:
+            endpoint = self._normalize_endpoint(getattr(finding, 'url', '') or asset_url)
+            ev = getattr(finding, 'evidence', '') or ''
+            payload = getattr(finding, 'payload', '') or ''
+            location = self._guess_location(ev, asset_url)
+            param = self._extract_param_name(payload, ev, asset_url)
+            vtype_raw = str(getattr(finding, 'vuln_type', '') or '').strip().lower()
+            # Map to canonical class to reduce label noise
+            def _canon_type(t:str)->str:
+                t = (t or '').lower()
+                if t in {'sql-injection','sql_injection','sqli','sql-injection-error'}: return 'sql_injection'
+                if t in {'xss','xss_reflection','blind_xss','blind_xss_probe','dom_xss'}: return 'xss'
+                if t in {'file_inclusion','lfi','rfi'}: return 'lfi'
+                if t in {'cmd_injection','command_injection','rce','os_command_injection'}: return 'command_injection'
+                if t in {'auth_bypass','authentication_bypass'}: return 'auth_bypass'
+                if t in {'path_traversal','directory_traversal'}: return 'path_traversal'
+                if t in {'open_redirect','redirect'}: return 'open_redirect'
+                return t
+            vtype = _canon_type(vtype_raw)
+            # Return a tuple key used for dedup
+            return (vtype, endpoint, (param or ''), (location or ''))
+        except Exception:
+            fallback = str(getattr(finding,'vuln_type','') or '').strip().lower()
+            return (fallback, self._normalize_endpoint(asset_url or ''), '', '')
 
     def build_vuln_select_query(self, limit=100):
         """Builds SELECT query for vulnerabilities using field mappings"""
@@ -902,7 +1238,10 @@ class AssetManager:
                 return added_ids
                 
         except Exception as e:
-            print(f"Error in batch asset addition: {e}")
+            import traceback
+            print(f"ERROR in batch asset addition: {e}")
+            print(f"Exception type: {type(e).__name__}")
+            traceback.print_exc()
             return []
 
     def get_assets(self, search_query='', page=1, per_page=25):
@@ -1060,12 +1399,16 @@ class AssetManager:
         """Universal selection for deep scanning.
         Priority order:
         1) Newly discovered, unscanned in-scope assets (status_code IS NULL, deep_scan_complete=0)
-        2) Validated in-scope assets (status_code=200, basic_scan_complete=1, deep_scan_complete=0)
+        2) Validated in-scope assets with any status_code that have NOT been deep scanned yet (deep_scan_complete=0)
+
+        This function previously failed to filter by deep_scan_complete for validated assets,
+        causing the same endpoints to be re-scanned every cycle. The filter has been added
+        to ensure true progress and prevent infinite retesting loops.
         """
         try:
             with self._get_db() as db:
                 fields = self.get_asset_fields()
-                # Build in-scope filter (schema tolerant; matches exact host and common variants)
+                # CRITICAL FIX: Build in-scope filter using URL field instead of host field
                 scope_domains = []
                 try:
                     scope_domains = list(self.get_scope_domains() or [])
@@ -1075,15 +1418,15 @@ class AssetManager:
                 scope_clause = ""
                 scope_params = []
                 if scope_domains:
-                    # Build OR conditions for each domain: exact, with port, and subdomain variants
+                    # Build OR conditions for each domain in URL field
                     or_parts = []
                     for d in scope_domains:
                         d = (d or "").strip().lower().lstrip('.')
                         if not d:
                             continue
-                        # host = d OR host LIKE 'd:%' OR host LIKE '%.d' OR host LIKE '%.d:%'
-                        or_parts.append(f"({fields['host']} = ? OR {fields['host']} LIKE ? OR {fields['host']} LIKE ? OR {fields['host']} LIKE ?)")
-                        scope_params.extend([d, f"{d}:%", f"%.{d}", f"%.{d}:%"])
+                        # CRITICAL FIX: Use URL field with LIKE patterns for domain matching
+                        or_parts.append(f"({fields['url']} LIKE ? OR {fields['url']} LIKE ? OR {fields['url']} LIKE ?)")
+                        scope_params.extend([f"%://{d}%", f"%://{d}:%", f"%.{d}%"])
                     if or_parts:
                         scope_clause = " WHERE (" + " OR ".join(or_parts) + ")"
 
@@ -1092,7 +1435,7 @@ class AssetManager:
                     SELECT {fields['id']}, {fields['url']}, {fields['status_code']}, {fields['tech_stack']}
                     FROM assets
                 """
-                where_new = f"{fields['status_code']} IS NULL AND IFNULL(deep_scan_complete, 0) = 0"
+                where_new = f"{fields['status_code']} IS NULL"
                 params_new = list(scope_params)
                 if scope_clause:
                     # Inject additional AND after existing scope WHERE
@@ -1120,19 +1463,53 @@ class AssetManager:
                     SELECT {fields['id']}, {fields['url']}, {fields['status_code']}, {fields['tech_stack']}
                     FROM assets
                 """
-                # MUCH MORE INCLUSIVE: Any asset with status_code (not just 200) that hasn't been deep scanned
-                where_valid = f"{fields['status_code']} IS NOT NULL AND IFNULL(deep_scan_complete, 0) = 0"
+                # Only assets that have a status_code AND haven't been deep scanned yet
+                where_valid = f"{fields['status_code']} IS NOT NULL AND (deep_scan_complete IS NULL OR deep_scan_complete = 0)"
                 params_valid = list(scope_params)
-                if scope_clause:
-                    validated_query = base_validated_query + scope_clause + f" AND {where_valid} " + f"ORDER BY {fields['intelligence_score']} DESC, {fields['last_scanned']} ASC LIMIT ?"
-                else:
-                    validated_query = base_validated_query + f" WHERE {where_valid} ORDER BY {fields['intelligence_score']} DESC, {fields['last_scanned']} ASC LIMIT ?"
-                params_valid.append(remaining_limit)
+                # CRITICAL FIX: TRUE ROUND-ROBIN - Equal quota per domain to ensure ALL targets get scanned
+                # Instead of random selection that still favors large domains, get equal assets from each domain
+                combined_assets = []
+                assets_per_domain = max(1, remaining_limit // max(1, len(scope_domains))) if scope_domains else remaining_limit
 
-                cursor = db.execute(validated_query, tuple(params_valid))
-                validated_assets = [{
-                    'id': row[0], 'url': row[1], 'status_code': row[2], 'tech_stack': row[3] or ''
-                } for row in cursor.fetchall()]
+                if scope_domains:
+                    for domain in scope_domains:
+                        domain_query = f"""
+                            SELECT {fields['id']}, {fields['url']}, {fields['status_code']}, {fields['tech_stack']}
+                            FROM assets
+                            WHERE ({fields['url']} LIKE ? OR {fields['url']} LIKE ? OR {fields['url']} LIKE ?)
+                            AND {where_valid}
+                            ORDER BY CASE WHEN {fields['status_code']} = 200 THEN 1 WHEN {fields['status_code']} = 302 THEN 2 ELSE 3 END, RANDOM()
+                            LIMIT ?
+                        """
+                        domain_params = [f"%://{domain}%", f"%://{domain}:%", f"%.{domain}%", assets_per_domain]
+                        cursor = db.execute(domain_query, tuple(domain_params))
+                        domain_assets = cursor.fetchall()
+                        combined_assets.extend([{
+                            'id': row[0], 'url': row[1], 'status_code': row[2], 'tech_stack': row[3] or ''
+                        } for row in domain_assets])
+
+                    # If we still need more assets, fill remaining slots randomly
+                    if len(combined_assets) < remaining_limit:
+                        remaining_slots = remaining_limit - len(combined_assets)
+                        existing_ids = {asset['id'] for asset in combined_assets}
+
+                        fill_query = base_validated_query + scope_clause + f" AND {where_valid} AND {fields['id']} NOT IN ({','.join('?' * len(existing_ids))}) ORDER BY RANDOM() LIMIT ?"
+                        fill_params = list(scope_params) + list(existing_ids) + [remaining_slots]
+                        cursor = db.execute(fill_query, tuple(fill_params))
+                        fill_assets = cursor.fetchall()
+                        combined_assets.extend([{
+                            'id': row[0], 'url': row[1], 'status_code': row[2], 'tech_stack': row[3] or ''
+                        } for row in fill_assets])
+
+                    validated_assets = combined_assets
+                else:
+                    # Fallback to original query if no scope domains
+                    validated_query = base_validated_query + f" WHERE {where_valid} ORDER BY CASE WHEN {fields['status_code']} = 200 THEN 1 WHEN {fields['status_code']} = 302 THEN 2 ELSE 3 END, RANDOM() LIMIT ?"
+                    params_valid.append(remaining_limit)
+                    cursor = db.execute(validated_query, tuple(params_valid))
+                    validated_assets = [{
+                        'id': row[0], 'url': row[1], 'status_code': row[2], 'tech_stack': row[3] or ''
+                    } for row in cursor.fetchall()]
                 
                 combined_assets = new_assets + validated_assets
                 try:
@@ -1143,6 +1520,34 @@ class AssetManager:
                 
         except Exception as e:
             print(f"Error getting assets ready for deep scan: {e}")
+            return []
+
+    def get_unscanned_assets(self, limit=1000):
+        """Get all assets that haven't been scanned yet (status_code is NULL)."""
+        try:
+            with self._get_db() as db:
+                fields = self.get_asset_fields()
+                query = f'''
+                    SELECT {fields['id']}, {fields['url']}
+                    FROM assets
+                    WHERE {fields['status_code']} IS NULL
+                    ORDER BY {fields['id']} DESC
+                    LIMIT ?
+                '''
+                cursor = db.execute(query, (limit,))
+                assets = [{'id': row[0], 'url': row[1]} for row in cursor.fetchall()]
+                return assets
+        except Exception as e:
+            logger.error(f"Error getting unscanned assets: {e}")
+            return []
+
+    def get_assets_for_vulnerability_scan(self, limit=1000):
+        """Get assets that are ready for vulnerability scanning (same as deep scan ready assets)."""
+        try:
+            # Reuse the existing deep scan logic since it's the same selection criteria
+            return self.get_assets_ready_for_deep_scan(limit=limit)
+        except Exception as e:
+            logger.error(f"Error getting assets for vulnerability scan: {e}")
             return []
 
     def get_unscanned_assets_for_domain(self, domain, limit=100):
@@ -1628,7 +2033,186 @@ class AssetManager:
         except Exception as e:
             print(f"Error getting vulnerability categories: {e}")
             return []
-    
+
+    def has_vulnerability_test_been_conducted(self, url: str, vuln_type: str, payload: str = None) -> bool:
+        """
+        Check if a specific vulnerability test has already been conducted on a URL.
+        This prevents duplicate testing of the same vulnerability type + payload combination.
+
+        Args:
+            url: The target URL
+            vuln_type: The vulnerability type (e.g., 'SQL_INJECTION', 'XSS')
+            payload: Optional specific payload (for more granular deduplication)
+
+        Returns:
+            True if the test has already been conducted, False otherwise
+        """
+        try:
+            # Ensure auxiliary table exists
+            self._ensure_vuln_test_history_table()
+
+            with self._get_db() as db:
+                # Normalize URL for comparison (remove query params and fragments for base comparison)
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+                # 1) Positive finding dedupe (strongest) — if we've found this vuln type already on this endpoint
+                if payload:
+                    q1 = """
+                        SELECT COUNT(*) FROM vulnerabilities v
+                        JOIN assets a ON v.asset_id = a.id
+                        WHERE v.type = ? AND v.payload = ?
+                        AND (a.url LIKE ? OR a.url = ?)
+                    """
+                    c1 = db.execute(q1, (vuln_type, payload, f"{base_url}%", url)).fetchone()[0]
+                else:
+                    q1 = """
+                        SELECT COUNT(*) FROM vulnerabilities v
+                        JOIN assets a ON v.asset_id = a.id
+                        WHERE v.type = ?
+                        AND (a.url LIKE ? OR a.url = ?)
+                    """
+                    c1 = db.execute(q1, (vuln_type, f"{base_url}%", url)).fetchone()[0]
+                if c1 > 0:
+                    print(f"⚡ SKIP: {vuln_type} already tested on {base_url} ({c1} existing findings)")
+                    return True
+
+                # 2) Recent test-history dedupe (prevents re-testing when no vuln found)
+                # TTL defaults to 120 minutes unless overridden via env MODSCAN_TEST_TTL_MIN
+                import os as _os
+                try:
+                    ttl_min = int(_os.environ.get('MODSCAN_TEST_TTL_MIN', '120'))
+                except Exception:
+                    ttl_min = 120
+                q2 = """
+                    SELECT COUNT(*) FROM vulnerability_test_history
+                    WHERE vuln_type = ?
+                    AND (base_url = ? OR full_url = ?)
+                    AND tested_at > datetime('now', ?)
+                """
+                since = f"-{ttl_min} minutes"
+                c2 = db.execute(q2, (vuln_type, base_url, url, since)).fetchone()[0]
+                if c2 > 0:
+                    print(f"⚡ SKIP: {vuln_type} recently tested on {base_url} (<= {ttl_min} min)")
+                    return True
+
+                return False
+
+        except Exception as e:
+            print(f"Error checking vulnerability test history: {e}")
+            # On error, don't skip the test (fail safe)
+            return False
+
+    def _ensure_vuln_test_history_table(self):
+        """Create vulnerability_test_history table if missing (universal test dedupe)."""
+        try:
+            with self._get_db() as db:
+                db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS vulnerability_test_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        base_url TEXT,
+                        full_url TEXT,
+                        vuln_type TEXT,
+                        payload TEXT,
+                        result TEXT,
+                        tested_at TEXT
+                    )
+                    """
+                )
+                db.execute("CREATE INDEX IF NOT EXISTS idx_vth_base ON vulnerability_test_history(base_url, vuln_type, tested_at)")
+        except Exception:
+            pass
+
+    def record_vulnerability_test(self, url: str, vuln_type: str, payload: str = None, result: str = "unknown"):
+        """Record that a vulnerability test was conducted. Universal, target-agnostic dedupe.
+
+        Args:
+            url: Target URL
+            vuln_type: "SQL_INJECTION", "XSS", etc.
+            payload: Optional payload string
+            result: Optional result marker (e.g., "found", "not_found", "unknown")
+        """
+        try:
+            self._ensure_vuln_test_history_table()
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            with self._get_db() as db:
+                db.execute(
+                    """
+                    INSERT INTO vulnerability_test_history(base_url, full_url, vuln_type, payload, result, tested_at)
+                    VALUES(?,?,?,?,?,datetime('now'))
+                    """,
+                    (base_url, url, vuln_type, payload or '', result or 'unknown')
+                )
+        except Exception as e:
+            print(f"Warning: failed to record test for {vuln_type} on {url}: {e}")
+
+    def has_vulnerability_been_found_on_endpoint(self, url: str, vuln_type: str) -> bool:
+        """
+        Check if we've already FOUND a vulnerability of this type on this endpoint.
+        For bug bounty efficiency: once you find ANY vuln on an endpoint, move on!
+
+        Args:
+            url: The target URL
+            vuln_type: The vulnerability type (e.g., 'SQL_INJECTION', 'XSS')
+
+        Returns:
+            True if we've already found this vuln type on this endpoint, False otherwise
+        """
+        try:
+            with self._get_db() as db:
+                # Normalize URL for comparison
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+                # Check if we've FOUND (not just tested) vulnerabilities of this type
+                check_query = """
+                    SELECT COUNT(*) FROM vulnerabilities v
+                    JOIN assets a ON v.asset_id = a.id
+                    WHERE v.type = ?
+                    AND (a.url LIKE ? OR a.url = ?)
+                    AND (v.confidence > 0.7 OR v.severity IN ('Critical', 'High'))
+                """
+                cursor = db.execute(check_query, (vuln_type, f"{base_url}%", url))
+                count = cursor.fetchone()[0]
+
+                if count > 0:
+                    print(f"💰 BUG BOUNTY SKIP: {vuln_type} already found on {base_url} - move on to maximize earnings!")
+                    return True
+
+                return False
+
+        except Exception as e:
+            print(f"Error checking vulnerability found history: {e}")
+            return False
+
+    def _generate_canonical_vuln_key(self, finding: VulnerabilityFinding, asset_url: str = None) -> str:
+        """
+        Generate canonical vulnerability key for database-level deduplication.
+        Format aligned with vulnerability_canonical: canonical_type|endpoint|param|location
+        - canonical_type normalizes label variants (e.g., file_inclusion -> lfi)
+        - endpoint is scheme://host/path (no query)
+        - location is one of: query|body|header|cookie|path
+        """
+        try:
+            vtype, endpoint, param, location = self._compute_canonical_key(finding, getattr(finding, 'url', '') or (asset_url or ''))
+            return f"{vtype}|{endpoint}|{param}|{location}"
+        except Exception:
+            # Fallback to a minimal but stable key
+            from urllib.parse import urlparse
+            u = getattr(finding, 'url', '') or (asset_url or '')
+            try:
+                p = urlparse(u)
+                ep = f"{p.scheme}://{p.netloc}{p.path}" if p.netloc else (u or '')
+            except Exception:
+                ep = u or ''
+            vt = str(getattr(finding, 'vuln_type', '') or '').strip().lower()
+            return f"{vt}|{ep}||"
+
     def add_vulnerability_finding(self, finding: VulnerabilityFinding, asset_id: int):
         """
         Add a VulnerabilityFinding object to the database with proper field mapping.
@@ -1653,23 +2237,24 @@ class AssetManager:
                 if getattr(finding, 'confidence', 0.0) < min_conf:
                     return None
 
-                # Check for existing duplicate (payload-based)
+                # Generate canonical key for deduplication
+                asset_url = db.execute("SELECT url FROM assets WHERE id = ?", (asset_id,)).fetchone()
+                asset_url = asset_url[0] if asset_url else ""
+                canonical_key = self._generate_canonical_vuln_key(finding, asset_url)
+
+                # Check for existing duplicate (canonical key-based)
                 duplicate_check = '''
-                    SELECT COUNT(*) FROM vulnerabilities 
-                    WHERE asset_id = ? AND type = ? AND payload = ?
+                    SELECT COUNT(*) FROM vulnerabilities
+                    WHERE canonical_key = ?
                 '''
-                cursor = db.execute(duplicate_check, (
-                    asset_id,
-                    finding.vuln_type,
-                    finding.payload
-                ))
+                cursor = db.execute(duplicate_check, (canonical_key,))
                 
                 if cursor.fetchone()[0] > 0:
                     # Allow upgrading existing row if new finding is stronger
                     if allow_upgrade:
                         row = db.execute(
-                            "SELECT id, severity, confidence FROM vulnerabilities WHERE asset_id=? AND type=? AND payload=? ORDER BY id DESC LIMIT 1",
-                            (asset_id, finding.vuln_type, finding.payload)
+                            "SELECT id, severity, confidence FROM vulnerabilities WHERE canonical_key=? ORDER BY id DESC LIMIT 1",
+                            (canonical_key,)
                         ).fetchone()
                         if row:
                             vid, sev_old, conf_old = row[0], str(row[1] or ''), float(row[2] or 0.0)
@@ -1689,7 +2274,7 @@ class AssetManager:
                                 ts = finding.discovered_at.isoformat() if isinstance(finding.discovered_at, datetime) else _s(finding.discovered_at)
                                 db.execute(
                                     """
-                                    UPDATE vulnerabilities SET description=?, severity=?, evidence=?, detected_at=?, confidence=?, asset_url=?, raw_request=?, raw_response=?, bypass_method=?
+                                    UPDATE vulnerabilities SET description=?, severity=?, evidence=?, detected_at=?, confidence=?
                                     WHERE id=?
                                     """,
                                     (
@@ -1698,10 +2283,6 @@ class AssetManager:
                                         _s(finding.evidence),
                                         ts,
                                         float(finding.confidence or 0.0),
-                                        _s(finding.url),
-                                        _s(finding.raw_request),
-                                        _s(finding.raw_response),
-                                        _s(finding.bypass_method),
                                         int(vid)
                                     )
                                 )
@@ -1711,15 +2292,30 @@ class AssetManager:
                     # Otherwise skip duplicate
                     print(f"🔄 Deduplication: Skipping duplicate {finding.vuln_type} (payload: '{finding.payload[:50]}...') for asset {asset_id}")
                     return
+                
+                # Canonical dedup across assets: type + endpoint + param + location
+                try:
+                    self.ensure_canonical_table()
+                    vtype, endpoint, param, location = self._compute_canonical_key(finding, getattr(finding, 'url', '') or '')
+                    # If we already have a canonical entry for this key, skip inserting new vuln row
+                    c = db.execute(
+                        "SELECT first_vuln_id FROM vulnerability_canonical WHERE type=? AND endpoint=? AND param=? AND location=?",
+                        (vtype, endpoint, param, location)
+                    ).fetchone()
+                    if c is not None:
+                        print(f"💰 Canonical skip: {vtype} at {endpoint} [{location}:{param or '-'}]")
+                        return c[0]
+                except Exception:
+                    pass
                 # Additional de-dupe: same type+URL+evidence prefix
                 try:
                     dupe2 = db.execute(
                         """
-                        SELECT COUNT(*) FROM vulnerabilities 
-                        WHERE asset_id=? AND type=? AND asset_url=? 
+                        SELECT COUNT(*) FROM vulnerabilities
+                        WHERE asset_id=? AND type=?
                           AND substr(evidence,1,80)=substr(?,1,80)
                         """,
-                        (asset_id, finding.vuln_type, finding.url, finding.evidence)
+                        (asset_id, finding.vuln_type, finding.evidence)
                     ).fetchone()[0]
                     if dupe2 and dupe2 > 0:
                         print(f"🔄 Skipping near-duplicate: {finding.vuln_type} at {finding.url}")
@@ -1727,11 +2323,11 @@ class AssetManager:
                 except Exception:
                     pass
                 
-                # Insert new vulnerability
+                # Insert new vulnerability with canonical_key for deduplication
                 query = '''
-                    INSERT INTO vulnerabilities 
-                    (asset_id, type, description, severity, evidence, payload, detected_at, confidence, asset_url, raw_request, raw_response, bypass_method)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO vulnerabilities
+                    (asset_id, type, description, severity, evidence, payload, detected_at, confidence, canonical_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 '''
                 # Normalize types for SQLite binding
                 def _s(x):
@@ -1756,12 +2352,18 @@ class AssetManager:
                     _s(finding.payload),
                     ts,
                     float(finding.confidence or 0.0),
-                    _s(finding.url),
-                    _s(finding.raw_request),
-                    _s(finding.raw_response),
-                    _s(finding.bypass_method)
+                    canonical_key
                 ))
                 vuln_id = cur.lastrowid
+                # Record canonical key for future dedup
+                try:
+                    vtype, endpoint, param, location = self._compute_canonical_key(finding, getattr(finding, 'url', '') or '')
+                    db.execute(
+                        "INSERT OR IGNORE INTO vulnerability_canonical(type, endpoint, param, location, first_vuln_id) VALUES(?,?,?,?,?)",
+                        (vtype, endpoint, param, location, int(vuln_id))
+                    )
+                except Exception:
+                    pass
                 print(f"✅ Added vulnerability: {finding.vuln_type} ({finding.severity}) for asset {asset_id}")
                 try:
                     # Opportunistic structured verification logging from evidence
@@ -1787,6 +2389,38 @@ class AssetManager:
             except Exception:
                 print(f"Error adding vulnerability finding: {e}")
             return None
+
+    def should_test_param(self, url: str, vuln_type: str, param: str = '', location: str = '') -> bool:
+        """Return False if a canonical finding already exists for type+endpoint+param+location.
+        Keeps scanning universal while avoiding redundant payload variation tests.
+        """
+        try:
+            self.ensure_canonical_table()
+            endpoint = self._normalize_endpoint(url)
+            # Canonicalize vuln type similar to storage logic
+            def _canon_type(t:str)->str:
+                t = (t or '').lower()
+                if t in {'sql-injection','sql_injection','sqli','sql-injection-error'}: return 'sql_injection'
+                if t in {'xss','xss_reflection','blind_xss','blind_xss_probe','dom_xss'}: return 'xss'
+                if t in {'file_inclusion','lfi','rfi'}: return 'lfi'
+                if t in {'cmd_injection','command_injection','rce','os_command_injection'}: return 'command_injection'
+                if t in {'auth_bypass','authentication_bypass'}: return 'auth_bypass'
+                if t in {'path_traversal','directory_traversal'}: return 'path_traversal'
+                if t in {'open_redirect','redirect'}: return 'open_redirect'
+                return t
+            vtype = _canon_type(vuln_type)
+            # Default unknown location to 'query' if URL has query
+            if not location:
+                location = 'query' if '?' in (url or '') else 'path'
+            with self._get_db() as db:
+                row = db.execute(
+                    "SELECT 1 FROM vulnerability_canonical WHERE type=? AND endpoint=? AND param=? AND location=? LIMIT 1",
+                    (vtype, endpoint, param or '', location or '')
+                ).fetchone()
+            return row is None
+        except Exception:
+            # Fail open to keep scanning universal
+            return True
 
     def ensure_verification_table(self):
         try:
@@ -2218,7 +2852,13 @@ if not hasattr(AssetManager, "_orig_get_scope_domains"):
     AssetManager._orig_get_scope_domains = AssetManager.get_scope_domains
 
 def _am_get_scope_domains_filtered(self):
-    """Return scope seeds, filtered by TTL unless deeper work is pending."""
+    """Return scope seeds, filtered by run-scope isolation and TTL."""
+    # Check for run-scope isolation first
+    run_scope_hosts = os.environ.get('MODSCAN_RUN_SCOPE_HOSTS')
+    if run_scope_hosts:
+        # Return only CLI targets for this run
+        return run_scope_hosts.split(',')
+
     try:
         seeds = list(AssetManager._orig_get_scope_domains(self) or [])
     except Exception:

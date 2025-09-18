@@ -1,0 +1,23 @@
+{
+  "temu.com": {
+    "last_scan_ts": 0,
+    "content_hash": null,
+    "meta": {
+      "phase": "manual-mark"
+    }
+  },
+  "https://temu.com": {
+    "last_scan_ts": 0,
+    "content_hash": null,
+    "meta": {
+      "phase": "manual-mark"
+    }
+  },
+  "http://temu.com": {
+    "last_scan_ts": 0,
+    "content_hash": null,
+    "meta": {
+      "phase": "manual-mark"
+    }
+  }
+}

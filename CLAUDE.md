@@ -4,6 +4,28 @@
 
 This vulnerability scanning platform is designed to work **UNIVERSALLY** against ANY target without requiring target-specific scripts, configurations, or adaptations. The scanner must automatically adapt to whatever it encounters.
 
+## 🎯 PRIMARY BENCHMARK: VulnWeb Complete Discovery
+
+**CRITICAL ONGOING GOAL**: The scanner MUST find ALL vulnerabilities available on the 5 VulnWeb targets. This is our primary benchmark for scanner completeness and professional-grade effectiveness.
+
+### Benchmark Targets (Canonical Test Set)
+1. **testphp.vulnweb.com** - PHP/MySQL vulnerabilities
+2. **testaspnet.vulnweb.com** - ASP.NET/MSSQL vulnerabilities
+3. **testhtml5.vulnweb.com** - HTML5/JavaScript vulnerabilities
+4. **testasp.vulnweb.com** - Classic ASP vulnerabilities
+5. **rest.vulnweb.com** - REST API vulnerabilities
+
+### Success Criteria
+- ✅ **500+ unique vulnerabilities** discovered across all targets
+- ✅ **All major OWASP Top 10** vulnerability classes found
+- ✅ **Advanced techniques** (XXE, SSTI, business logic, race conditions)
+- ✅ **Zero false positives** through AI validation
+- ✅ **Professional pentest coverage** equivalent to Burp Pro
+
+**📊 Track progress in `VULNERABILITY_BENCHMARK.md`**
+
+**⚡ Current Command**: `python3 engine.py --no-ttl testphp.vulnweb.com testaspnet.vulnweb.com testhtml5.vulnweb.com testasp.vulnweb.com rest.vulnweb.com`
+
 ## CRITICAL DEVELOPMENT RULES
 
 ### ❌ NEVER CREATE TARGET-SPECIFIC SCRIPTS
@@ -51,6 +73,13 @@ This vulnerability scanning platform is designed to work **UNIVERSALLY** against
 - Prefer `_run_tool()` for any new external integrations to inherit safety guarantees.
 - Keep Playwright sessions short‑lived or pooled; always close contexts and browsers.
 - Avoid bespoke kill logic in modules; let the runner + watchdog enforce lifecycle consistently.
+
+#### 🚨 ZOMBIE PROCESS PREVENTION (2025-09-13 FIX)
+- **Engine Startup Cleanup**: ProcessWatchdog initializes FIRST in `_initialize_modules()` and immediately kills zombie processes from previous runs
+- **Graceful Shutdown**: Engine runs comprehensive cleanup in `_graceful_shutdown()` method during KeyboardInterrupt or exceptions
+- **Final Safety Net**: Main function includes `finally` block that runs ProcessWatchdog as last resort cleanup
+- **No Duplicate Watchdogs**: ProcessWatchdog only initialized once in `_initialize_modules()`, not in scan cycle loop
+- **Resource Management**: This prevents hundreds of zombie Nuclei/Chromium processes from accumulating across engine restarts
 
 ### 🧭 Engine CLI Scope Seeding
 - Positional targets: Pass domains or URLs as arguments to `engine.py` to seed scope on startup.
