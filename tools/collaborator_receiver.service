@@ -1,0 +1,15 @@
+[Unit]
+Description=ModScan Collaborator HTTP Receiver
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=%h
+ExecStart=/usr/bin/env python3 %h/recon-platform/modscan/tools/collaborator_receiver.py --host 0.0.0.0 --port 80 --log-file %h/collaborator.log
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+

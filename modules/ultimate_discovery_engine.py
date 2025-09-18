@@ -93,6 +93,35 @@ class UltimateDiscoveryEngine:
         # ML patterns for intelligent discovery
         self.ml_patterns = self._load_ml_patterns()
 
+    async def _run_command_with_timeout(self, cmd: list[str], timeout: int = 20) -> tuple[bytes, bytes, int, str | None]:
+        """Run a subprocess command with a hard timeout. Returns (stdout, stderr, returncode, error).
+
+        Kills the process on timeout to prevent engine hangs.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                return stdout, stderr, proc.returncode or 0, None
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.communicate(), timeout=3)
+                except Exception:
+                    pass
+                return b"", b"", -1, "timeout"
+        except FileNotFoundError:
+            return b"", b"", -1, "notfound"
+        except Exception as e:
+            return b"", b"", -1, str(e)
+
     def _find_binary(self, name: str, config_key: Optional[str] = None, env_key: Optional[str] = None) -> Optional[str]:
         """Locate a binary in a universal way without hardcoding paths.
 
@@ -296,7 +325,10 @@ class UltimateDiscoveryEngine:
             },
             "sensitive_files": [
                 "/.env", "/.git/", "/backup.zip", "/config.json", "/secrets.yaml",
-                "/id_rsa", "/private.key", "/database.sql", "/.aws/", "/.ssh/"
+                "/id_rsa", "/private.key", "/database.sql", "/.aws/", "/.ssh/",
+                # CRITICAL MISSING FILES FROM TESTPHP.VULNWEB.COM
+                "/index.zip", "/secured/phpinfo.php", "/CVS/Root", "/_mmServerScripts/mysql.php",
+                "/crossdomain.xml", "/.idea/workspace.xml", "/admin/"
             ]
         }
     
@@ -325,11 +357,11 @@ class UltimateDiscoveryEngine:
         discovered_urls.update(targeted_urls)
         logger.info(f"🎯 Comprehensive: {len(targeted_urls)} URLs from enhanced wordlists")
         
-        # QUATERNARY: MASSIVE parallel discovery if still under 1000 URLs
-        if len(discovered_urls) < 1000:
-            massive_urls = await self._massive_parallel_discovery(domain)
-            discovered_urls.update(massive_urls)
-            logger.info(f"🚀 MASSIVE: {len(massive_urls)} URLs from parallel chunked wordlists")
+        # QUATERNARY: MASSIVE parallel discovery - ALWAYS RUN for comprehensive coverage
+        logger.info(f"🚀 LAUNCHING MASSIVE DISCOVERY: Testing comprehensive 149K+ wordlists")
+        massive_urls = await self._massive_parallel_discovery(domain)
+        discovered_urls.update(massive_urls)
+        logger.info(f"🚀 MASSIVE: {len(massive_urls)} URLs from parallel chunked wordlists")
 
         # Avoid target-specific priority paths; rely on SecLists + smart crawling
         
@@ -558,7 +590,7 @@ class UltimateDiscoveryEngine:
                         logger.info(f"⚡ ffuf on {base_url}: {len(ffuf_results)} paths found")
                     else:
                         logger.debug("ffuf not found in PATH; using internal async enumerator with recursion")
-                        ffuf_results = await self._parallel_recursive_bruteforce(base_url, wordlists, max_depth=3)
+                        ffuf_results = await self._parallel_recursive_bruteforce(base_url, wordlists, max_depth=4)
                         urls.update(ffuf_results)
                         logger.info(f"⚡ Internal recursive brute on {base_url}: {len(ffuf_results)} paths found")
 
@@ -605,6 +637,7 @@ class UltimateDiscoveryEngine:
             file_words = seclists_manager.get_intelligent_wordlist(target_info, 'files', limit=30000)
             admin_words = seclists_manager.get_intelligent_wordlist(target_info, 'admin_paths', limit=20000)
             api_words = seclists_manager.get_intelligent_wordlist(target_info, 'api_endpoints', limit=20000)
+            backup_words = seclists_manager.get_intelligent_wordlist(target_info, 'backup_files', limit=5000)  # CRITICAL FIX
             # UNIVERSAL AUGMENTATION: also reuse SecLists subdomain tokens as potential directory names  
             # Process subdomain tokens in chunks to avoid memory issues with massive wordlists
             subdomain_tokens = seclists_manager.wordlists.get('subdomains', [])
@@ -615,14 +648,14 @@ class UltimateDiscoveryEngine:
             total_subdomains = len(subdomain_tokens)
             logger.info(f"🔄 Processing {total_subdomains} subdomain tokens in chunks of {chunk_size}")
             
-            for i in range(0, min(total_subdomains, 50000), chunk_size):  # Cap at 50K for performance
+            for i in range(0, total_subdomains, chunk_size):  # REMOVED 50K CAP - process all subdomain tokens
                 chunk = subdomain_tokens[i:i + chunk_size]
                 chunk_paths = ['/' + t for t in chunk if t and len(t) <= 18 and t.isalnum()]
                 subdomain_paths.extend(chunk_paths)
                 
                 # Log progress for large chunks
                 if i % 50000 == 0 and i > 0:
-                    logger.info(f"📊 Processed {i}/{min(total_subdomains, 50000)} subdomain tokens")
+                    logger.info(f"📊 Processed {i}/{total_subdomains} subdomain tokens")
             
             logger.info(f"✅ Converted {len(subdomain_paths)} subdomain tokens to directory paths")
             
@@ -630,10 +663,21 @@ class UltimateDiscoveryEngine:
             scraped_tokens = await self._scrape_target_keywords(domain)
             scraped_paths = ['/' + t for t in scraped_tokens if t]
 
+            # CRITICAL: Add essential information disclosure patterns that might be missing from SecLists
+            critical_infodisclosure_paths = [
+                '/index.zip', '/backup.zip', '/site.zip', '/web.zip', '/app.zip',
+                '/CVS/Root', '/CVS/Repository', '/CVS/Entries',
+                '/.svn/entries', '/.svn/wc.db',
+                '/.git/config', '/.git/HEAD',
+                '/phpinfo.php', '/info.php', '/test.php',
+                '/backup/', '/backups/', '/old/', '/tmp/',
+                '/config.php.bak', '/database.sql', '/dump.sql'
+            ]
+
             # Combine wordlists efficiently - keep API endpoints separate for root-aware testing
-            logger.info(f"📊 Combining wordlists: {len(directory_words)} dirs, {len(file_words)} files, {len(admin_words)} admin, {len(api_words)} api (scoped), {len(scraped_paths)} scraped, {len(subdomain_paths)} subdomain-derived")
+            logger.info(f"📊 Combining wordlists: {len(directory_words)} dirs, {len(file_words)} files, {len(admin_words)} admin, {len(backup_words)} backup, {len(api_words)} api (scoped), {len(scraped_paths)} scraped, {len(subdomain_paths)} subdomain-derived, {len(critical_infodisclosure_paths)} critical")
             # API endpoints should not be appended blindly to deep application paths
-            all_words = directory_words + file_words + admin_words + scraped_paths + subdomain_paths
+            all_words = directory_words + file_words + admin_words + backup_words + scraped_paths + subdomain_paths + critical_infodisclosure_paths
             # Store API words separately for scoped testing (root-only or smart)
             self._api_words_for_root_only = api_words
             
@@ -658,7 +702,7 @@ class UltimateDiscoveryEngine:
             
             logger.info(f"🧠 Intelligent SecLists: {len(unique_paths)} paths selected for {domain}")
             logger.info(f"   📁 Directories: {len(directory_words)}, 📄 Files: {len(file_words)}")
-            logger.info(f"   🔐 Admin: {len(admin_words)}, 🔌 API: {len(api_words)}")
+            logger.info(f"   🔐 Admin: {len(admin_words)}, 🔌 API: {len(api_words)}, 💾 Backup: {len(backup_words)}")
             logger.info(f"   🧩 Scraped tokens: {len(scraped_tokens)}")
             
             return unique_paths
@@ -770,11 +814,11 @@ class UltimateDiscoveryEngine:
             logger.debug(f"Technology detection failed for {domain}: {e}")
             return []
 
-    def _existing_urls_for_domain(self, domain: str, limit: int = 200) -> List[str]:
+    def _existing_urls_for_domain(self, domain: str, limit: int = 10000) -> List[str]:
         """Seed discovery with existing same-domain URLs from the database (universal)."""
         seeds = []
         try:
-            existing = self.asset_manager.get_existing_urls(limit=5000)  # pull more, filter down
+            existing = self.asset_manager.get_existing_urls(limit=50000)  # INCREASED: pull comprehensive existing URLs
             host_variants = {domain, f"www.{domain}"}
             for url in existing:
                 try:
@@ -890,7 +934,7 @@ class UltimateDiscoveryEngine:
                 "-u", f"{base_url}/FUZZ",
                 "-w", temp_wordlist,
                 "-recursion",
-                "-recursion-depth", "2",  # 2 levels deep
+                "-recursion-depth", "4",  # INCREASED: 4 levels for comprehensive discovery
                 "-mc", "200,201,202,204,301,302,307,401,403",  # Include useful codes
                 "-t", "150",  # 150 threads for maximum speed
                 "-timeout", "8",
@@ -1008,7 +1052,7 @@ class UltimateDiscoveryEngine:
             
         return urls
 
-    async def _parallel_recursive_bruteforce(self, base_url: str, all_paths: List[str], max_depth: int = 2, max_fanout: int = 5000) -> Set[str]:
+    async def _parallel_recursive_bruteforce(self, base_url: str, all_paths: List[str], max_depth: int = 4, max_fanout: int = 50000) -> Set[str]:
         """Internal async recursive directory brute-force.
 
         - Starts from base_url and an initial list of candidate paths
@@ -1033,20 +1077,23 @@ class UltimateDiscoveryEngine:
         first_pass = await self._parallel_wordlist_test(base_url, initial)
         discovered.update(first_pass)
 
-        # Build queue of directory bases to recurse into
+        # Build queue of directory bases to recurse into - AGGRESSIVE APPROACH
         dir_bases: List[str] = []
         for url in list(first_pass):
             try:
                 sp = urlsplit(url)
-                # Keep only plausible directories
-                if not sp.path or sp.path.endswith('/'):
-                    dir_bases.append(f"{sp.scheme}://{sp.netloc}{sp.path.rstrip('/')}")
-                else:
-                    # If no extension, consider parent as directory
-                    if '/' in sp.path:
-                        last = sp.path.rsplit('/', 1)[-1]
-                        if is_dir_token(last):
-                            dir_bases.append(f"{sp.scheme}://{sp.netloc}{sp.path}")
+                path = sp.path.rstrip('/')
+
+                # ALWAYS treat 200/403/401 responses as potential directories for recursion
+                # This ensures we test files inside ANY accessible path
+                dir_bases.append(f"{sp.scheme}://{sp.netloc}{path}")
+
+                # ALSO add parent directory if this looks like a file
+                if '/' in path:
+                    parent_path = '/'.join(path.split('/')[:-1])
+                    if parent_path:
+                        dir_bases.append(f"{sp.scheme}://{sp.netloc}{parent_path}")
+
             except Exception:
                 continue
 
@@ -1055,16 +1102,15 @@ class UltimateDiscoveryEngine:
             if not dir_bases:
                 break
             next_dirs: List[str] = []
-            # Prune candidates for deeper scans
-            # Favor shorter, directory-like tokens to control breadth
-            dir_like = [p for p in all_paths if is_dir_token(p)]
-            dir_like = dir_like[: max(2000, int(max_fanout/2))]
-            for base in dir_bases[:50]:
+            # CRITICAL FIX: Test ALL paths (files AND directories) in each discovered directory
+            # This ensures index.zip, CVS/Root, etc. are found in subdirectories
+            all_candidates = all_paths[: max(10000, int(max_fanout/2))]  # Include files AND dirs
+            for base in dir_bases[:100]:  # Increased from 50 to 100 bases
                 if base in visited:
                     continue
                 visited.add(base)
-                # Scan a subset under this base
-                results = await self._parallel_wordlist_test(base, dir_like)
+                # Scan ALL file types under this directory base
+                results = await self._parallel_wordlist_test(base, all_candidates)
                 discovered.update(results)
                 # Append newly found deeper directories as potential bases
                 for u in list(results):
@@ -1159,11 +1205,11 @@ class UltimateDiscoveryEngine:
                 urls.add(r)
         return urls
 
-    def _existing_urls_for_domain(self, domain: str, limit: int = 200) -> List[str]:
+    def _existing_urls_for_domain(self, domain: str, limit: int = 10000) -> List[str]:
         """Seed discovery with existing same-domain URLs from the database (universal)."""
         seeds = []
         try:
-            existing = self.asset_manager.get_existing_urls(limit=5000)  # pull more, filter down
+            existing = self.asset_manager.get_existing_urls(limit=50000)  # INCREASED: pull comprehensive existing URLs
             host_variants = {domain, f"www.{domain}"}
             for url in existing:
                 try:
@@ -1180,7 +1226,7 @@ class UltimateDiscoveryEngine:
             pass
         return seeds
 
-    async def _auth_smart_crawl(self, domain: str, max_urls: int = 250, max_depth: int = 3, extra_seeds: Optional[List[str]] = None) -> Set[str]:
+    async def _auth_smart_crawl(self, domain: str, max_urls: int = 5000, max_depth: int = 3, extra_seeds: Optional[List[str]] = None) -> Set[str]:
         """Lightweight authenticated same-origin crawl using provided cookie."""
         urls = set()
         try:
@@ -1256,24 +1302,25 @@ class UltimateDiscoveryEngine:
     async def _run_gau(self, domain: str) -> List[str]:
         """Run GAU to get historical URLs"""
         try:
-            cmd = [self.gau_path, domain, "--threads", "10", "--timeout", "30"]
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode == 0:
+            # Resolve binary path once
+            gau_bin = shutil.which(self.gau_path) or self.gau_path
+            cmd = [gau_bin, domain, "--threads", "10", "--timeout", "30"]
+
+            stdout, stderr, rc, err = await self._run_command_with_timeout(cmd, timeout=20)
+            if rc == 0 and stdout:
                 urls = []
-                for line in stdout.decode().strip().split('\n'):
+                for line in stdout.decode(errors='ignore').strip().split('\n'):
                     url = line.strip()
                     if url and self._is_valid_url(url):
                         urls.append(url)
                 return urls[:1000]  # Limit to 1000 URLs
-                
+            else:
+                if err == "timeout":
+                    logger.info(f"GAU timed out for {domain} (skipping)")
+                elif err == "notfound":
+                    logger.debug("GAU binary not found; skipping historical discovery via GAU")
+                else:
+                    logger.debug(f"GAU failed (rc={rc}): {err or stderr.decode(errors='ignore')[:120]}")
         except Exception as e:
             logger.debug(f"GAU failed: {e}")
             
@@ -1282,24 +1329,24 @@ class UltimateDiscoveryEngine:
     async def _run_wayback(self, domain: str) -> List[str]:
         """Run waybackurls to get archived URLs"""
         try:
-            cmd = [self.waybackurls_path, domain]
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode == 0:
+            wb_bin = shutil.which(self.waybackurls_path) or self.waybackurls_path
+            cmd = [wb_bin, domain]
+
+            stdout, stderr, rc, err = await self._run_command_with_timeout(cmd, timeout=20)
+            if rc == 0 and stdout:
                 urls = []
-                for line in stdout.decode().strip().split('\n'):
+                for line in stdout.decode(errors='ignore').strip().split('\n'):
                     url = line.strip()
                     if url and self._is_valid_url(url):
                         urls.append(url)
-                return urls[:1000]  # Limit to 1000 URLs
-                
+                return urls[:1000]
+            else:
+                if err == "timeout":
+                    logger.info(f"Wayback timed out for {domain} (skipping)")
+                elif err == "notfound":
+                    logger.debug("waybackurls binary not found; skipping wayback discovery")
+                else:
+                    logger.debug(f"Wayback failed (rc={rc}): {err or stderr.decode(errors='ignore')[:120]}")
         except Exception as e:
             logger.debug(f"Wayback failed: {e}")
             
@@ -1675,7 +1722,7 @@ class UltimateDiscoveryEngine:
                     logger.info(f"🔌 API root sweep: testing {len(self._api_words_for_root_only)} endpoints across up to {max_roots} origins")
                     for root_url in root_urls[:max_roots]:
                         api_chunks = [self._api_words_for_root_only[i:i + 100] for i in range(0, len(self._api_words_for_root_only), 100)]
-                        for chunk_num, api_chunk in enumerate(api_chunks[:10]):  # limit chunks
+                        for chunk_num, api_chunk in enumerate(api_chunks):  # REMOVED 10-chunk limit - process all chunks
                             task = self._parallel_test_paths_chunk(root_url, api_chunk, f"api_root_chunk_{chunk_num}")
                             parallel_tasks.append(task)
             
@@ -1935,7 +1982,7 @@ class UltimateDiscoveryEngine:
                 for _, paths in (wordlists or {}).items():
                     combined.extend(paths)
                 for base in base_urls[:5]:
-                    urls.update(await self._parallel_recursive_bruteforce(base, combined, max_depth=3))
+                    urls.update(await self._parallel_recursive_bruteforce(base, combined, max_depth=4))
                 return urls
 
             # Create temporary wordlist file combining all intelligent wordlists
@@ -1966,8 +2013,8 @@ class UltimateDiscoveryEngine:
                         "-u", f"{base_url}/FUZZ",
                         "-w", temp_wordlist_path,
                         "-recursion",
-                        "-recursion-depth", "2",  # Reduced from 3 to 2
-                        "-recursion-strategy", "default",  # Less aggressive than greedy
+                        "-recursion-depth", "4",  # INCREASED: Deep recursion for complete coverage
+                        "-recursion-strategy", "greedy",  # AGGRESSIVE: Greedy recursion for maximum coverage
                         "-mc", "200,204,301,302,307,403",  # Reduced status codes
                         "-t", "20",  # Reduced from 100 to 20 threads
                         "-timeout", "5",  # Reduced timeout

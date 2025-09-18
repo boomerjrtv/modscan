@@ -7,6 +7,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from datetime import datetime
+from asset_manager import AssetManager, VulnerabilityFinding
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 FINDINGS_FILE = BASE_DIR / "findings.jsonl"
@@ -52,77 +53,70 @@ def import_findings():
         print(f"❌ Findings file not found: {FINDINGS_FILE}")
         return
     
-    with sqlite3.connect(DB_PATH) as db:
-        imported_count = 0
-        skipped_count = 0
-        
-        with FINDINGS_FILE.open('r') as f:
-            for line_num, line in enumerate(f, 1):
+    am = AssetManager()
+    imported_count = 0
+    skipped_count = 0
+
+    with FINDINGS_FILE.open('r', encoding='utf-8') as f:
+        for line_num, line in enumerate(f, 1):
+            try:
+                finding = json.loads(line.strip())
+
+                # Extract finding data
+                target_url = finding.get("target", "")
+                if not target_url:
+                    skipped_count += 1
+                    continue
+                vuln_type = finding.get("category", "Unknown")
+                param = finding.get("param", "")
+                payload = finding.get("payload", "")
+                evidence = finding.get("evidence", "")
+                severity = map_severity(finding.get("severity", "medium"))
+                confidence = map_confidence(vuln_type)
+                ts = finding.get("ts")
                 try:
-                    finding = json.loads(line.strip())
-                    
-                    # Extract finding data
-                    target_url = finding.get("target", "")
-                    vuln_type = finding.get("category", "Unknown")
-                    param = finding.get("param", "")
-                    payload = finding.get("payload", "")
-                    evidence = finding.get("evidence", "")
-                    severity = map_severity(finding.get("severity", "medium"))
-                    confidence = map_confidence(vuln_type)
-                    stable_id = finding.get("stable_id", "")
-                    timestamp = finding.get("ts", datetime.now().isoformat())
-                    
-                    # Find corresponding asset
+                    discovered_at = datetime.fromisoformat(ts) if ts else datetime.now()
+                except Exception:
+                    discovered_at = datetime.now()
+
+                # Ensure asset exists / get id
+                with sqlite3.connect(DB_PATH) as db:
                     asset_id = get_asset_id_by_url(db, target_url)
+                if not asset_id:
+                    try:
+                        from urllib.parse import urlparse
+                        host = (urlparse(target_url).netloc or '')
+                    except Exception:
+                        host = ''
+                    asset_id = am.add_asset(target_url, host, 'importer')
                     if not asset_id:
-                        print(f"⚠️  Line {line_num}: No asset found for URL {target_url}")
+                        print(f"⚠️  Line {line_num}: Could not create asset for URL {target_url}")
                         skipped_count += 1
                         continue
-                    
-                    # Check if already exists (using stable_id)
-                    existing = db.execute(
-                        "SELECT id FROM vulnerabilities WHERE payload = ? AND asset_id = ? AND type = ?",
-                        (payload, asset_id, vuln_type)
-                    ).fetchone()
-                    
-                    if existing:
-                        skipped_count += 1
-                        continue
-                    
-                    # Create description
-                    if param:
-                        description = f"{vuln_type} in parameter '{param}'"
-                    else:
-                        description = vuln_type
-                    
-                    # Insert vulnerability
-                    db.execute('''
-                        INSERT INTO vulnerabilities 
-                        (asset_id, type, description, severity, evidence, payload, detected_at, confidence)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        asset_id,
-                        vuln_type,
-                        description,
-                        severity,
-                        evidence,
-                        payload,
-                        timestamp,
-                        confidence
-                    ))
-                    
-                    imported_count += 1
-                    
-                except json.JSONDecodeError:
-                    print(f"❌ Line {line_num}: Invalid JSON")
-                    continue
-                except Exception as e:
-                    print(f"❌ Line {line_num}: Error processing finding: {e}")
-                    continue
-        
-        print(f"✅ Import complete:")
-        print(f"   📥 Imported: {imported_count} findings")
-        print(f"   ⏭️  Skipped: {skipped_count} findings")
+
+                vf = VulnerabilityFinding(
+                    url=target_url,
+                    vuln_type=str(vuln_type).upper(),
+                    severity=str(severity).capitalize(),
+                    confidence=float(confidence),
+                    payload=str(payload or ''),
+                    evidence=str(evidence or ''),
+                    discovered_at=discovered_at,
+                    affected_parameter=str(param or ''),
+                )
+                am.add_vulnerability_finding(vf, asset_id)
+                imported_count += 1
+
+            except json.JSONDecodeError:
+                print(f"❌ Line {line_num}: Invalid JSON")
+                continue
+            except Exception as e:
+                print(f"❌ Line {line_num}: Error processing finding: {e}")
+                continue
+
+    print(f"✅ Import complete:")
+    print(f"   📥 Imported: {imported_count} findings")
+    print(f"   ⏭️  Skipped: {skipped_count} findings")
 
 if __name__ == "__main__":
     import_findings()

@@ -50,10 +50,12 @@ class ProcessWatchdog:
             try:
                 # Check if it's a scanner process
                 for tool in self.scanner_tools:
-                    if tool in ' '.join(proc.info['cmdline']).lower():
-                        processes[proc.info['pid']] = {
-                            'tool': tool,
-                            'cmdline': ' '.join(proc.info['cmdline']),
+                    cmdline = proc.info.get('cmdline', [])
+                    if cmdline and hasattr(cmdline, '__iter__') and not isinstance(cmdline, str):
+                        if tool in ' '.join(cmdline).lower():
+                            processes[proc.info['pid']] = {
+                                'tool': tool,
+                                'cmdline': ' '.join(cmdline),
                             'runtime': time.time() - proc.info['create_time'],
                             'status': proc.info['status'],
                             'proc': proc

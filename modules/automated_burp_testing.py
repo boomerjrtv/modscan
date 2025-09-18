@@ -9,9 +9,11 @@ import aiohttp
 import json
 import re
 import time
+from datetime import datetime
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from typing import List, Dict, Any, Tuple
 import logging
+from asset_manager import VulnerabilityFinding
 
 logger = logging.getLogger(__name__)
 
@@ -479,22 +481,40 @@ class AutomatedBurpTester:
         return False
 
     async def save_findings_to_db(self, findings: List[Dict]):
-        """Save vulnerability findings to database"""
-        with self.asset_manager._get_db() as db:
-            for finding in findings:
-                db.execute("""
-                    INSERT INTO vulnerabilities 
-                    (asset_id, type, description, severity, evidence, payload, detected_at)
-                    VALUES ((SELECT id FROM assets WHERE url = ? LIMIT 1), ?, ?, ?, ?, ?, datetime('now'))
-                """, (
-                    finding['url'],
-                    finding['type'],
-                    finding.get('evidence', ''),
-                    finding['severity'],
-                    json.dumps(finding),
-                    finding.get('payload', '')
-                ))
-            db.commit()
+        """Save vulnerability findings using AssetManager canonical API (dedup-aware)"""
+        for f in findings:
+            try:
+                # Resolve or create asset_id for the URL
+                url = f.get('url') or ''
+                if not url:
+                    continue
+                with self.asset_manager._get_db() as db:
+                    row = db.execute("SELECT id FROM assets WHERE url = ? LIMIT 1", (url,)).fetchone()
+                    asset_id = row[0] if row else None
+                if not asset_id:
+                    try:
+                        from urllib.parse import urlparse
+                        host = (urlparse(url).netloc or '')
+                    except Exception:
+                        host = ''
+                    asset_id = self.asset_manager.add_asset(url, host, 'automated_burp')
+                    if not asset_id:
+                        continue
+
+                vf = VulnerabilityFinding(
+                    url=url,
+                    vuln_type=str(f.get('type') or 'UNKNOWN').upper(),
+                    severity=str(f.get('severity') or 'LOW').capitalize(),
+                    confidence=float(f.get('confidence', 0.6)),
+                    payload=str(f.get('payload') or ''),
+                    evidence=str(f.get('evidence') or json.dumps(f, ensure_ascii=False)),
+                    discovered_at=datetime.now(),
+                    affected_parameter=str(f.get('param') or ''),
+                )
+                self.asset_manager.add_vulnerability_finding(vf, asset_id)
+            except Exception:
+                # Do not crash bulk save on a single malformed record
+                continue
 
 if __name__ == "__main__":
     # Example usage

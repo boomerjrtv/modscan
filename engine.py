@@ -57,6 +57,7 @@ class Engine:
         self.asset_manager = AssetManager()
         self.completed_domains = set()
         self.domain_auth = {}
+        self.forced_scan_queue = []  # exact URLs requested on CLI for immediate deep scan
         self._load_authentication()
         self._initialize_modules()
     
@@ -65,6 +66,14 @@ class Engine:
         """Initialize all scanner modules"""
         AUTH_CONFIG = CONFIG.copy()
         AUTH_CONFIG['domain_auth'] = self.domain_auth
+
+        # Initialize process watchdog FIRST to handle cleanup from previous runs
+        logger.info("🛡️  Initializing process watchdog for resource management")
+        self.process_watchdog = ProcessWatchdog()
+        
+        # Clean up any zombie processes from previous engine runs
+        logger.info("🧹 Cleaning up zombie processes from previous runs")
+        self.process_watchdog.run_health_check()
 
         # Initialize parallel scanner orchestrator (replaces single scanner)
         logger.info("🎯 Initializing parallel scanner orchestrator for maximum performance")
@@ -92,6 +101,8 @@ class Engine:
         Returns number of successfully added records.
         """
         added = 0
+        run_scope_hosts = []
+
         for raw in targets or []:
             try:
                 t = (raw or "").strip()
@@ -110,12 +121,41 @@ class Engine:
                 host = host.lstrip('.')
                 if not host:
                     continue
-                self.asset_manager.add_scope_target(host, is_active=1)
-                added += 1
-                logger.info(f"📌 Added to scope: {host}")
+
+                run_scope_hosts.append(host)
+
+                new_id = self.asset_manager.add_scope_target(host, is_active=1)
+                if new_id:
+                    added += 1
+                    logger.info(f"📌 Added to scope: {host}")
+
+                    # CRITICAL: Also create base assets for the domain so it gets scanned
+                    base_urls = [f"https://{host}", f"http://{host}"]
+                    for base_url in base_urls:
+                        try:
+                            asset_id = self.asset_manager.add_asset(
+                                url=base_url,
+                                host=host,
+                                status_code=0,  # Will be discovered
+                                tech_stack='',
+                                discovered_at=None,  # Auto timestamp
+                                force=True  # Ensure it gets added
+                            )
+                            if asset_id:
+                                logger.debug(f"🌱 Seeded base asset: {base_url}")
+                        except Exception as e:
+                            logger.debug(f"Failed creating asset for {base_url}: {e}")
+                else:
+                    logger.info(f"➖ Already in scope: {host}")
             except Exception as e:
                 logger.debug(f"Failed adding scope seed '{raw}': {e}")
                 continue
+
+        # Set run-scope isolation environment variable
+        if run_scope_hosts:
+            os.environ['MODSCAN_RUN_SCOPE_HOSTS'] = ','.join(run_scope_hosts)
+            logger.info(f"🎯 Run scope isolated to: {', '.join(run_scope_hosts)}")
+
         return added
 
     async def _graceful_shutdown(self):
@@ -140,16 +180,36 @@ class Engine:
             pass
 
     def _check_cpu_usage(self):
-        """Monitor CPU usage and adjust operations dynamically"""
+        """ENHANCED: Monitor CPU, memory, processes, and sessions to prevent resource exhaustion"""
         cpu_percent = psutil.cpu_percent(interval=1)
         memory_percent = psutil.virtual_memory().percent
-        
+
+        # CRITICAL FIX: Monitor process and connection counts
+        try:
+            current_process = psutil.Process()
+            open_files = len(current_process.open_files())
+            connections = len(current_process.connections())
+            memory_mb = current_process.memory_info().rss / 1024 / 1024
+
+            # Check for resource exhaustion patterns
+            if open_files > 800:  # File descriptor limit approaching
+                logger.error(f"🚨 RESOURCE EXHAUSTION: {open_files} open files - EMERGENCY CLEANUP NEEDED")
+                return "resource_exhaustion"
+            elif connections > 500:  # Too many network connections
+                logger.error(f"🚨 CONNECTION LEAK: {connections} open connections - SESSION CLEANUP NEEDED")
+                return "connection_leak"
+            elif memory_mb > 2000:  # Process using > 2GB
+                logger.warning(f"🚨 MEMORY GROWTH: {memory_mb:.0f}MB process memory - CLEANUP RECOMMENDED")
+                return "memory_growth"
+        except Exception as e:
+            logger.debug(f"Resource monitoring failed: {e}")
+
         if cpu_percent > 75:
             logger.warning(f"⚠️  HIGH CPU: {cpu_percent}% - Reducing concurrency")
             return "high"
         elif cpu_percent > 60:
             logger.info(f"🔶 MODERATE CPU: {cpu_percent}% - Normal operations")
-            return "moderate" 
+            return "moderate"
         elif memory_percent > 80:
             logger.warning(f"⚠️  HIGH MEMORY: {memory_percent}% - Reducing batch sizes")
             return "high_memory"
@@ -158,16 +218,65 @@ class Engine:
             return "low"
 
     def _load_authentication(self):
-        # ... (load auth logic)
-        pass
+        """Load lightweight domain-level auth/cookie hints from config.
+
+        Populates self.domain_auth with per-domain headers such as Cookie or Authorization that
+        downstream modules (e.g., discovery engine) can consult. This stays optional and safe.
+        """
+        try:
+            domain_auth: dict[str, dict] = {}
+            # Cookie overrides from config
+            co = CONFIG.get('cookie_overrides') or {}
+            domains = (co.get('domains') or {}) if isinstance(co, dict) else {}
+            global_overrides = (co.get('global_overrides') or {}) if isinstance(co, dict) else {}
+
+            # Build a compact cookie string for each configured domain
+            for dom, entry in domains.items():
+                try:
+                    cookie_map = {}
+                    # Domain-specific security levels
+                    levels = (entry.get('security_levels') or {}) if isinstance(entry, dict) else {}
+                    default_level = (entry.get('default_level') or '').strip()
+                    if default_level and default_level in levels:
+                        lv = levels[default_level]
+                        if isinstance(lv, str) and '=' in lv:
+                            k, v = lv.split('=', 1)
+                            cookie_map[k.strip()] = v.strip()
+                    # Global overrides merged in
+                    if isinstance(global_overrides, dict):
+                        for k, v in global_overrides.items():
+                            cookie_map[str(k).strip()] = str(v).strip()
+                    # Flatten to Cookie header
+                    cookie_header = '; '.join(f"{k}={v}" for k, v in cookie_map.items() if k and v)
+                    if cookie_header:
+                        domain_auth[str(dom).lstrip('.')]= {'Cookie': cookie_header}
+                except Exception:
+                    continue
+            # Authorized domains can be used by scanners as permissive hints
+            authz = CONFIG.get('authorized_domains') or []
+            for dom in authz:
+                d = str(dom).lstrip('.')
+                domain_auth.setdefault(d, {})
+            self.domain_auth = domain_auth
+        except Exception:
+            self.domain_auth = {}
 
     async def run_scan_cycle(self):
-        logger.info("🔧 Initializing all modules...")
-        await self.initialize_all_modules()
+        logger.info("🔧 All modules already initialized in __init__")
+        
+        # CRITICAL: Ensure database tables are initialized before accessing them
+        logger.info("🗄️  Ensuring database tables are properly initialized...")
+        try:
+            # Force database table creation by accessing AssetManager
+            _ = self.asset_manager.get_scope_targets()  # This will create scope table if needed
+            logger.info("✅ Database tables verified and ready")
+        except Exception as e:
+            logger.error(f"❌ Database initialization failed: {e}")
+            raise
+        
         logger.info("🎯 Starting Modular Progressive Vulnerability Scanner with Parallel Processing")
 
-        # Initialize process safety watchdog
-        self.process_watchdog = ProcessWatchdog()
+        # Process watchdog already initialized in _initialize_modules()
         last_safety_check = 0
         SAFETY_CHECK_INTERVAL = 300  # Run safety checks every 5 minutes
         
@@ -194,23 +303,27 @@ class Engine:
                     last_safety_check = current_time
 
                 # Check if we have work to do before running expensive operations
-                with self.asset_manager._get_db() as db:
-                    # Check pending domains that need discovery
-                    cursor = db.execute("SELECT COUNT(*) FROM scope WHERE is_active = 1")
-                    pending_domains = cursor.fetchone()[0]
+                try:
+                    # Use proper AssetManager methods instead of direct database access
+                    scope_targets = self.asset_manager.get_scope_targets()
+                    pending_domains = len(scope_targets) if scope_targets else 0
                     
-                    # Check unscanned assets (missing status_code)
-                    cursor = db.execute("SELECT COUNT(*) FROM assets WHERE status_code IS NULL")
-                    unscanned_count = cursor.fetchone()[0]
+                    # Get unscanned assets using proper method
+                    unscanned_assets = self.asset_manager.get_unscanned_assets()
+                    unscanned_count = len(unscanned_assets) if unscanned_assets else 0
                     
-                    # Check assets ready for vulnerability scanning
-                    cursor = db.execute("""
-                        SELECT COUNT(*) FROM assets 
-                        WHERE status_code = 200 
-                        AND (last_scanned IS NULL OR last_scanned < datetime('now', '-1 day'))
-                        AND tech_stack IS NOT NULL
-                    """)
-                    scan_ready_count = cursor.fetchone()[0]
+                except Exception as e:
+                    logger.warning(f"Could not check work status: {e}")
+                    pending_domains = 1  # Assume there's work to do
+                    unscanned_count = 0
+                
+                # Get scan-ready assets count safely
+                try:
+                    scan_ready_assets = self.asset_manager.get_assets_for_vulnerability_scan()
+                    scan_ready_count = len(scan_ready_assets) if scan_ready_assets else 0
+                except Exception as e:
+                    logger.warning(f"Could not get scan-ready assets: {e}")
+                    scan_ready_count = 1  # Assume there's work to do
 
                 # Smart exit conditions - avoid redundant work
                 if scan_cycle > 5 and pending_domains == 0 and unscanned_count == 0 and scan_ready_count == 0:
@@ -265,9 +378,7 @@ class Engine:
                 pass
             await self._graceful_shutdown()
 
-    async def initialize_all_modules(self):
-        # ... (module init logic)
-        pass
+    # initialize_all_modules removed; modules are constructed synchronously in __init__
 
     def monitor_and_adjust_performance(self):
         """Monitor system resources and adjust scanner performance dynamically"""
@@ -277,7 +388,13 @@ class Engine:
         if hasattr(self, 'parallel_scanner') and self.parallel_scanner:
             current_workers = getattr(self.parallel_scanner, 'num_workers', 64)
             
-            if load_status == "high":
+            if load_status in ["resource_exhaustion", "connection_leak", "memory_growth"]:
+                # EMERGENCY: Drastically reduce workers to prevent crash
+                new_workers = max(1, current_workers // 4)
+                logger.error(f"🚨 {load_status.upper()}: Emergency worker reduction {current_workers} → {new_workers}")
+                self.parallel_scanner.num_workers = new_workers
+
+            elif load_status == "high":
                 # High CPU/Memory: Reduce workers by 50%
                 new_workers = max(2, current_workers // 2)
                 logger.warning(f"🔥 HIGH LOAD: Reducing workers {current_workers} → {new_workers}")
@@ -297,8 +414,9 @@ class Engine:
                     self.parallel_scanner.num_workers = new_workers
                     
             elif load_status == "low":
-                # Low load: Can increase up to original max
-                original_max = min(32, (os.cpu_count() or 4) * 2)
+                # AGGRESSIVE SCALING: Low load means we can significantly increase workers for faster coverage
+                cpu_cores = os.cpu_count() or 4
+                original_max = min(64, cpu_cores * 4)  # 4x CPU cores when resources abundant
                 if current_workers < original_max:
                     new_workers = min(original_max, int(current_workers * 1.1))
                     logger.info(f"✅ LOW LOAD: Scaling up workers {current_workers} → {new_workers}")
@@ -321,24 +439,50 @@ class Engine:
             if not domain:
                 continue
             
-            # Check if we recently discovered this domain (TTL check)
+            # CRITICAL FIX: Check if we recently discovered this domain (TTL check)
+            # ALWAYS enforce minimum 10 minute TTL even when MODSCAN_TTL_HOURS=0 to prevent infinite rediscovery
             ttl_hours = int(os.environ.get('MODSCAN_TTL_HOURS', '6'))  # Default 6 hours TTL
+            min_ttl_minutes = 10 if ttl_hours == 0 else ttl_hours * 60  # 10 min minimum when TTL=0
+
             with self.asset_manager._get_db() as db:
-                cursor = db.execute("""
-                    SELECT COUNT(*) FROM assets 
-                    WHERE url LIKE ? 
-                    AND discovered_at > datetime('now', '-{} hours')
-                """.format(ttl_hours), (f"%{domain}%",))
+                if ttl_hours == 0:
+                    # Use 10-minute minimum TTL when MODSCAN_TTL_HOURS=0
+                    cursor = db.execute("""
+                        SELECT COUNT(*) FROM assets
+                        WHERE url LIKE ?
+                        AND discovered_at > datetime('now', '-{} minutes')
+                    """.format(min_ttl_minutes), (f"%{domain}%",))
+                else:
+                    cursor = db.execute("""
+                        SELECT COUNT(*) FROM assets
+                        WHERE url LIKE ?
+                        AND discovered_at > datetime('now', '-{} hours')
+                    """.format(ttl_hours), (f"%{domain}%",))
                 recent_discoveries = cursor.fetchone()[0]
-                
+
             if recent_discoveries > 0:
-                logger.info(f"⏭️  Skipping {domain} - {recent_discoveries} recent discoveries within {ttl_hours}h TTL")
+                ttl_description = f"{min_ttl_minutes} minutes" if ttl_hours == 0 else f"{ttl_hours}h"
+                logger.info(f"⏭️  Skipping {domain} - {recent_discoveries} recent discoveries within {ttl_description} TTL")
                 continue
                 
             logger.info(f"🔍 Starting comprehensive discovery for {domain}")
             try:
-                # Run comprehensive discovery to find all endpoints
-                discovered_urls = await self.discovery_engine.comprehensive_discovery(domain)
+                # Run comprehensive discovery with an overall time budget per domain
+                DISCOVERY_BUDGET_SECS = int(os.environ.get('MODSCAN_DISCOVERY_TIMEOUT', '75'))
+                try:
+                    discovered_urls = await asyncio.wait_for(
+                        self.discovery_engine.comprehensive_discovery(domain),
+                        timeout=DISCOVERY_BUDGET_SECS
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"⏱️ Discovery timed out for {domain} after {DISCOVERY_BUDGET_SECS}s; using fast fallback")
+                    # Quick fallback discovery to at least seed some assets
+                    try:
+                        discovered_urls = list(
+                            await asyncio.wait_for(self.discovery_engine._fallback_discovery(domain), timeout=15)
+                        )
+                    except Exception:
+                        discovered_urls = []
                 logger.info(f"🎯 Discovered {len(discovered_urls)} URLs for {domain}")
                 
                 # VALIDATE URLs before saving (only save real endpoints)
@@ -361,7 +505,7 @@ class Engine:
             return []
             
         validated_assets = []
-        timeout = aiohttp.ClientTimeout(total=8)
+        timeout = aiohttp.ClientTimeout(total=8, connect=3)
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
             sem = asyncio.Semaphore(max_concurrent)
@@ -380,11 +524,12 @@ class Engine:
                         c = Counter(segs)
                         if any(v > 3 for v in c.values()) or len(segs) > 10:
                             return
-                        # Validate with GET and follow redirects; require terminal 200/201/202/204/401/403 and same path
+                        # Validate with GET and follow redirects; accept terminal 200/201/202/204/401/403 on same host
                         async with session.get(url, allow_redirects=True) as get_response:
                             status_code = get_response.status
                             final_url = str(get_response.url)
-                            if status_code in (200, 201, 202, 204, 401, 403) and urlsplit(final_url).path == path:
+                            final_sp = urlsplit(final_url)
+                            if status_code in (200, 201, 202, 204, 401, 403) and final_sp.netloc == sp.netloc:
                                 title = f'HTTP {status_code}'
                                 tech_stack = ''
                                 content_length = get_response.headers.get('content-length', 0)
@@ -410,7 +555,7 @@ class Engine:
                                     pass
                                 parsed = urlparse(url)
                                 return {
-                                    'url': url,
+                                    'url': final_url,
                                     'host': parsed.netloc,
                                     'status_code': status_code,
                                     'title': title,
@@ -436,9 +581,33 @@ class Engine:
         logger.info("Tier 2: Starting profiling...")
         # FIXED: Simple direct profiling that actually works
         try:
-            # Dynamic resource adjustment based on CPU usage
+            # Dynamic resource adjustment based on CPU usage and resource monitoring
             resource_status = self._check_cpu_usage()
-            if resource_status == "high":
+
+            # CRITICAL FIX: Emergency cleanup actions for resource exhaustion
+            if resource_status == "resource_exhaustion":
+                logger.error("🚨 EMERGENCY: Running process cleanup to prevent crash")
+                # Force garbage collection and cleanup
+                import gc
+                gc.collect()
+                # Emergency process cleanup
+                self.process_watchdog.run_health_check()
+                batch_limit, concurrency = 1, 1  # Minimal operations
+                sleep_delay = 5
+            elif resource_status == "connection_leak":
+                logger.error("🚨 CONNECTION CLEANUP: Forcing session cleanup")
+                # Force session cleanup in vulnerability scanner
+                if hasattr(self, 'vulnerability_scanner'):
+                    await self.vulnerability_scanner.close_session()
+                batch_limit, concurrency = 3, 2  # Very limited operations
+                sleep_delay = 3
+            elif resource_status == "memory_growth":
+                logger.warning("🧹 MEMORY CLEANUP: Reducing operations and forcing cleanup")
+                import gc
+                gc.collect()
+                batch_limit, concurrency = 5, 3  # Reduced operations
+                sleep_delay = 2
+            elif resource_status == "high":
                 batch_limit, concurrency = 5, 3  # Less conservative - still safe
                 sleep_delay = 1
             elif resource_status == "moderate":
@@ -448,13 +617,24 @@ class Engine:
                 batch_limit, concurrency = 10, 5  # Reduce batch, normal concurrency
                 sleep_delay = 0.5
             else:
-                batch_limit, concurrency = 25, 12  # MUCH higher for 10-core VM
-                sleep_delay = 0.2
+                # AGGRESSIVE SCALING: When resources are LOW, scale up significantly for faster coverage
+                batch_limit, concurrency = 50, 20  # 2x increase for maximum performance
+                sleep_delay = 0.1  # Faster cycles
+                logger.info("🚀 LOW RESOURCE USAGE: Scaling up for maximum vulnerability discovery speed")
                 
             logger.info(f"🎯 Resource status: {resource_status} - Using {concurrency} concurrent, batch {batch_limit}")
             
             # Get assets needing profiling with dynamic limits
             to_profile = self.asset_manager.get_assets_with_missing_data(limit=batch_limit)
+
+            # Filter to run-scope hosts only if set
+            run_scope_hosts = os.environ.get('MODSCAN_RUN_SCOPE_HOSTS')
+            if run_scope_hosts:
+                allowed_hosts = set(run_scope_hosts.split(','))
+                to_profile = [asset for asset in to_profile if asset.get('host') in allowed_hosts]
+                if to_profile:
+                    logger.info(f"🎯 Filtered to run-scope: {len(to_profile)} assets for {', '.join(allowed_hosts)}")
+
             if to_profile:
                 logger.info(f"Tier 2: Profiling {len(to_profile)} newly discovered assets")
                 
@@ -494,7 +674,7 @@ class Engine:
                                                         title = html[start:end].strip()[:50]
                                         except Exception:
                                             title = f'HTTP {status_code}'
-                                            response_body = f"Error capturing response: {str(e)[:100]}"
+                                            response_body = "Error capturing response"
                                     
                                     # Save profiling results with response body for Burp-like testing
                                     self.asset_manager.update_asset_fields(asset_id, {
@@ -574,7 +754,30 @@ class Engine:
             # Get assets equal to worker capacity for maximum throughput (3x workers for good queuing)
             optimal_batch_size = num_workers * 3  # e.g., 64 workers * 3 = 192 assets per batch
             ready_assets = self.asset_manager.get_assets_ready_for_deep_scan(limit=optimal_batch_size)
-            
+
+            # Filter to run-scope hosts only if set
+            run_scope_hosts = os.environ.get('MODSCAN_RUN_SCOPE_HOSTS')
+            if run_scope_hosts:
+                allowed_hosts = set(run_scope_hosts.split(','))
+                ready_assets = [asset for asset in ready_assets if asset.get('host') in allowed_hosts]
+                if ready_assets:
+                    logger.info(f"🎯 Filtered deep scan to run-scope: {len(ready_assets)} assets for {', '.join(allowed_hosts)}")
+
+            # If CLI provided exact URLs, scan them first in this cycle (universal-safe override)
+            forced = []
+            if getattr(self, 'forced_scan_queue', None):
+                forced = list(self.forced_scan_queue)
+                self.forced_scan_queue.clear()
+                if forced:
+                    logger.info(f"🎯 Forced direct scan: {len(forced)} exact URLs from CLI")
+                    try:
+                        await self.parallel_scanner.bulk_scan_targets(
+                            targets=[{'asset_id': a['id'], 'url': a['url'], 'priority': 10, 'status_code': a.get('status_code'), 'tech_stack': a.get('tech_stack','')} for a in forced],
+                            scan_types=['comprehensive']
+                        )
+                    except Exception as e:
+                        logger.error(f"Forced direct scan failed: {e}")
+
             if not ready_assets:
                 logger.info("Tier 3: No assets ready for deep scan.")
                 return
@@ -614,9 +817,49 @@ async def main():
     scanner = Engine()
 
     # Seed scope from CLI targets unless explicitly disabled
-    if args.targets and not args.no_add_scope:
-        added = scanner.seed_scope_targets(args.targets)
-        logger.info(f"🧭 Scope seeding complete: {added}/{len(args.targets)} targets added")
+    direct_urls = []
+    if args.targets:
+        # Convert domains to https URLs and add all as forced scan targets
+        for t in args.targets:
+            if '://' in t:
+                direct_urls.append(t)
+            else:
+                # Convert domain to https URL for forced scanning
+                direct_urls.append(f"https://{t}")
+        if not args.no_add_scope:
+            added = scanner.seed_scope_targets(args.targets)
+            logger.info(f"🧭 Scope seeding complete: {added}/{len(args.targets)} targets added")
+
+    # Prepare forced scan for exact URLs (ensure assets exist and queue them)
+    if direct_urls:
+        try:
+            with scanner.asset_manager._get_db() as db:
+                f = scanner.asset_manager.get_asset_fields()
+                forced_assets = []
+                for u in direct_urls:
+                    row = db.execute(
+                        f"SELECT {f['id']}, {f['url']}, COALESCE({f['status_code']},0), COALESCE({f['tech_stack']},'') FROM assets WHERE {f['url']}=? LIMIT 1",
+                        (u,)
+                    ).fetchone()
+                    if row:
+                        forced_assets.append({'id': row[0], 'url': row[1], 'status_code': row[2], 'tech_stack': row[3]})
+                    else:
+                        db.execute(
+                            f"INSERT INTO assets({f['url']}, {f['host']}, discovered_at, last_scanned) VALUES(?,?,datetime('now'), datetime('now'))",
+                            (u, (urlparse(u).hostname or ''),)
+                        )
+                        aid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+                        forced_assets.append({'id': aid, 'url': u, 'status_code': 0, 'tech_stack': ''})
+                # Mark as not deep scanned so normal selector would also consider them if needed
+                for a in forced_assets:
+                    try:
+                        db.execute("UPDATE assets SET deep_scan_complete=0 WHERE id=?", (a['id'],))
+                    except Exception:
+                        pass
+            scanner.forced_scan_queue = forced_assets
+            logger.info(f"📌 Queued {len(forced_assets)} exact URL(s) for immediate scan")
+        except Exception as e:
+            logger.error(f"Failed to prepare forced scan URLs: {e}")
 
     # Apply runtime toggles via environment (non-invasive)
     if args.no_ttl:
@@ -633,3 +876,13 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("🛑 Engine stopped by user.")
+    except Exception as e:
+        logger.error(f"🚨 Engine crashed: {e}")
+    finally:
+        # Final cleanup - kill any remaining processes
+        logger.info("🧹 Final process cleanup...")
+        try:
+            from process_watchdog import ProcessWatchdog
+            ProcessWatchdog().run_health_check()
+        except Exception:
+            pass
