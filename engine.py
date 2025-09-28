@@ -16,6 +16,7 @@ from datetime import datetime
 import json
 import sys
 import argparse
+import re
 from urllib.parse import urlparse
 
 # Import all modular components
@@ -43,6 +44,21 @@ logger.addHandler(console_handler)
 logging.getLogger('aiohttp').setLevel(logging.WARNING)
 logging.getLogger('asyncio').setLevel(logging.WARNING)
 
+# Propagate core module logs into engine.log for unified visibility
+for name in ("VulnerabilityScanner", "UltimateDiscovery", "ParallelScannerOrchestrator", "process_watchdog"):
+    try:
+        ml = logging.getLogger(name)
+        ml.setLevel(logging.INFO)
+        # Avoid duplicate handlers if re-run
+        existing = {type(h) for h in ml.handlers}
+        if type(file_handler) not in existing:
+            ml.addHandler(file_handler)
+        if type(console_handler) not in existing:
+            ml.addHandler(console_handler)
+        ml.propagate = False
+    except Exception:
+        pass
+
 # Load configuration
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / 'config.json'
@@ -53,12 +69,20 @@ except FileNotFoundError:
     CONFIG = {"cpu_target_utilization": 75, "proxy_list": []}
 
 class Engine:
-    def __init__(self):
+    def __init__(self, domain_auth_overrides: dict | None = None):
         self.asset_manager = AssetManager()
         self.completed_domains = set()
         self.domain_auth = {}
         self.forced_scan_queue = []  # exact URLs requested on CLI for immediate deep scan
         self._load_authentication()
+        # Merge any runtime overrides (e.g., CLI-provided login creds) BEFORE module init
+        try:
+            if domain_auth_overrides and isinstance(domain_auth_overrides, dict):
+                for dom, cfg in domain_auth_overrides.items():
+                    self.domain_auth.setdefault(dom, {}).update(cfg)
+                logger.info(f"🔐 Applied runtime auth overrides for: {', '.join(domain_auth_overrides.keys())}")
+        except Exception:
+            pass
         self._initialize_modules()
     
     
@@ -89,8 +113,15 @@ class Engine:
 
         # Honor config and allow higher utilization on beefy hosts
         self.cpu_target = max(50, min(CONFIG.get("cpu_target_utilization", 85), 95))
-        self.max_concurrent = 15  # INCREASED for better 10-core utilization
+        self.max_concurrent = 8  # REDUCED for more targeted scanning
         self.semaphore = asyncio.Semaphore(self.max_concurrent)
+
+        # Load new efficiency settings
+        self.targeted_mode = CONFIG.get("scanning", {}).get("targeted_mode", False)
+        self.skip_duplicate_tests = CONFIG.get("scanning", {}).get("skip_duplicate_tests", False)
+        self.test_ttl_minutes = CONFIG.get("scanning", {}).get("test_ttl_minutes", 60)
+        self.max_tests_per_endpoint = CONFIG.get("scanning", {}).get("max_tests_per_endpoint", 3)
+        self.focus_on_obvious_vulns = CONFIG.get("scanning", {}).get("focus_on_obvious_vulns", False)
 
         logger.info("🚀 Modular Scanner initialized")
 
@@ -180,48 +211,114 @@ class Engine:
             pass
 
     def _check_cpu_usage(self):
-        """ENHANCED: Monitor CPU, memory, processes, and sessions to prevent resource exhaustion"""
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory_percent = psutil.virtual_memory().percent
+        """🚀 INTRICATE PERFORMANCE MONITORING: CPU, memory, network, I/O for intelligent adaptation"""
+        cpu_percent = psutil.cpu_percent(interval=0.5)  # Faster sampling for 10700K
+        memory = psutil.virtual_memory()
 
-        # CRITICAL FIX: Monitor process and connection counts
+        # 🌐 NETWORK BANDWIDTH INTELLIGENCE for 1GB connection
+        net_io = psutil.net_io_counters()
+        if not hasattr(self, '_last_net_check'):
+            self._last_net_check = {'time': time.time(), 'bytes_sent': net_io.bytes_sent, 'bytes_recv': net_io.bytes_recv}
+            self._bandwidth_history = []
+
+        # Calculate real-time bandwidth utilization
+        time_diff = time.time() - self._last_net_check['time']
+        if time_diff > 1.0:  # Check every second
+            bytes_sent_diff = net_io.bytes_sent - self._last_net_check['bytes_sent']
+            bytes_recv_diff = net_io.bytes_recv - self._last_net_check['bytes_recv']
+
+            # Convert to Mbps
+            current_upload_mbps = (bytes_sent_diff * 8) / (time_diff * 1000000)
+            current_download_mbps = (bytes_recv_diff * 8) / (time_diff * 1000000)
+            total_bandwidth_mbps = current_upload_mbps + current_download_mbps
+
+            # Track bandwidth history for intelligent scaling
+            self._bandwidth_history.append(total_bandwidth_mbps)
+            if len(self._bandwidth_history) > 60:  # Keep 1 minute history
+                self._bandwidth_history.pop(0)
+
+            self._last_net_check = {'time': time.time(), 'bytes_sent': net_io.bytes_sent, 'bytes_recv': net_io.bytes_recv}
+
+            # 1GB = 1000 Mbps - calculate utilization
+            bandwidth_utilization = total_bandwidth_mbps / 1000.0
+            if len(self._bandwidth_history) > 0:
+                avg_bandwidth = sum(self._bandwidth_history[-10:]) / min(10, len(self._bandwidth_history))
+                logger.debug(f"🌐 Network: {total_bandwidth_mbps:.1f} Mbps current, {avg_bandwidth:.1f} Mbps avg ({bandwidth_utilization*100:.1f}% of 1GB)")
+
+        # 🔧 ADVANCED PROCESS MONITORING
         try:
             current_process = psutil.Process()
             open_files = len(current_process.open_files())
             connections = len(current_process.connections())
             memory_mb = current_process.memory_info().rss / 1024 / 1024
 
-            # Check for resource exhaustion patterns
-            if open_files > 800:  # File descriptor limit approaching
-                logger.error(f"🚨 RESOURCE EXHAUSTION: {open_files} open files - EMERGENCY CLEANUP NEEDED")
-                return "resource_exhaustion"
-            elif connections > 500:  # Too many network connections
-                logger.error(f"🚨 CONNECTION LEAK: {connections} open connections - SESSION CLEANUP NEEDED")
-                return "connection_leak"
-            elif memory_mb > 2000:  # Process using > 2GB
-                logger.warning(f"🚨 MEMORY GROWTH: {memory_mb:.0f}MB process memory - CLEANUP RECOMMENDED")
-                return "memory_growth"
-        except Exception as e:
-            logger.debug(f"Resource monitoring failed: {e}")
+            # 10700K + 32GB: Higher thresholds for high-end hardware
+            if open_files > 1200:  # Higher limit for powerful system
+                logger.error(f"🚨 CRITICAL: {open_files} open files - EMERGENCY THROTTLING")
+                return "critical_resources"
+            elif connections > 1000:  # 1GB connection can handle more
+                logger.error(f"🚨 CONNECTION SATURATION: {connections} connections - AGGRESSIVE THROTTLING")
+                return "connection_saturation"
+            elif memory_mb > 8000:  # 8GB+ indicates serious issues on 32GB system
+                logger.error(f"🚨 MEMORY CRITICAL: {memory_mb:.0f}MB - EMERGENCY CLEANUP")
+                return "memory_critical"
+            elif memory_mb > 6000:  # 6GB warning on 32GB system
+                logger.warning(f"⚠️ MEMORY HIGH: {memory_mb:.0f}MB - THROTTLING RECOMMENDED")
+                return "memory_high"
 
-        if cpu_percent > 75:
-            logger.warning(f"⚠️  HIGH CPU: {cpu_percent}% - Reducing concurrency")
-            return "high"
-        elif cpu_percent > 60:
-            logger.info(f"🔶 MODERATE CPU: {cpu_percent}% - Normal operations")
-            return "moderate"
-        elif memory_percent > 80:
-            logger.warning(f"⚠️  HIGH MEMORY: {memory_percent}% - Reducing batch sizes")
-            return "high_memory"
-        else:
-            logger.debug(f"✅ LOW USAGE: CPU {cpu_percent}%, Memory {memory_percent}%")
-            return "low"
+        except Exception as e:
+            logger.debug(f"Advanced resource monitoring failed: {e}")
+
+        # 🚀 INTELLIGENT SCALING FOR HIGH-END HARDWARE
+
+        # Network bandwidth scaling (utilize 1GB connection fully)
+        if hasattr(self, '_bandwidth_history') and len(self._bandwidth_history) > 5:
+            recent_bandwidth = sum(self._bandwidth_history[-5:]) / min(5, len(self._bandwidth_history))
+            bandwidth_utilization = recent_bandwidth / 1000.0  # 1GB = 1000 Mbps
+
+            # Aggressive scaling when network is underutilized
+            if bandwidth_utilization < 0.2 and cpu_percent < 40 and memory.percent < 50:
+                logger.info(f"🚀 AGGRESSIVE SCALE: Network {bandwidth_utilization*100:.1f}%, CPU {cpu_percent}%, RAM {memory.percent}%")
+                return "aggressive_scale"
+            elif bandwidth_utilization > 0.85:  # Near saturation
+                logger.warning(f"🌐 BANDWIDTH LIMIT: {bandwidth_utilization*100:.1f}% of 1GB - THROTTLING")
+                return "bandwidth_limited"
+
+        # CPU scaling optimized for 10700K (10 cores, 20 threads)
+        if cpu_percent > 90:  # Very high threshold for 10700K
+            logger.warning(f"🔥 CRITICAL CPU: {cpu_percent}% - EMERGENCY THROTTLING")
+            return "cpu_critical"
+        elif cpu_percent > 75:
+            logger.warning(f"🔥 HIGH CPU: {cpu_percent}% - REDUCING CONCURRENCY")
+            return "cpu_high"
+        elif cpu_percent > 50:
+            logger.info(f"🔶 MODERATE CPU: {cpu_percent}% - STABLE OPERATIONS")
+            return "cpu_moderate"
+        elif cpu_percent < 25:  # 10700K has massive headroom
+            logger.debug(f"✅ LOW CPU: {cpu_percent}% - MASSIVE SCALE UP OPPORTUNITY")
+            return "cpu_low"
+
+        # Memory scaling optimized for 32GB
+        if memory.percent > 90:  # Very high threshold for 32GB
+            logger.warning(f"💾 CRITICAL MEMORY: {memory.percent}% - EMERGENCY THROTTLING")
+            return "memory_critical"
+        elif memory.percent > 75:
+            logger.warning(f"💾 HIGH MEMORY: {memory.percent}% - REDUCING BATCH SIZES")
+            return "memory_high"
+        elif memory.percent < 30:  # Massive RAM available
+            logger.debug(f"💾 LOW MEMORY: {memory.percent}% - CAN MASSIVELY INCREASE BATCHES")
+            return "memory_low"
+
+        # Default: System performing optimally
+        logger.debug(f"✅ OPTIMAL: CPU {cpu_percent}%, RAM {memory.percent}%")
+        return "optimal"
 
     def _load_authentication(self):
         """Load lightweight domain-level auth/cookie hints from config.
 
         Populates self.domain_auth with per-domain headers such as Cookie or Authorization that
         downstream modules (e.g., discovery engine) can consult. This stays optional and safe.
+        Also loads login credentials for automatic authentication.
         """
         try:
             domain_auth: dict[str, dict] = {}
@@ -250,6 +347,24 @@ class Engine:
                     cookie_header = '; '.join(f"{k}={v}" for k, v in cookie_map.items() if k and v)
                     if cookie_header:
                         domain_auth[str(dom).lstrip('.')]= {'Cookie': cookie_header}
+
+                    # Handle login credentials for automatic authentication
+                    login_config = (entry.get('login') or {}) if isinstance(entry, dict) else {}
+                    if login_config and isinstance(login_config, dict):
+                        login_url = login_config.get('url')
+                        username = login_config.get('username')
+                        password = login_config.get('password')
+                        if login_url and username and password:
+                            # Store login credentials in domain_auth for AuthManager
+                            if str(dom).lstrip('.') not in domain_auth:
+                                domain_auth[str(dom).lstrip('.')] = {}
+                            domain_auth[str(dom).lstrip('.')]['login'] = {
+                                'url': login_url,
+                                'username': username,
+                                'password': password
+                            }
+                            logger.info(f"🔐 Loaded login credentials for {dom}")
+
                 except Exception:
                     continue
             # Authorized domains can be used by scanners as permissive hints
@@ -353,6 +468,30 @@ class Engine:
                         logger.error(f"Tier {tier_name} failed: {result}")
                     else:
                         logger.info(f"Tier {tier_name} completed successfully")
+
+                # Cycle summary: vulnerabilities found in the last 10 minutes
+                try:
+                    from asset_manager import AssetManager
+                    am = self.asset_manager if hasattr(self, 'asset_manager') else AssetManager()
+                    recent = []
+                    try:
+                        recent = am.get_recent_vulnerabilities(minutes=10)  # compat shim present
+                    except Exception:
+                        pass
+                    if recent:
+                        # Aggregate by type and severity for a concise summary
+                        by_type = {}
+                        by_sev = {}
+                        for r in recent:
+                            t = (r.get('type') or '').upper()
+                            s = (r.get('severity') or '').upper()
+                            by_type[t] = by_type.get(t, 0) + 1
+                            by_sev[s] = by_sev.get(s, 0) + 1
+                        logger.info(f"📊 Cycle Summary: {len(recent)} vulns found in last 10m | Top types: {sorted(by_type.items(), key=lambda x: -x[1])[:5]} | Severity: {sorted(by_sev.items(), key=lambda x: -x[1])}")
+                    else:
+                        logger.info("📊 Cycle Summary: 0 vulnerabilities found in last 10m")
+                except Exception as e:
+                    logger.debug(f"Cycle summary failed: {e}")
                 
                 await asyncio.sleep(5)
                 
@@ -381,45 +520,64 @@ class Engine:
     # initialize_all_modules removed; modules are constructed synchronously in __init__
 
     def monitor_and_adjust_performance(self):
-        """Monitor system resources and adjust scanner performance dynamically"""
+        """🚀 INTRICATE PERFORMANCE MONITORING: Intelligent adaptation for 10700K + 32GB + 1GB"""
         load_status = self._check_cpu_usage()
-        
-        # Adjust parallel scanner based on system load
+
+        # Adjust parallel scanner based on INTRICATE system analysis
         if hasattr(self, 'parallel_scanner') and self.parallel_scanner:
             current_workers = getattr(self.parallel_scanner, 'num_workers', 64)
-            
-            if load_status in ["resource_exhaustion", "connection_leak", "memory_growth"]:
+
+            # 🚨 CRITICAL RESOURCE CONDITIONS
+            if load_status in ["critical_resources", "connection_saturation", "memory_critical"]:
                 # EMERGENCY: Drastically reduce workers to prevent crash
-                new_workers = max(1, current_workers // 4)
-                logger.error(f"🚨 {load_status.upper()}: Emergency worker reduction {current_workers} → {new_workers}")
+                new_workers = max(1, current_workers // 6)  # More aggressive for high-end system
+                logger.error(f"🚨 {load_status.upper()}: EMERGENCY worker reduction {current_workers} → {new_workers}")
                 self.parallel_scanner.num_workers = new_workers
 
-            elif load_status == "high":
-                # High CPU/Memory: Reduce workers by 50%
-                new_workers = max(2, current_workers // 2)
-                logger.warning(f"🔥 HIGH LOAD: Reducing workers {current_workers} → {new_workers}")
+            elif load_status == "bandwidth_limited":
+                # Network saturated: Reduce by 40% to prevent packet loss
+                new_workers = max(5, int(current_workers * 0.6))
+                logger.warning(f"🌐 BANDWIDTH SATURATED: Reducing workers {current_workers} → {new_workers}")
                 self.parallel_scanner.num_workers = new_workers
-                
-            elif load_status == "high_memory":
-                # High Memory: Reduce workers by 25%  
-                new_workers = max(4, int(current_workers * 0.75))
-                logger.warning(f"💾 HIGH MEMORY: Reducing workers {current_workers} → {new_workers}")
+
+            elif load_status in ["cpu_critical", "memory_high"]:
+                # High resource usage: Reduce by 50%
+                new_workers = max(3, current_workers // 2)
+                logger.warning(f"🔥 {load_status.upper()}: Reducing workers {current_workers} → {new_workers}")
                 self.parallel_scanner.num_workers = new_workers
-                
-            elif load_status == "moderate":
-                # Moderate load: Slight reduction
-                new_workers = max(8, int(current_workers * 0.9))
+
+            elif load_status in ["cpu_high", "memory_high"]:
+                # High usage: Moderate reduction (25%)
+                new_workers = max(8, int(current_workers * 0.75))
+                logger.warning(f"⚠️ {load_status.upper()}: Moderating workers {current_workers} → {new_workers}")
+                self.parallel_scanner.num_workers = new_workers
+
+            elif load_status == "cpu_moderate":
+                # Stable operations: Minor adjustment
+                new_workers = max(12, int(current_workers * 0.95))
                 if new_workers != current_workers:
-                    logger.info(f"🔶 MODERATE LOAD: Adjusting workers {current_workers} → {new_workers}")
+                    logger.info(f"🔶 STABLE: Minor adjustment {current_workers} → {new_workers}")
                     self.parallel_scanner.num_workers = new_workers
-                    
-            elif load_status == "low":
-                # AGGRESSIVE SCALING: Low load means we can significantly increase workers for faster coverage
-                cpu_cores = os.cpu_count() or 4
-                original_max = min(64, cpu_cores * 4)  # 4x CPU cores when resources abundant
-                if current_workers < original_max:
-                    new_workers = min(original_max, int(current_workers * 1.1))
-                    logger.info(f"✅ LOW LOAD: Scaling up workers {current_workers} → {new_workers}")
+
+            # 🚀 AGGRESSIVE SCALING CONDITIONS for high-end hardware
+            elif load_status == "aggressive_scale":
+                # Network + CPU + RAM all underutilized: MASSIVE SCALE UP
+                cpu_cores = os.cpu_count() or 10
+                max_workers = min(100, cpu_cores * 8)  # 8x cores for massive parallelism
+                new_workers = min(max_workers, int(current_workers * 1.5))  # 50% increase
+                logger.info(f"🚀 AGGRESSIVE SCALE: MASSIVE boost {current_workers} → {new_workers}")
+                self.parallel_scanner.num_workers = new_workers
+
+            elif load_status in ["cpu_low", "memory_low", "optimal"]:
+                # System has headroom: Scale up intelligently
+                cpu_cores = os.cpu_count() or 10
+                # 10700K: Can handle 6x cores safely, 8x aggressively
+                target_max = min(80, cpu_cores * 6) if load_status == "optimal" else min(60, cpu_cores * 4)
+
+                if current_workers < target_max:
+                    scale_factor = 1.3 if load_status == "cpu_low" else 1.15  # More aggressive for CPU headroom
+                    new_workers = min(target_max, int(current_workers * scale_factor))
+                    logger.info(f"✅ {load_status.upper()}: Scaling up {current_workers} → {new_workers}")
                     self.parallel_scanner.num_workers = new_workers
 
     async def _tier1_modular_discovery(self):
@@ -440,50 +598,123 @@ class Engine:
                 continue
             
             # CRITICAL FIX: Check if we recently discovered this domain (TTL check)
-            # ALWAYS enforce minimum 10 minute TTL even when MODSCAN_TTL_HOURS=0 to prevent infinite rediscovery
             ttl_hours = int(os.environ.get('MODSCAN_TTL_HOURS', '6'))  # Default 6 hours TTL
-            min_ttl_minutes = 10 if ttl_hours == 0 else ttl_hours * 60  # 10 min minimum when TTL=0
 
-            with self.asset_manager._get_db() as db:
-                if ttl_hours == 0:
-                    # Use 10-minute minimum TTL when MODSCAN_TTL_HOURS=0
-                    cursor = db.execute("""
-                        SELECT COUNT(*) FROM assets
-                        WHERE url LIKE ?
-                        AND discovered_at > datetime('now', '-{} minutes')
-                    """.format(min_ttl_minutes), (f"%{domain}%",))
-                else:
+            # RESPECT --no-ttl FLAG: Skip TTL check completely when MODSCAN_TTL_HOURS=0
+            if ttl_hours > 0:
+                with self.asset_manager._get_db() as db:
                     cursor = db.execute("""
                         SELECT COUNT(*) FROM assets
                         WHERE url LIKE ?
                         AND discovered_at > datetime('now', '-{} hours')
                     """.format(ttl_hours), (f"%{domain}%",))
-                recent_discoveries = cursor.fetchone()[0]
+                    recent_discoveries = cursor.fetchone()[0]
 
-            if recent_discoveries > 0:
-                ttl_description = f"{min_ttl_minutes} minutes" if ttl_hours == 0 else f"{ttl_hours}h"
-                logger.info(f"⏭️  Skipping {domain} - {recent_discoveries} recent discoveries within {ttl_description} TTL")
-                continue
+                if recent_discoveries > 0:
+                    logger.info(f"⏭️  Skipping {domain} - {recent_discoveries} recent discoveries within {ttl_hours}h TTL")
+                    continue
                 
             logger.info(f"🔍 Starting comprehensive discovery for {domain}")
             try:
-                # Run comprehensive discovery with an overall time budget per domain
-                DISCOVERY_BUDGET_SECS = int(os.environ.get('MODSCAN_DISCOVERY_TIMEOUT', '75'))
+                # GAU-FIRST APPROACH: Get historical URLs immediately for instant vuln scanning
+                logger.info(f"⚡ GAU-FIRST DISCOVERY: {domain}")
+
+                # Step 1: Fast GAU for instant URLs (20s max)
+                gau_urls = set()
                 try:
-                    discovered_urls = await asyncio.wait_for(
-                        self.discovery_engine.comprehensive_discovery(domain),
-                        timeout=DISCOVERY_BUDGET_SECS
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(f"⏱️ Discovery timed out for {domain} after {DISCOVERY_BUDGET_SECS}s; using fast fallback")
-                    # Quick fallback discovery to at least seed some assets
-                    try:
-                        discovered_urls = list(
-                            await asyncio.wait_for(self.discovery_engine._fallback_discovery(domain), timeout=15)
+                    if not self.discovery_engine._is_internal_ip(domain):
+                        gau_results = await self.discovery_engine._run_gau(domain)
+                        gau_urls.update(gau_results)
+                        logger.info(f"⚡ GAU: {len(gau_urls)} instant URLs for immediate testing")
+                    else:
+                        logger.info("⏭️ Skipping GAU for internal target")
+                except Exception as e:
+                    logger.warning(f"GAU failed: {e}")
+
+                # Step 2: Immediate vulnerability scanning on GAU URLs
+                if gau_urls:
+                    logger.info(f"🔥 IMMEDIATE VULN SCAN: Testing {len(gau_urls)} GAU URLs")
+                    # Store GAU URLs first for immediate scanning
+                    validated_gau = await self._validate_discovered_urls(list(gau_urls))
+                    if validated_gau:
+                        self.asset_manager.add_assets_batch(validated_gau, discovery_method="gau_instant")
+                        logger.info(f"⚡ STORED: {len(validated_gau)} GAU URLs ready for immediate vuln testing")
+
+                # Step 3: Fast additional discovery in parallel (30s max) - RESPECT TARGETED MODE
+                additional_urls = set()
+                discovered_urls = []  # Ensure variable exists for later references
+                try:
+                    FAST_DISCOVERY_TIMEOUT = 30
+
+                    # Use targeted discovery if enabled
+                    if self.targeted_mode:
+                        logger.info(f"🎯 TARGETED MODE: Using focused discovery for {domain}")
+                        discovered_urls = await asyncio.wait_for(
+                            self.discovery_engine.comprehensive_discovery(domain),
+                            timeout=FAST_DISCOVERY_TIMEOUT
                         )
-                    except Exception:
-                        discovered_urls = []
-                logger.info(f"🎯 Discovered {len(discovered_urls)} URLs for {domain}")
+                    else:
+                        discovered_urls = await asyncio.wait_for(
+                            self.discovery_engine._fast_streamlined_discovery(domain),
+                            timeout=FAST_DISCOVERY_TIMEOUT
+                        )
+
+                    additional_urls.update(discovered_urls)
+                    logger.info(f"⚡ FAST: {len(additional_urls)} additional URLs from {'targeted' if self.targeted_mode else 'streamlined'} discovery")
+                except asyncio.TimeoutError:
+                    logger.info(f"⚡ Fast discovery completed within {FAST_DISCOVERY_TIMEOUT}s")
+                except Exception as e:
+                    logger.warning(f"Fast discovery failed: {e}")
+
+                # Combine all URLs
+                all_discovered = gau_urls | additional_urls
+                logger.info(f"🎯 TOTAL DISCOVERED: {len(all_discovered)} URLs for {domain}")
+
+                # Store ALL discovered URLs for vulnerability scanning
+                if all_discovered:
+                    logger.info(f"💾 STORING DISCOVERED URLS: Validating {len(all_discovered)} URLs")
+                    validated_all = await self._validate_discovered_urls(list(all_discovered))
+                    if validated_all:
+                        self.asset_manager.add_assets_batch(validated_all, discovery_method="comprehensive_challenge")
+                        logger.info(f"💾 STORED: {len(validated_all)} total URLs ready for vulnerability testing")
+                    else:
+                        logger.warning("⚠️ No valid endpoints found in comprehensive discovery")
+
+                # EXTRA: If we found port bases but few/no paths on them, run per-port discovery now
+                try:
+                    from urllib.parse import urlsplit
+                    port_bases = set()
+                    for u in discovered_urls or []:
+                        try:
+                            sp = urlsplit(u)
+                            if sp.netloc and ':' in sp.netloc:
+                                host, port = sp.netloc.split(':', 1)
+                                if port not in ('80', '443'):
+                                    port_bases.add(f"{sp.scheme}://{host}:{port}")
+                        except Exception:
+                            continue
+
+                    if port_bases:
+                        logger.info(f"🛠️  Verifying {len(port_bases)} discovered ports for deeper paths")
+                        extra_urls = set()
+                        per_port_budget = int(os.environ.get('MODSCAN_PORT_DISCOVERY_TIMEOUT', '45'))
+                        for base in list(port_bases)[:8]:  # sanity cap
+                            # Only trigger if we have nothing beyond the base
+                            has_paths = any((str(u).startswith(base + '/') and len(str(u)) > len(base) + 1) for u in discovered_urls)
+                            if not has_paths:
+                                try:
+                                    addl = await asyncio.wait_for(
+                                        self.discovery_engine._tier7_universal_port_discovery(base),
+                                        timeout=per_port_budget
+                                    )
+                                    extra_urls.update(addl or [])
+                                    logger.info(f"🔎 Port {base}: +{len(addl or [])} URLs")
+                                except Exception as e:
+                                    logger.debug(f"Port {base} extra discovery skipped/failed: {e}")
+                        if extra_urls:
+                            discovered_urls = list(set(discovered_urls or []) | extra_urls)
+                except Exception as e:
+                    logger.debug(f"Post-discovery port enrichment failed: {e}")
                 
                 # VALIDATE URLs before saving (only save real endpoints)
                 if discovered_urls:
@@ -506,7 +737,47 @@ class Engine:
             
         validated_assets = []
         timeout = aiohttp.ClientTimeout(total=8, connect=3)
-        
+
+        challenge_segment_keywords = {
+            'mission', 'missions', 'challenge', 'challenges', 'level', 'levels', 'stage', 'stages',
+            'exercise', 'exercises', 'task', 'tasks', 'quest', 'quests', 'lab', 'labs', 'dojo',
+            'training', 'practice', 'ctf', 'wargame', 'capture', 'flag', 'arena', 'lesson',
+            'lessons', 'module', 'modules', 'scenario', 'scenarios'
+        }
+        challenge_host_keywords = {
+            'ctf', 'wargame', 'challenge', 'hack', 'training', 'missions', 'dojo', 'lab', 'labs',
+            'quest', 'practice', 'capture', 'flag'
+        }
+        ordinal_patterns = (
+            r'^(?:mission|challenge|level|stage|task|quest|lab|module|lesson)[-_]?\d+$',
+            r'^(?:level|stage|mission)[0-9]+(?:[a-z])?$',
+        )
+
+        def _looks_like_challenge(host: str, segments: list[str]) -> bool:
+            host_lower = (host or '').lower()
+            seg_lowers = [seg.lower() for seg in segments]
+            path_lower = '/'.join(seg_lowers)
+
+            score = 0
+            if any(keyword in host_lower for keyword in challenge_host_keywords):
+                score += 1
+
+            if any(any(keyword in seg for keyword in challenge_segment_keywords) for seg in seg_lowers):
+                score += 1
+
+            numeric_segments = sum(1 for seg in seg_lowers if seg.isdigit())
+            if numeric_segments:
+                score += 1
+
+            if any(re.match(pattern, seg) for pattern in ordinal_patterns for seg in seg_lowers):
+                score += 1
+
+            path_indicators = ('/ctf', '/missions', '/challenge', '/quest', '/level', '/stage', '/task')
+            if any(ind in path_lower for ind in path_indicators):
+                score += 1
+
+            return score >= 2
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
             sem = asyncio.Semaphore(max_concurrent)
             
@@ -517,19 +788,35 @@ class Engine:
                         sp = urlsplit(url)
                         path = sp.path or '/'
                         segs = [seg for seg in path.split('/') if seg]
-                        # Skip synthetic-looking paths: file-with-dot before last segment or repeated segments
-                        if any('.' in seg for seg in segs[:-1]):
+
+                        # Allow challenge/CTF URLs - less restrictive validation
+                        # Skip obvious synthetic paths but allow numbered challenges
+                        if len(segs) > 15:  # Increased from 10
                             return
-                        from collections import Counter
-                        c = Counter(segs)
-                        if any(v > 3 for v in c.values()) or len(segs) > 10:
-                            return
+
+                        is_challenge_url = _looks_like_challenge(sp.netloc, segs)
+
+                        if not is_challenge_url:
+                            # Apply stricter validation only for non-challenge URLs
+                            if any('.' in seg for seg in segs[:-1]):
+                                return
+                            from collections import Counter
+                            c = Counter(segs)
+                            if any(v > 3 for v in c.values()):
+                                return
                         # Validate with GET and follow redirects; accept terminal 200/201/202/204/401/403 on same host
                         async with session.get(url, allow_redirects=True) as get_response:
                             status_code = get_response.status
                             final_url = str(get_response.url)
                             final_sp = urlsplit(final_url)
-                            if status_code in (200, 201, 202, 204, 401, 403) and final_sp.netloc == sp.netloc:
+
+                            # More permissive status codes for challenge URLs
+                            if is_challenge_url:
+                                accepted_codes = (200, 201, 202, 204, 301, 302, 307, 308, 401, 403, 404, 500)
+                            else:
+                                accepted_codes = (200, 201, 202, 204, 401, 403)
+
+                            if status_code in accepted_codes and final_sp.netloc == sp.netloc:
                                 title = f'HTTP {status_code}'
                                 tech_stack = ''
                                 content_length = get_response.headers.get('content-length', 0)
@@ -755,13 +1042,24 @@ class Engine:
             optimal_batch_size = num_workers * 3  # e.g., 64 workers * 3 = 192 assets per batch
             ready_assets = self.asset_manager.get_assets_ready_for_deep_scan(limit=optimal_batch_size)
 
-            # Filter to run-scope hosts only if set
+            # Filter to run-scope hosts only if set (derive host from URL when missing)
             run_scope_hosts = os.environ.get('MODSCAN_RUN_SCOPE_HOSTS')
             if run_scope_hosts:
-                allowed_hosts = set(run_scope_hosts.split(','))
-                ready_assets = [asset for asset in ready_assets if asset.get('host') in allowed_hosts]
-                if ready_assets:
-                    logger.info(f"🎯 Filtered deep scan to run-scope: {len(ready_assets)} assets for {', '.join(allowed_hosts)}")
+                allowed_hosts = set(h.strip().lower().lstrip('.') for h in run_scope_hosts.split(',') if h.strip())
+                def _asset_host(a):
+                    try:
+                        h = (a.get('host') or '').strip().lower()
+                        if not h:
+                            h = (urlparse(a.get('url', '')).hostname or '').strip().lower()
+                        return h.lstrip('.')
+                    except Exception:
+                        return ''
+                filtered = [asset for asset in ready_assets if _asset_host(asset) in allowed_hosts]
+                if filtered:
+                    logger.info(f"🎯 Filtered deep scan to run-scope: {len(filtered)} assets for {', '.join(sorted(allowed_hosts))}")
+                    ready_assets = filtered
+                else:
+                    logger.info("🎯 Run-scope filter left 0 assets; skipping deep scan this cycle")
 
             # If CLI provided exact URLs, scan them first in this cycle (universal-safe override)
             forced = []
@@ -773,7 +1071,7 @@ class Engine:
                     try:
                         await self.parallel_scanner.bulk_scan_targets(
                             targets=[{'asset_id': a['id'], 'url': a['url'], 'priority': 10, 'status_code': a.get('status_code'), 'tech_stack': a.get('tech_stack','')} for a in forced],
-                            scan_types=['comprehensive']
+                            scan_types=['adaptive', 'comprehensive']
                         )
                     except Exception as e:
                         logger.error(f"Forced direct scan failed: {e}")
@@ -784,6 +1082,13 @@ class Engine:
 
             logger.info(f"Tier 3: MAXIMUM UTILIZATION - Parallel scanning {len(ready_assets)} assets across {num_workers} workers.")
             
+            # Prioritize login/auth endpoints first for better credential coverage
+            def _priority_key(a):
+                u = (a.get('url') or '').lower()
+                hints = ['login','signin','logon','auth','account/login']
+                return 0 if any(h in u for h in hints) else 1
+            ready_assets = sorted(ready_assets, key=_priority_key)
+
             # Convert assets to parallel scan tasks (preserve status/tech for smarter scans)
             scan_tasks = []
             for asset in ready_assets:
@@ -798,7 +1103,7 @@ class Engine:
             # Execute parallel scan with all vulnerability types
             await self.parallel_scanner.bulk_scan_targets(
                 targets=scan_tasks,
-                scan_types=['comprehensive']  # Test all vulnerability types
+                scan_types=['adaptive', 'comprehensive']  # Run adaptive planner before legacy sweep
             )
 
         except Exception as e:
@@ -809,26 +1114,98 @@ async def main():
     parser = argparse.ArgumentParser(prog="modscan-engine", add_help=True)
     parser.add_argument('targets', nargs='*', help='Domains or URLs to add to scope')
     parser.add_argument('--no-ttl', action='store_true', help='Disable TTL for this run (fresh discovery)')
+    parser.add_argument('--ttl-hours', type=int, default=None, help='Set TTL hours (0 disables TTL)')
     parser.add_argument('--max-cycles', type=int, default=None, help='Override scan cycle limit')
     parser.add_argument('--no-add-scope', action='store_true', help='Do not add positional targets to scope')
+    parser.add_argument('--run-scope', type=str, default=None, help='Comma-separated list of hosts to isolate run scope (no env export needed)')
+    parser.add_argument('--quiet', action='store_true', help='Reduce console output (warnings and errors only)')
+    parser.add_argument('--debug', action='store_true', help='Verbose debug output for troubleshooting')
+    parser.add_argument('--retest-all', action='store_true', help='Ignore prior findings/test history and retest everything')
+    parser.add_argument('--login', type=str, default=None, help='Login credentials in format: url,username,password')
+    # New: explicit flags for login URL/user/pass (alternative to --login)
+    parser.add_argument('--login-url', type=str, default=None, help='Login URL for automatic authentication')
+    parser.add_argument('--login-user', type=str, default=None, help='Username/email for login')
+    parser.add_argument('--login-pass', type=str, default=None, help='Password for login')
     args, _ = parser.parse_known_args(sys.argv[1:])
 
-    logger.info("🚀 Starting ModScan Engine...")
-    scanner = Engine()
+    # Apply run-scope isolation before engine initialization so all modules honor it
+    run_scope_hosts = []
+    if args.run_scope:
+        try:
+            run_scope_hosts = [h.strip() for h in args.run_scope.split(',') if h.strip()]
+            if run_scope_hosts:
+                os.environ['MODSCAN_RUN_SCOPE_HOSTS'] = ','.join(run_scope_hosts)
+                logger.info(f"🎯 Run scope isolated to: {', '.join(run_scope_hosts)}")
+                if not os.environ.get('MODSCAN_DISABLE_MASSIVE_DISCOVERY'):
+                    os.environ['MODSCAN_DISABLE_MASSIVE_DISCOVERY'] = 'true'
+                if not os.environ.get('MODSCAN_DISABLE_INTELLIGENT_DIRECTORY'):
+                    os.environ['MODSCAN_DISABLE_INTELLIGENT_DIRECTORY'] = 'true'
+                if not os.environ.get('MODSCAN_DISABLE_TIER7_UNIVERSAL'):
+                    os.environ['MODSCAN_DISABLE_TIER7_UNIVERSAL'] = 'true'
+                if not os.environ.get('MODSCAN_DISABLE_FFUF_RECURSIVE'):
+                    os.environ['MODSCAN_DISABLE_FFUF_RECURSIVE'] = 'true'
+        except Exception as e:
+            logger.warning(f"Failed to parse --run-scope: {e}")
+            run_scope_hosts = []
+
+    # Handle CLI login credentials (both --login and explicit flags)
+    cli_login_creds = None
+    try:
+        login_url = None
+        username = None
+        password = None
+        if args.login:
+            parts = [p.strip() for p in args.login.split(',')]
+            if len(parts) == 3:
+                login_url, username, password = parts
+            else:
+                logger.warning("❌ Invalid --login format. Use: --login 'url,username,password'")
+        # Explicit flags override combined if provided
+        if args.login_url and args.login_user and args.login_pass:
+            login_url = args.login_url.strip()
+            username = args.login_user.strip()
+            password = args.login_pass.strip()
+        if login_url and username and password:
+            domain = urlparse(login_url).hostname
+            if domain:
+                cli_login_creds = {
+                    domain: {
+                        'login': {
+                            'url': login_url,
+                            'username': username,
+                            'password': password
+                        }
+                    }
+                }
+                logger.info(f"🔐 CLI login credentials prepared for {domain}")
+            else:
+                logger.warning("❌ Invalid login URL format - could not extract domain")
+    except Exception as e:
+        logger.warning(f"❌ Failed to parse CLI login credentials: {e}")
+
+    logger.info("�� Starting ModScan Engine...")
+    # Pass CLI-provided login/auth to Engine so modules see them at init time
+    scanner = Engine(domain_auth_overrides=cli_login_creds or {})
 
     # Seed scope from CLI targets unless explicitly disabled
     direct_urls = []
     if args.targets:
-        # Convert domains to https URLs and add all as forced scan targets
         for t in args.targets:
             if '://' in t:
                 direct_urls.append(t)
             else:
-                # Convert domain to https URL for forced scanning
                 direct_urls.append(f"https://{t}")
         if not args.no_add_scope:
             added = scanner.seed_scope_targets(args.targets)
             logger.info(f"🧭 Scope seeding complete: {added}/{len(args.targets)} targets added")
+
+    # Ensure run-scope hosts are seeded after engine creation if requested
+    if run_scope_hosts and not args.no_add_scope:
+        try:
+            added2 = scanner.seed_scope_targets(run_scope_hosts)
+            logger.info(f"🧭 Run-scope seeding complete: {added2}/{len(run_scope_hosts)} targets added")
+        except Exception:
+            pass
 
     # Prepare forced scan for exact URLs (ensure assets exist and queue them)
     if direct_urls:
@@ -865,9 +1242,46 @@ async def main():
     if args.no_ttl:
         os.environ['MODSCAN_TTL_HOURS'] = '0'
         logger.info("⏱️ TTL disabled for this run (MODSCAN_TTL_HOURS=0)")
+    elif isinstance(args.ttl_hours, int) and args.ttl_hours >= 0:
+        os.environ['MODSCAN_TTL_HOURS'] = str(args.ttl_hours)
+        logger.info(f"⏱️ TTL set to {args.ttl_hours}h for this run")
     if isinstance(args.max_cycles, int) and args.max_cycles > 0:
         os.environ['MODSCAN_MAX_CYCLES'] = str(args.max_cycles)
         logger.info(f"🔁 Max scan cycles set to {args.max_cycles}")
+
+    # Adjust logging verbosity after init if requested
+    try:
+        if args.debug and not args.quiet:
+            lvl = logging.DEBUG
+        elif args.quiet and not args.debug:
+            lvl = logging.WARNING
+        else:
+            lvl = logging.INFO
+        # Root and our logger
+        logging.getLogger().setLevel(lvl)
+        logger.setLevel(lvl)
+        for h in logger.handlers:
+            try:
+                h.setLevel(lvl)
+            except Exception:
+                pass
+        # Quiet common module loggers too
+        for name in ("process_watchdog", "UltimateDiscovery", "VulnerabilityScanner", "ParallelScannerOrchestrator"):
+            try:
+                logging.getLogger(name).setLevel(lvl)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Apply retest-all flag to bypass prior-findings/test-history gates universally
+    try:
+        if args.retest_all:
+            os.environ['MODSCAN_FORCE_RETEST'] = '1'
+            os.environ['MODSCAN_TEST_TTL_MIN'] = '0'
+            logger.info("🔁 Retest-all enabled: bypassing prior findings/test history gates")
+    except Exception:
+        pass
 
     await scanner.run_scan_cycle()
 

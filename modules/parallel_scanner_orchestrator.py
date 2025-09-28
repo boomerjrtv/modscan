@@ -14,6 +14,7 @@ import psutil
 import random
 
 from .vulnerability_scanner import VulnerabilityScanner
+from .universal_scan_engine import UniversalScanEngine
 from asset_manager import AssetManager
 
 logger = logging.getLogger(__name__)
@@ -43,23 +44,31 @@ class ParallelScannerOrchestrator:
         self.asset_manager = asset_manager
         self.config = config
         
-        # Auto-detect optimal worker count based on system resources
+        # 🚀 MASSIVE HARDWARE UTILIZATION for 10700K + 32GB + 1GB internet
         override_workers = None
         try:
             override_workers = int(self.config.get('advanced_scanners', {}).get('max_concurrent_scanners') or 0)
         except Exception:
             override_workers = None
+
         if num_workers is not None:
             self.num_workers = int(num_workers)
         elif override_workers and override_workers > 0:
-            # PERFORMANCE FIX: Cap workers to prevent ML engine initialization bottleneck
-            self.num_workers = int(min(override_workers, 8))
+            # Use configured value - respect user limits, no hardcoded maximum
+            self.num_workers = int(override_workers)
         else:
             cpu_count = psutil.cpu_count(logical=True) or psutil.cpu_count(logical=False) or 8
             memory_gb = psutil.virtual_memory().total // (1024**3)
-            # PERFORMANCE FIX: Reduce workers dramatically to prevent ML engine initialization bottleneck
-            # Each worker creates full ML engine + AI client, so use much fewer workers
-            self.num_workers = int(min(cpu_count // 2, 8))
+
+            # 🎯 BALANCED PARALLELISM - good performance without overloading
+            if cpu_count >= 10 and memory_gb >= 16:  # High-end hardware
+                # Balanced approach for good performance
+                self.num_workers = min(12, cpu_count)  # Reasonable parallelism
+                logger.info(f"🚀 HIGH-END HARDWARE DETECTED: {cpu_count}C/{memory_gb}GB - Using {self.num_workers} workers")
+            elif cpu_count >= 8 and memory_gb >= 8:
+                self.num_workers = min(8, cpu_count)  # Good for medium hardware
+            else:
+                self.num_workers = min(6, cpu_count)  # Conservative for modest hardware
             
         logger.info(f"🚀 Parallel Scanner Orchestrator: {self.num_workers} worker threads")
         
@@ -70,17 +79,24 @@ class ParallelScannerOrchestrator:
         self.active_tasks = {}  # task_id -> ScanTask
         self._queued_keys: set[str] = set()  # dedupe: url+scan_types
         self.worker_stats = {i: {'tasks_completed': 0, 'total_time': 0.0} for i in range(self.num_workers)}
-        
+
         # Performance monitoring
         self.start_time = time.time()
         self.total_tasks_completed = 0
         self.total_vulnerabilities_found = 0
-        
+
         # Load balancing state
         self.target_workload = {}  # domain -> current_active_scans
-        
+
         # Initialize scanner workers
         self._initialize_workers()
+
+        # Initialize adaptive universal scan engine
+        try:
+            self.universal_engine = UniversalScanEngine(self.asset_manager, self.config)
+        except Exception as exc:
+            logger.error(f"❌ Failed to initialize universal scan engine: {exc}")
+            self.universal_engine = None
         
     def _initialize_workers(self):
         """Initialize the pool of vulnerability scanner workers"""
@@ -219,14 +235,41 @@ class ParallelScannerOrchestrator:
                 elif scan_type == 'open_redirect':
                     # Run Open Redirect scan
                     result = await scanner.test_open_redirect_comprehensive(task.url)
+                elif scan_type == 'adaptive':
+                    if not self.universal_engine:
+                        logger.warning("⚠️ Adaptive scan requested but universal engine unavailable")
+                        result = []
+                    else:
+                        logger.info(f"🧠 Adaptive scan for {task.url}")
+                        adaptive_asset = {
+                            'url': task.url,
+                            'id': task.asset_id,
+                            'tech_stack': task.tech_stack or '',
+                            'status_code': task.status_code,
+                            'method': 'GET',
+                        }
+                        result = await self.universal_engine.run_adaptive_scan(adaptive_asset)
                 else:
                     logger.warning(f"⚠️ Unknown scan type: {scan_type}")
                     continue
-                
+
                 if result and isinstance(result, list):
                     vulnerabilities.extend(result)
+                    # CRITICAL FIX: Store findings in database immediately!
+                    for finding in result:
+                        try:
+                            self.asset_manager.add_vulnerability_finding(finding, task.asset_id)
+                            logger.info(f"🎯 STORED: {finding.vuln_type} - {finding.severity} - {task.url}")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to store vulnerability: {e}")
                 elif result:  # Single vulnerability finding
                     vulnerabilities.append(result)
+                    # CRITICAL FIX: Store single finding in database!
+                    try:
+                        self.asset_manager.add_vulnerability_finding(result, task.asset_id)
+                        logger.info(f"🎯 STORED: {result.vuln_type} - {result.severity} - {task.url}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to store vulnerability: {e}")
                     
         except Exception as e:
             logger.error(f"❌ Scan execution failed for {task.url}: {e}")
@@ -311,7 +354,7 @@ class ParallelScannerOrchestrator:
             scan_types: Types of scans to perform (defaults to comprehensive)
         """
         if scan_types is None:
-            scan_types = ['comprehensive']
+            scan_types = ['adaptive', 'comprehensive']
         
         logger.info(f"🎯 Bulk scanning {len(targets)} targets with load balancing")
         
