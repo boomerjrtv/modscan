@@ -41,6 +41,13 @@ This comprehensive upgrade transforms the ModScan vulnerability scanner into a n
 - Structured session statistics and performance metrics
 - Session export with detailed reporting
 
+#### 7. **Universal Adaptive Scanning** ✅
+- Playbook-driven planning pipeline (`modules/universal_playbook_registry.py`,
+  `modules/adaptive_probe_planner.py`)
+- Knowledge base retrieval with CPU-friendly FTS (`modules/universal_knowledge_index.py`)
+- Deterministic probe execution and scoring (`modules/universal_probe_executor.py`)
+- Integrated into the parallel orchestrator through `modules/universal_scan_engine.py`
+
 ## 📁 New Files Added
 
 ### Core Components
@@ -243,6 +250,13 @@ config = {
     'session_cleanup_days': 30
 }
 ```
+
+## 🛠 Developer Notes
+
+- **Never hardcode severity or confidence scores.** Always route findings through the evidence-based `confidence_engine` helpers (e.g., `calculate_confidence`, `get_severity_from_confidence`). Hardcoded numbers hide uncertainty and undermine validation.
+- Keep deterministic components (HTTP execution, evidence extraction) separate from AI reasoning.
+- Prefer composable helpers over monolithic functions for easier auditing.
+- Document new vulnerability classes in `confidence_engine.py` and add regression tests.
 
 ## 🎯 Next Steps & Extensibility
 

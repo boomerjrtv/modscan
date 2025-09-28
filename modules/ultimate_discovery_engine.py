@@ -144,6 +144,43 @@ class UltimateDiscoveryEngine:
         except Exception:
             pass
         return None
+
+    def _find_seclists_path(self) -> Optional[str]:
+        """Find SecLists directory in a universal way without hardcoding paths.
+
+        Order: config.seclists_path -> env[SECLISTS_PATH] -> common locations
+        """
+        try:
+            # Config override
+            seclists_path = None
+            if isinstance(self.config.get("seclists_path"), str):
+                seclists_path = self.config["seclists_path"]
+            # Environment override
+            if not seclists_path:
+                seclists_path = os.environ.get("SECLISTS_PATH")
+            # Common locations
+            if not seclists_path:
+                possible_paths = [
+                    "./SecLists",
+                    "../SecLists",
+                    "/usr/share/seclists",
+                    "/opt/seclists",
+                    "~/SecLists",
+                    "~/tools/SecLists",
+                    "/home/tools/SecLists"
+                ]
+                for path in possible_paths:
+                    expanded_path = Path(path).expanduser()
+                    if expanded_path.exists() and expanded_path.is_dir():
+                        seclists_path = str(expanded_path)
+                        break
+            # Validate existence
+            if seclists_path and Path(seclists_path).exists():
+                logger.info(f"📚 Found SecLists at: {seclists_path}")
+                return seclists_path
+        except Exception as e:
+            logger.debug(f"Error finding SecLists path: {e}")
+        return None
         
     def _build_auth_headers_for_host(self, host: str) -> Dict[str, str]:
         """Build latest auth headers for the given host from the cookies table.
@@ -333,10 +370,15 @@ class UltimateDiscoveryEngine:
         }
     
     async def comprehensive_discovery(self, domain: str) -> List[str]:
-        """Smart multi-tier discovery: Historical first, then targeted brute force"""
+        """Smart multi-tier discovery: Priority directories first, then historical, then brute force"""
         logger.info(f"🚀 COMPREHENSIVE DISCOVERY: {domain}")
         discovered_urls = set()
-        
+
+        # CRITICAL PRIORITY: Test high-value directories first (bypasses rate-limiting)
+        priority_urls = await self._priority_directory_discovery(domain)
+        discovered_urls.update(priority_urls)
+        logger.info(f"🎯 Priority: {len(priority_urls)} high-value directories found")
+
         # PRIMARY: Historical discovery for external targets (fastest, highest value)
         if not self._is_internal_ip(domain):
             historical_urls = await self._tier1_historical_discovery(domain)
@@ -464,14 +506,16 @@ class UltimateDiscoveryEngine:
         urls = set()
         
         # Find large SecLists wordlists for comprehensive coverage
-        seclists_path = "/home/michael/SecLists"
-        massive_wordlists = [
-            f"{seclists_path}/Discovery/Web-Content/directory-list-lowercase-2.3-big.txt",
-            f"{seclists_path}/Discovery/Web-Content/big.txt", 
-            f"{seclists_path}/Discovery/Web-Content/raft-large-directories-lowercase.txt",
-            f"{seclists_path}/Discovery/Web-Content/raft-medium-files.txt",
-            f"{seclists_path}/Discovery/Web-Content/raft-medium-words.txt"
-        ]
+        seclists_path = self._find_seclists_path()
+        massive_wordlists = []
+        if seclists_path:
+            massive_wordlists = [
+                f"{seclists_path}/Discovery/Web-Content/directory-list-lowercase-2.3-big.txt",
+                f"{seclists_path}/Discovery/Web-Content/big.txt",
+                f"{seclists_path}/Discovery/Web-Content/raft-large-directories-lowercase.txt",
+                f"{seclists_path}/Discovery/Web-Content/raft-medium-files.txt",
+                f"{seclists_path}/Discovery/Web-Content/raft-medium-words.txt"
+            ]
         
         # Check which wordlists exist
         available_wordlists = []
@@ -531,7 +575,7 @@ class UltimateDiscoveryEngine:
             "-silent",
             "-o", output_file,
             "-of", "json",
-            "-H", "User-Agent: ModScan-Discovery/2.0"
+            "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.113 Safari/537.36"
         ]
         
         try:
@@ -560,7 +604,117 @@ class UltimateDiscoveryEngine:
             logger.warning(f"Massive ffuf instance {instance_id} failed: {e}")
             
         return urls
-    
+
+    async def _priority_directory_discovery(self, domain: str) -> Set[str]:
+        """PRIORITY: Test high-value directories first to bypass rate-limiting issues"""
+        urls = set()
+
+        try:
+            logger.info(f"🎯 PRIORITY DIRECTORY DISCOVERY: {domain}")
+
+            # High-value directories - universal coverage for CTFs, admin panels, APIs, etc.
+            priority_directories = [
+                'admin', 'api', 'login', 'dashboard', 'challenges', 'challenge',
+                'missions', 'mission', 'ctf', 'labs', 'lab', 'training', 'practice',
+                'quest', 'quests', 'task', 'tasks', 'exercise', 'exercises', 'level',
+                'levels', 'stage', 'stages', 'module', 'modules', 'lesson', 'lessons',
+                'user', 'auth', 'wp-admin', 'panel', 'manager', 'debug', 'test',
+                'docs', 'help', 'support', 'config', 'status', 'health'
+            ]
+
+            base_urls = [f"https://{domain}", f"http://{domain}"]
+
+            for base_url in base_urls:
+                timeout = aiohttp.ClientTimeout(total=5)
+                try:
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        for directory in priority_directories:
+                            candidate = directory.strip('/')
+                            if not candidate:
+                                continue
+                            test_url = f"{base_url}/{candidate}/"
+
+                            try:
+                                async with session.get(test_url, allow_redirects=True) as response:
+                                    status = response.status
+                                    final_url = str(response.url)
+
+                                    if status != 404:
+                                        urls.add(final_url)
+                                        logger.info(f"🎯 Priority found: {final_url} (status: {status})")
+
+                                        # Parse HTML content to discover nested challenge links generically
+                                        if status == 200:
+                                            content_type = response.headers.get('content-type', '').lower()
+                                            if 'html' in content_type:
+                                                try:
+                                                    body = await response.text()
+                                                except Exception:
+                                                    body = ''
+                                                if body:
+                                                    extracted = self._extract_directory_links(body, final_url)
+                                                    for extracted_url in extracted:
+                                                        if extracted_url not in urls:
+                                                            urls.add(extracted_url)
+                                                            logger.debug(f"🔗 Derived from {final_url}: {extracted_url}")
+                            except Exception:
+                                continue
+                except Exception:
+                    continue
+
+        except Exception as e:
+            logger.debug(f"Priority directory discovery failed: {e}")
+
+        return urls
+
+    def _extract_directory_links(self, html: str, base_url: str, limit: int = 200) -> Set[str]:
+        """Extract same-host child directories from HTML without target-specific assumptions."""
+        candidates: Set[str] = set()
+        if not html:
+            return candidates
+
+        try:
+            hrefs = re.findall(r"href=['\"]([^'\"]+)['\"]", html, flags=re.IGNORECASE)
+        except re.error:
+            return candidates
+
+        if not hrefs:
+            return candidates
+
+        base_parts = urlsplit(base_url)
+        base_path = base_parts.path if base_parts.path.endswith('/') else f"{base_parts.path}/"
+
+        for href in hrefs:
+            if len(candidates) >= limit:
+                break
+
+            link = href.strip()
+            if not link or link.startswith('#') or link.lower().startswith('javascript:') or link.lower().startswith('mailto:'):
+                continue
+
+            absolute = urljoin(base_url, link)
+            abs_parts = urlsplit(absolute)
+            if abs_parts.netloc != base_parts.netloc:
+                continue
+
+            if not abs_parts.path.startswith(base_path):
+                continue
+
+            if abs_parts.path == base_parts.path:
+                continue
+
+            normalized = f"{abs_parts.scheme}://{abs_parts.netloc}{abs_parts.path}"
+            if abs_parts.query:
+                normalized = f"{normalized}?{abs_parts.query}"
+
+            # Preserve trailing slash when original path clearly represents a directory
+            if not normalized.endswith('/') and abs_parts.path and '.' not in abs_parts.path.rsplit('/', 1)[-1]:
+                normalized = f"{normalized}/"
+
+            candidates.add(normalized)
+
+        return candidates
+
     def _is_internal_ip(self, domain: str) -> bool:
         """Check if domain is internal IP (skip external tools like GAU/waymore)"""
         return any(internal in domain for internal in ['192.168.', '10.', '172.16.', '127.0.0.1', 'localhost'])
@@ -839,32 +993,17 @@ class UltimateDiscoveryEngine:
         """Load large SecLists wordlists for fast comprehensive discovery"""
         import os
         from pathlib import Path
-        
+
         all_paths = set()
-        
-        # Find SecLists directory
-        seclists_base = None
-        possible_paths = [
-            "/home/michael/recon-platform/modscan/SecLists",  # Correct path for this system
-            "/home/michael/SecLists",
-            "./SecLists",
-            "/usr/share/seclists", 
-            "/opt/seclists",
-            "../SecLists"
-        ]
-        
-        for path in possible_paths:
-            expanded_path = Path(path).expanduser()
-            if expanded_path.exists():
-                seclists_base = expanded_path
-                break
-        
+
+        # Find SecLists directory using universal method
+        seclists_base = self._find_seclists_path()
         if not seclists_base:
             return []
-            
+
         logger.info(f"📚 Loading fast SecLists from: {seclists_base}")
-        
-        # Use ALL the largest wordlists for MAXIMUM coverage  
+
+        # Use ALL the largest wordlists for MAXIMUM coverage
         priority_lists = [
             "Discovery/Web-Content/DirBuster-2007_directory-list-2.3-big.txt",  # 1.27M entries
             "Discovery/Web-Content/DirBuster-2007_directory-list-2.3-medium.txt",  # 220K entries
@@ -872,7 +1011,7 @@ class UltimateDiscoveryEngine:
             "Discovery/Web-Content/ActiveDirectory-small.txt",  # AD specific
             "Discovery/Web-Content/AdobeXML.fuzz.txt",  # Adobe specific
         ]
-        
+
         for wordlist_file in priority_lists:
             wordlist_path = seclists_base / wordlist_file
             if wordlist_path.exists():
@@ -883,14 +1022,14 @@ class UltimateDiscoveryEngine:
                         paths = ['/' + path.lstrip('/') for path in paths if path]
                         all_paths.update(paths)
                         logger.info(f"📋 Loaded {len(paths)} paths from {wordlist_file}")
-                        
+
                         # Keep loading ALL wordlists for maximum coverage
                         # No early break - we want EVERYTHING
-                            
+
                 except Exception as e:
                     logger.warning(f"Failed to load {wordlist_file}: {e}")
                     continue
-        
+
         final_paths = list(all_paths)[:300000]  # Up to 300K paths for massive coverage
         logger.info(f"⚡ MASSIVE SecLists loaded: {len(final_paths)} paths for ultra-fast discovery")
         return final_paths
@@ -2262,30 +2401,15 @@ Example: {{"paths": ["/admin", "/api", "/login", "/config"]}}
         """Load ALL available SecLists wordlists for AI to choose from"""
         import os
         from pathlib import Path
-        
+
         all_wordlists = {}
-        
-        # Try to find SecLists directory
-        seclists_base = None
-        possible_paths = [
-            "/home/michael/SecLists",  # CORRECT path for this system
-            "./SecLists",
-            "/usr/share/seclists",
-            "/opt/seclists", 
-            "../SecLists",
-            "~/tools/SecLists"
-        ]
-        
-        for path in possible_paths:
-            expanded_path = Path(path).expanduser()
-            if expanded_path.exists():
-                seclists_base = expanded_path
-                break
-        
+
+        # Try to find SecLists directory using universal method
+        seclists_base = self._find_seclists_path()
         if not seclists_base:
             logger.warning("SecLists not found, using fallback wordlists")
             return all_wordlists
-            
+
         logger.info(f"📚 Loading ALL SecLists from: {seclists_base}")
         
         # Define all available wordlist categories with their files

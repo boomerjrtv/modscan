@@ -368,6 +368,12 @@ class SecListsManager:
             for wordlist_category in selected_wordlists:
                 category_words = self.wordlists.get(wordlist_category, [])
                 combined_words.extend(category_words)
+
+            # Add universal webapp patterns generated from existing words
+            base_words = combined_words[:100]  # Use first 100 words as base
+            universal_patterns = self.generate_universal_webapp_patterns(base_words)
+            combined_words.extend(universal_patterns)
+            logger.debug(f"Added {len(universal_patterns)} universal webapp patterns")
                 
         elif wordlist_type in ['admin_paths', 'api_endpoints', 'parameters', 'backup_files', 'subdomains']:
             # Direct category access for specialized wordlists
@@ -625,4 +631,38 @@ class SecListsManager:
             score += 0.2
         
         return min(score, 1.0)  # Cap at 1.0
+
+    def generate_universal_webapp_patterns(self, base_words: List[str]) -> List[str]:
+        """Generate universal webapp endpoint patterns by analyzing SecLists word combinations"""
+        patterns = []
+
+        # Analyze existing SecLists words to discover natural patterns
+        short_words = []
+        for word in base_words[:100]:
+            word = word.strip().lower()
+            if 3 <= len(word) <= 10 and word.isalpha():  # Simple words only
+                short_words.append(word)
+
+        # Generate combinations between all words (universal approach)
+        separators = ['-', '_', '']  # Common web separators
+        extensions = ['.php', '.aspx', '.jsp', '']  # Common web extensions
+
+        # Cross-combine words to create compound endpoints
+        for i, word1 in enumerate(short_words[:25]):  # Limit to prevent explosion
+            for j, word2 in enumerate(short_words[:25]):
+                if i != j:  # Don't combine word with itself
+                    for sep in separators:
+                        for ext in extensions:
+                            pattern = f"{word1}{sep}{word2}{ext}"
+                            patterns.append(pattern)
+
+        # Also include individual words with extensions
+        for word in short_words[:30]:
+            for ext in extensions:
+                patterns.append(f"{word}{ext}")
+
+
+        # Deduplicate and return
+        return list(set(patterns))[:200]  # Cap at 200 generated patterns
+
 SECLISTS_BASE = os.environ.get('SECLISTS_DIR', os.path.expanduser('~/SecLists'))

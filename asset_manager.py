@@ -66,7 +66,7 @@ class AssetManager:
 
 
 
-    def notify_change(self, message: str, payload: dict | None = None, ntype: str = "change") -> None: 
+    def notify_change(self, message: str, payload: Optional[dict] = None, ntype: str = "change") -> None:
         """
         Append a notification event to BASE_DIR/notifications.jsonl for the dashboard to consume later.
         (If you already have a notifications table/API, wire this there.)
@@ -78,7 +78,7 @@ class AssetManager:
         event = {'ts': int(time.time()), 'type': ntype or 'change', 'message': message, 'payload': payload or {}}
         with open(path, 'a', encoding='utf-8') as fp:
             fp.write(json.dumps(event, ensure_ascii=False) + "\n")
-    def record_scan(self, url: str, content_hash: str | None = None, meta: dict | None = None) -> dict:
+    def record_scan(self, url: str, content_hash: Optional[str] = None, meta: Optional[dict] = None) -> dict:
         """
         After a scan finishes, persist last_scan_ts and (optional) content_hash.
         Returns {"status": "created"|"updated"|"unchanged", "diff": {...}}.
@@ -611,6 +611,10 @@ class AssetManager:
     def get_scope_targets(self):
         """Get all scope targets for API (schema tolerant)."""
         try:
+            run_scope_hosts = os.environ.get('MODSCAN_RUN_SCOPE_HOSTS')
+            if run_scope_hosts:
+                return [(None, host.strip(), 1) for host in run_scope_hosts.split(',') if host.strip()]
+
             with self._get_db() as db:
                 cols = {row[1] for row in db.execute("PRAGMA table_info(scope)").fetchall()}
                 targets = []
@@ -1233,8 +1237,24 @@ class AssetManager:
                         
                         db.executemany(insert_query, insert_data)
                         print(f"✅ Added {len(new_assets)} validated assets (batch {i//batch_size + 1})")
-                
+
+                        # CRITICAL DEBUG: Get the inserted row IDs
+                        cursor = db.cursor()
+                        for j, asset_data in enumerate(insert_data):
+                            cursor.execute("SELECT last_insert_rowid()")
+                            row_id = cursor.fetchone()[0] if j == 0 else None
+                            if row_id:
+                                added_ids.append(row_id)
+                                print(f"🔍 DEBUG: Inserted asset with ID {row_id}: {asset_data[0]}")
+
                 db.commit()
+                print(f"🔍 DEBUG: Transaction committed. Added IDs: {added_ids}")
+
+                # CRITICAL DEBUG: Verify assets are actually in database
+                if added_ids:
+                    verification_count = db.execute("SELECT COUNT(*) FROM assets WHERE id IN ({})".format(','.join('?' * len(added_ids))), added_ids).fetchone()[0]
+                    print(f"🔍 DEBUG: Verification count after commit: {verification_count}")
+
                 return added_ids
                 
         except Exception as e:
@@ -1803,6 +1823,41 @@ class AssetManager:
             print(f"Error getting asset by URL: {e}")
             return None
 
+    def get_asset_id_by_url(self, url: str) -> Optional[int]:
+        """Get asset ID by URL for vulnerability linking"""
+        try:
+            with self._get_db() as db:
+                fields = self.get_asset_fields()
+                # Try exact match first
+                cursor = db.execute(f"SELECT {fields['id']} FROM assets WHERE {fields['url']} = ? LIMIT 1", (url,))
+                result = cursor.fetchone()
+                if result:
+                    return result[0]
+                
+                # Try base URL match (strip parameters)
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                cursor = db.execute(f"SELECT {fields['id']} FROM assets WHERE {fields['url']} = ? LIMIT 1", (base_url,))
+                result = cursor.fetchone()
+                if result:
+                    return result[0]
+                
+                # Create asset if not found
+                logger.info(f"Creating new asset for vulnerability: {url}")
+                asset_id = self.add_asset(
+                    url=url,
+                    host=parsed.netloc,
+                    status_code=0,
+                    tech_stack='',
+                    discovered_at=None,
+                    force=True
+                )
+                return asset_id
+        except Exception as e:
+            logger.error(f"Error getting asset ID by URL {url}: {e}")
+            return None
+
     def update_asset_fields(self, asset_id: int, update_fields: dict):
         """Update multiple fields for an asset"""
         try:
@@ -2048,6 +2103,13 @@ class AssetManager:
             True if the test has already been conducted, False otherwise
         """
         try:
+            # Global bypass for full re-test runs
+            try:
+                import os as _os
+                if str(_os.environ.get('MODSCAN_FORCE_RETEST', '0')).lower() in ('1','true','yes','on'):
+                    return False
+            except Exception:
+                pass
             # Ensure auxiliary table exists
             self._ensure_vuln_test_history_table()
 
@@ -2163,6 +2225,13 @@ class AssetManager:
             True if we've already found this vuln type on this endpoint, False otherwise
         """
         try:
+            # Global bypass for full re-test runs
+            try:
+                import os as _os
+                if str(_os.environ.get('MODSCAN_FORCE_RETEST', '0')).lower() in ('1','true','yes','on'):
+                    return False
+            except Exception:
+                pass
             with self._get_db() as db:
                 # Normalize URL for comparison
                 from urllib.parse import urlparse
@@ -2395,6 +2464,13 @@ class AssetManager:
         Keeps scanning universal while avoiding redundant payload variation tests.
         """
         try:
+            # Global bypass for full re-test runs
+            try:
+                import os as _os
+                if str(_os.environ.get('MODSCAN_FORCE_RETEST', '0')).lower() in ('1','true','yes','on'):
+                    return True
+            except Exception:
+                pass
             self.ensure_canonical_table()
             endpoint = self._normalize_endpoint(url)
             # Canonicalize vuln type similar to storage logic
@@ -2656,10 +2732,31 @@ def _am_get_all_assets(self):
 def _am_get_existing_urls(self, limit: int = 5000):
     """Return list of existing asset URLs to avoid duplicates (uses mappings)."""
     try:
+        run_scope_hosts = os.environ.get('MODSCAN_RUN_SCOPE_HOSTS')
+        allowed_hosts = None
+        if run_scope_hosts:
+            allowed_hosts = {
+                host.strip().lower().lstrip('.')
+                for host in run_scope_hosts.split(',') if host.strip()
+            }
         with self._get_db() as db:
             fields = self.get_asset_fields() if hasattr(self, "get_asset_fields") else {"url": "url"}
             cur = db.execute(f"SELECT {fields['url']} FROM assets LIMIT ?", (limit,))
-            return [row[0] for row in cur.fetchall()]
+            urls = []
+            for row in cur.fetchall():
+                url = row[0]
+                if not url:
+                    continue
+                if allowed_hosts:
+                    try:
+                        from urllib.parse import urlparse
+                        host = (urlparse(url).hostname or '').lower().lstrip('.')
+                    except Exception:
+                        host = ''
+                    if host not in allowed_hosts:
+                        continue
+                urls.append(url)
+            return urls
     except Exception as e:
         print(f"get_existing_urls error: {e}")
         return []

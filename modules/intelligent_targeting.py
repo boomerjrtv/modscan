@@ -204,6 +204,23 @@ class IntelligentTargeting:
         if 'file' in url_lower or 'download' in url_lower:
             vulns.add('PATH_TRAVERSAL')
 
+        # Add CSRF prediction
+        if 'csrf' in url_lower or 'token' in url_lower:
+            vulns.add('CSRF')
+
+        # Add SSRF prediction
+        if 'metadata' in url_lower or 'internal' in url_lower:
+            vulns.add('SSRF')
+
+        # Universal fallback: never return an empty set
+        # Ensure at least a baseline that works on any target (universal principle)
+        if not vulns:
+            # Prefer form-centric baseline if hints present, else general web baseline
+            baseline = {'XSS', 'SQL_INJECTION'}
+            if '?' in url_lower or any(k in url_lower for k in ['form', 'search', 'query']):
+                baseline.update({'CSRF'})
+            vulns.update(baseline)
+
         return vulns
 
     async def _ai_analyze_target(self, asset: Dict, predicted_vulns: Set[str]) -> Tuple[float, str]:

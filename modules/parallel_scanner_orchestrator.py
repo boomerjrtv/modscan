@@ -98,6 +98,14 @@ class ParallelScannerOrchestrator:
             logger.error(f"❌ Failed to initialize universal scan engine: {exc}")
             self.universal_engine = None
         
+        # AI Pentester Team will be set by engine after initialization
+        self.ai_pentester_team = None
+        
+    def set_ai_pentester_team(self, ai_team):
+        """Set the Multi-AI Pentester Team for coordinated vulnerability testing"""
+        self.ai_pentester_team = ai_team
+        logger.info("🤖 Multi-AI Pentester Team integrated with parallel orchestrator")
+        
     def _initialize_workers(self):
         """Initialize the pool of vulnerability scanner workers"""
         for i in range(self.num_workers):
@@ -248,7 +256,48 @@ class ParallelScannerOrchestrator:
                             'status_code': task.status_code,
                             'method': 'GET',
                         }
-                        result = await self.universal_engine.run_adaptive_scan(adaptive_asset)
+                        
+                        # Run both universal adaptive scan AND Multi-AI Pentester Team
+                        adaptive_results = []
+                        
+                        # 1. Universal adaptive scan (existing)
+                        try:
+                            universal_findings = await self.universal_engine.run_adaptive_scan(adaptive_asset)
+                            if universal_findings:
+                                adaptive_results.extend(universal_findings)
+                                logger.info(f"🎯 Universal engine: {len(universal_findings)} findings for {task.url}")
+                        except Exception as e:
+                            logger.error(f"Universal adaptive scan failed for {task.url}: {e}")
+                        
+                        # 2. Multi-AI Pentester Team (NEW XBOW-STYLE)
+                        if self.ai_pentester_team:
+                            try:
+                                logger.info(f"🤖 Multi-AI Pentester Team analyzing {task.url}")
+                                ai_findings = await self.ai_pentester_team.parallel_pentest([task.url], max_concurrent=5)
+                                if ai_findings:
+                                    # Convert AI findings to standard format for storage
+                                    for ai_finding in ai_findings:
+                                        adaptive_results.append({
+                                            'url': ai_finding.get('url', task.url),
+                                            'type': ai_finding.get('type', 'Unknown'),
+                                            'severity': ai_finding.get('severity', 'MEDIUM'),
+                                            'payload': ai_finding.get('payload', ''),
+                                            'evidence': ai_finding.get('evidence', ''),
+                                            'confidence': 0.95,  # High confidence for AI-verified
+                                            'source': f"AI Agent: {ai_finding.get('agent', 'Unknown')}",
+                                            'ai_analysis': ai_finding.get('ai_analysis', ''),
+                                            'discovered_at': ai_finding.get('discovered_at', ''),
+                                            'affected_parameter': ai_finding.get('affected_parameter', '')
+                                        })
+                                    logger.info(f"🎯 AI Pentester Team: {len(ai_findings)} findings for {task.url}")
+                                else:
+                                    logger.info(f"ℹ️  AI Pentester Team: No vulnerabilities found for {task.url}")
+                            except Exception as e:
+                                logger.error(f"Multi-AI Pentester Team failed for {task.url}: {e}")
+                        else:
+                            logger.debug("⚠️ AI Pentester Team not available for adaptive scanning")
+                        
+                        result = adaptive_results
                 else:
                     logger.warning(f"⚠️ Unknown scan type: {scan_type}")
                     continue

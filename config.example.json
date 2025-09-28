@@ -75,12 +75,23 @@
     "cross_validation": true,
     "unlimited_mode": true
   },
+  "playbooks": {
+    "directory": "playbooks"
+  },
+  "knowledge_index": {
+    "db_path": "data/knowledge_index.db",
+    "seed_dir": "."
+  },
+  "adaptive_scanner": {
+    "probe_timeout": 12.0
+  },
   "performance": {
     "unlimited_concurrency": true,
     "network_bandwidth_gbps": 1.0,
-    "cpu_cores": 8,
-    "memory_gb": 16,
-    "aggressive_mode": true
+    "cpu_cores": 20,
+    "memory_gb": 32,
+    "aggressive_mode": true,
+    "hardware_profile": "10700K_BEAST"
   },
   "authorized_domains": [
     "example.com"
