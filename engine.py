@@ -26,6 +26,7 @@ from modules.technology_detector import TechnologyDetector
 from modules.proxy_manager import ProxyManager
 from modules.screenshot_manager import ScreenshotManager
 from modules.parallel_scanner_orchestrator import ParallelScannerOrchestrator
+from modules.multi_ai_pentester_team import MultiAIPentesterTeam
 from asset_manager import AssetManager
 from process_watchdog import ProcessWatchdog
 
@@ -102,6 +103,13 @@ class Engine:
         # Initialize parallel scanner orchestrator (replaces single scanner)
         logger.info("🎯 Initializing parallel scanner orchestrator for maximum performance")
         self.parallel_scanner = ParallelScannerOrchestrator(self.asset_manager, AUTH_CONFIG)
+        
+        # Initialize Multi-AI Pentester Team for XBow-style coordinated AI testing
+        logger.info("🤖 Initializing Multi-AI Pentester Team for coordinated vulnerability analysis")
+        self.ai_pentester_team = MultiAIPentesterTeam(self.asset_manager, AUTH_CONFIG)
+        
+        # Integrate AI team with parallel orchestrator for coordinated scanning
+        self.parallel_scanner.set_ai_pentester_team(self.ai_pentester_team)
         
         # Keep single scanner for legacy compatibility (some methods still reference it)
         self.vulnerability_scanner = VulnerabilityScanner(self.asset_manager, AUTH_CONFIG)
@@ -195,6 +203,11 @@ class Engine:
             logger.info("🧹 Engine cleanup: closing screenshot manager")
             try:
                 await self.screenshot_manager.close()
+            except Exception:
+                pass
+            logger.info("🧹 Engine cleanup: closing AI Pentester Team session")
+            try:
+                await self.ai_pentester_team.cleanup()
             except Exception:
                 pass
             logger.info("🧹 Engine cleanup: terminating external tool processes")
@@ -397,6 +410,17 @@ class Engine:
         
         # Start the parallel scanner orchestrator in background
         orchestrator_task = asyncio.create_task(self.parallel_scanner.start_orchestrator())
+        
+        # Initialize AI Pentester Team session
+        logger.info("🤖 Initializing Multi-AI Pentester Team session...")
+        try:
+            ai_ready = await self.ai_pentester_team.initialize()
+            if ai_ready:
+                logger.info("✅ Multi-AI Pentester Team ready for coordinated vulnerability testing")
+            else:
+                logger.warning("⚠️ Multi-AI Pentester Team initialization failed - continuing without AI coordination")
+        except Exception as e:
+            logger.error(f"❌ Multi-AI Pentester Team initialization error: {e}")
         
         scan_cycle = 0
         try:

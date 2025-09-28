@@ -22,9 +22,33 @@ This vulnerability scanning platform is designed to work **UNIVERSALLY** against
 - ✅ **Zero false positives** through AI validation
 - ✅ **Professional pentest coverage** equivalent to Burp Pro
 
+### 🚨 CRITICAL: "WORKING" MEANS FINDING **ALL** DOCUMENTED VULNERABILITIES
+
+**A scanner is NOT "working" until it finds EVERY known vulnerability in documented labs:**
+- **TryHackMe labs**: Must find ALL endpoints and vulnerabilities listed in official walkthroughs
+- **VulnWeb targets**: Must discover ALL 500+ documented vulnerabilities
+- **DVWA**: Must detect ALL vulnerability categories at all difficulty levels
+- **Partial discovery is FAILURE** - finding 80% of vulnerabilities means the scanner is broken
+
+**NEVER claim success until 100% of documented vulnerabilities are found automatically.**
+
 **📊 Track progress in `VULNERABILITY_BENCHMARK.md`**
 
 **⚡ Current Command**: `python3 engine.py --no-ttl testphp.vulnweb.com testaspnet.vulnweb.com testhtml5.vulnweb.com testasp.vulnweb.com rest.vulnweb.com`
+
+## 💾 DATABASE LOCATIONS
+
+**Primary Database**: `lean_recon.db` - Contains all assets, vulnerabilities, and scan data
+**Other Database Files**:
+- `knowledge.db` - AI knowledge base
+- `modscan.db` - Legacy database (mostly unused)
+- `database.db`, `recon.db`, `recon_assets.db`, `recon_platform.db` - Empty/unused
+
+**Database Tables**:
+- `assets` - All discovered URLs and endpoints
+- `vulnerabilities` - All vulnerability findings (use column `type` not `vuln_type`)
+- `scope` - Target scope management
+- `activities` - Scan activity logs
 
 ## CRITICAL DEVELOPMENT RULES
 
@@ -441,6 +465,20 @@ Before claiming success, verify:
 - Do the findings match known vulnerable targets?
 - Is the scanner avoiding repetitive work on same assets?
 - Are HTTP requests succeeding or silently failing?
+
+### 🚨 COMPLETE DISCOVERY REQUIREMENT
+
+**The scanner is BROKEN until it finds 100% of documented lab vulnerabilities:**
+
+**TryHackMe "Insecure Deserialization" lab MUST find:**
+- ✅ Port 8089 Laravel application
+- ✅ `/get-key` endpoint for Laravel key disclosure
+- ✅ `/who/index.php` for PHP serialization
+- ✅ `/cve.php` vulnerability test endpoint
+- ✅ Successful Laravel deserialization RCE exploit
+- ✅ Successful PHP serialization exploit
+
+**If ANY of these are missing, the scanner is NOT working. Partial success = total failure.**
 
 ## Safety Systems and Process Management
 

@@ -274,7 +274,7 @@ class TurboEngine:
         """Add a handler to process responses in real-time"""
         self.response_handlers.append(handler)
     
-    async def flood_attack(self, requests: List[TurboRequest], concurrent_limit: int = 1000) -> List[TurboResponse]:
+    async def flood_attack(self, requests: List[TurboRequest], concurrent_limit: int = 5000) -> List[TurboResponse]:
         """Execute a flood of requests with specified concurrency"""
         logger.info(f"🌊 Starting flood attack: {len(requests)} requests, {concurrent_limit} concurrent")
         

@@ -595,8 +595,8 @@ class ReconnaissanceEngine:
         open_ports = []
         
         try:
-            # Expanded common ports (using SecLists data)
-            common_ports = [21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995, 1433, 1521, 3306, 3389, 5432, 5985, 5986, 8080, 8443, 8888, 9090]
+            # Lightweight connectivity check on most common ports
+            common_ports = [21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995, 1433, 1521, 3000, 3306, 3389, 5432, 5985, 5986, 8080, 8443, 8888, 9090]
             
             # Get IP address
             try:

@@ -1,0 +1,128 @@
+version: 1
+meta:
+  description: "Universal ModScan playbooks for adaptive probing"
+  created: "2025-03-05"
+  maintainer: "modscan-core"
+
+fingerprints:
+  api_endpoint:
+    match:
+      path_contains:
+        - "/api/"
+        - "/v1/"
+        - "/v2/"
+      methods_any:
+        - GET
+        - POST
+    tags:
+      - api
+      - json
+      - resource
+  login_flow:
+    match:
+      path_contains:
+        - "/login"
+        - "/signin"
+        - "/auth"
+      tags_any:
+        - auth
+        - form
+    tags:
+      - auth
+      - form
+      - page
+  file_fetcher:
+    match:
+      path_contains:
+        - "/fetch"
+        - "/download"
+        - "/proxy"
+        - "/image"
+    tags:
+      - fetcher
+      - api
+      - url_handler
+
+payload_families:
+  xss_reflection_baseline:
+    - "<script>alert('modscan')</script>"
+    - "<img src=x onerror=alert('modscan')>"
+    - "<svg onload=alert('modscan')>"
+    - "\" onfocus=alert('modscan') autofocus"
+  ssrf_internal:
+    - "http://127.0.0.1:80/"
+    - "http://169.254.169.254/latest/meta-data/"
+    - "http://[::1]/"
+    - "http://localhost:6379/"
+
+playbooks:
+  - id: "idor.numeric"
+    title: "Numeric Identifier IDOR"
+    vulnerability: "IDOR"
+    description: "Probe numeric identifiers by adjusting offsets around observed identifiers."
+    triggers:
+      tags_any:
+        - api
+        - resource
+        - auth
+      requires_numeric_identifier: true
+    action_templates:
+      - template: "numeric_offset"
+        scope: "path_or_query"
+        offsets:
+          - -10
+          - -1
+          - 1
+          - 10
+        sample_size: 4
+    signals:
+      - status_code_change
+      - content_difference
+      - reflection_indicator
+    remediation_hints:
+      - "Enforce object level authorization for every request."
+      - "Do not expose predictable object identifiers without access checks."
+
+  - id: "xss.reflection"
+    title: "Reflected XSS quick check"
+    vulnerability: "XSS"
+    description: "Test for low-noise reflected XSS vectors on input-capable endpoints."
+    triggers:
+      tags_any:
+        - form
+        - search
+        - input
+        - page
+    action_templates:
+      - template: "reflection_payloads"
+        param_scope: "query"
+        payload_family: "xss_reflection_baseline"
+        max_payloads: 4
+    signals:
+      - reflection_indicator
+      - html_execution
+    remediation_hints:
+      - "Contextually encode untrusted input for the sink."
+      - "Adopt a strict Content Security Policy with nonces."
+
+  - id: "ssrf.basic"
+    title: "Universal SSRF smoke test"
+    vulnerability: "SSRF"
+    description: "Attempt safe SSRF payloads against URL parameters or fetcher endpoints."
+    triggers:
+      tags_any:
+        - api
+        - fetcher
+        - url_handler
+      requires_url_parameter: true
+    action_templates:
+      - template: "ssrf_payloads"
+        param_scope: "query"
+        payload_family: "ssrf_internal"
+        max_payloads: 3
+    signals:
+      - outbound_indicator
+      - error_anomaly
+    remediation_hints:
+      - "Validate outbound destinations against allow-lists."
+      - "Prevent metadata service access and enforce SSRF guards."

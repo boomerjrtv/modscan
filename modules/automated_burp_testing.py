@@ -418,7 +418,7 @@ class AutomatedBurpTester:
     def _get_test_headers(self, parsed_request: Dict) -> Dict:
         """Get headers for testing requests"""
         headers = parsed_request['headers'].copy()
-        headers['User-Agent'] = 'ModScan-AutoBurp/1.0'
+        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.113 Safari/537.36'
         return headers
 
     def _analyze_idor_response(self, response, response_text: str, original_data: Dict) -> bool:

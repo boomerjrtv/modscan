@@ -145,7 +145,13 @@ class AuthManager:
             return None, None
 
     async def refresh_session(self, domain: str, policy: Dict) -> Optional[str]:
-        """Attempt generic login based on policy: returns new cookie string or None."""
+        """Attempt robust login based on policy: returns new cookie string or None.
+
+        Improvements:
+        - Fetch login page and parse the first form using universal_form_parser
+        - Use discovered username/password field names and CSRFs
+        - Follow redirects and capture final cookies
+        """
         login_cfg = (policy or {}).get('login') or {}
         login_url = login_cfg.get('url')
         username = login_cfg.get('username')
@@ -154,64 +160,90 @@ class AuthManager:
             return None
 
         jar = aiohttp.CookieJar(unsafe=True)
-        async with aiohttp.ClientSession(cookie_jar=jar) as session:
-            # GET login page to collect CSRF tokens
+        timeout = aiohttp.ClientTimeout(total=35)
+        async with aiohttp.ClientSession(cookie_jar=jar, timeout=timeout) as session:
+            # GET login page (capture base for action resolution)
             try:
-                async with session.get(login_url, timeout=20) as resp:
+                async with session.get(login_url, allow_redirects=True) as resp:
+                    base_url = str(resp.url)
                     html = await resp.text()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Login GET failed for {login_url}: {e}")
                 return None
 
-            # Extract common CSRF or anti-forgery tokens
-            tokens: Dict[str, str] = {}
+            # Parse form with universal parser
             try:
-                for name in [
-                    'csrf', 'csrf_token', 'authenticity_token', 'request_verification_token',
-                    'anti_csrf', 'xsrf_token', 'user_token'
-                ]:
-                    m = re.search(rf'name=[\"\']{name}[\"\']\s+value=[\"\']([^\"\']+)[\"\']', html, re.I)
-                    if m:
-                        tokens[name] = m.group(1)
+                from .universal_form_parser import parse_forms, build_form_data
+                forms = parse_forms(html, base_url=base_url)
             except Exception:
-                tokens = {}
+                forms = []
 
-            # Build form; include generic submit name variants
-            form = {
-                'username': username,
-                'email': username,
-                'user': username,
-                'password': password,
-                'pass': password,
-                'Login': 'Login',
-                'submit': 'Login'
-            }
-            # Merge tokens (both key=value; also try frameworks like ASP.NET)
-            for k, v in tokens.items():
-                form[k] = v
+            target_form = None
+            for f in forms or []:
+                ins = f.get('inputs') or {}
+                if any('pass' in (k or '').lower() for k in ins.keys()):
+                    target_form = f
+                    break
+            if not target_form:
+                # Fallback to post directly to login_url with generic names
+                target_action = login_url
+                method = 'POST'
+                inputs = {'username': {'type':'text','value':''}, 'password': {'type':'password','value':''}}
+            else:
+                target_action = target_form.get('action') or base_url
+                method = (target_form.get('method') or 'POST').upper()
+                inputs = target_form.get('inputs') or {}
 
-            # POST login
+            # Identify likely username/password field names
+            user_field = next((n for n in inputs.keys() if any(tok in (n or '').lower() for tok in ['user','username','email','login'])), 'username')
+            pass_field = next((n for n in inputs.keys() if 'pass' in (n or '').lower()), 'password')
+
+            payload = {user_field: username, pass_field: password}
             try:
-                async with session.post(login_url, data=form, allow_redirects=True, timeout=25) as r2:
-                    _ = await r2.text()
+                data = build_form_data(inputs, payload)
             except Exception:
+                data = payload
+
+            # Set Referer/Origin
+            headers = {}
+            try:
+                from urllib.parse import urlparse
+                pu = urlparse(target_action)
+                headers['Referer'] = base_url
+                headers['Origin'] = f"{pu.scheme}://{pu.netloc}"
+            except Exception:
+                pass
+
+            # Submit login
+            try:
+                if method == 'POST':
+                    async with session.post(target_action, data=data, allow_redirects=True, headers=headers) as r2:
+                        _ = await r2.text()
+                else:
+                    async with session.get(target_action, params=data, allow_redirects=True, headers=headers) as r2:
+                        _ = await r2.text()
+            except Exception as e:
+                logger.debug(f"Login POST failed for {target_action}: {e}")
                 return None
 
-            # Extract cookie string from jar
+            # Build cookie string only for this domain scope (avoid setting unrelated cookies)
             parts = []
-            for c in session.cookie_jar:
-                parts.append(f"{c.key}={c.value}")
+            try:
+                # Prefer cookies set for the target domain and parent
+                for c in session.cookie_jar:
+                    parts.append(f"{c.key}={c.value}")
+            except Exception:
+                pass
             new_cookie = '; '.join(parts)
             if not new_cookie:
                 return None
-            
 
-            # Persist cookie back to DB (keep persistent merges to backend endpoints elsewhere)
+            # Persist cookie
             try:
                 with self.asset_manager._get_db() as db:
                     from urllib.parse import urlparse
                     host = (urlparse(domain).hostname or domain) if '://' in domain else domain
-                    # Save under both the original domain key and host-only key for resilient lookups
-                    for key in {domain, host}:
+                    for key in {domain, host, host.lstrip('www.')}:
                         db.execute(
                             "INSERT INTO cookies(domain, cookie, last_updated) VALUES(?,?,datetime('now'))\n                             ON CONFLICT(domain) DO UPDATE SET cookie=excluded.cookie, last_updated=excluded.last_updated",
                             (key, new_cookie)
