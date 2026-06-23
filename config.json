@@ -1,6 +1,6 @@
 {
   "blind_xss_domain": "kind-extremely-skylark.ngrok-free.app",
-  "gemini_api_key": "REVOKEDREVOKED",
+  "gemini_api_key": "REVOKED",
   "collaborator": {
     "auth_token": "",
     "base_domain": "",
