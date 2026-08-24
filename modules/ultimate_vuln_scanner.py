@@ -240,7 +240,7 @@ class UltimateVulnerabilityScanner:
         total_vulns += await self._advanced_fuzzing(assets, session)
         
         # Phase 5: DVWA-specific exploitation
-        dvwa_assets = [a for a in assets if '192.0.2.1' in a.get('url', '')]
+        dvwa_assets = [a for a in assets if '127.0.0.1' in a.get('url', '')]
         if dvwa_assets:
             logger.info("🎯 PHASE 5: DVWA exploitation suite")
             total_vulns += await self._dvwa_exploitation_suite(dvwa_assets, session)

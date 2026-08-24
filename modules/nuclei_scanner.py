@@ -82,7 +82,7 @@ class NucleiVulnerabilityScanner:
             vulnerabilities_found += await self._run_nuclei_scan(target_file, "AGGRESSIVE")
             
             # If DVWA detected, run specialized DVWA tests  
-            dvwa_assets = [a for a in assets if '192.0.2.1' in a.get('url', '')]
+            dvwa_assets = [a for a in assets if '127.0.0.1' in a.get('url', '')]
             if dvwa_assets:
                 vulnerabilities_found += await self._run_dvwa_specific_tests(dvwa_assets)
                 

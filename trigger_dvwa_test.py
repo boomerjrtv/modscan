@@ -34,13 +34,13 @@ async def test_real_dvwa_vulns():
     
     # REAL DVWA vulnerable endpoints (low security)
     dvwa_vulns = [
-        "http://192.0.2.1/dvwa/vulnerabilities/xss_r/?name=test",  # Reflected XSS
-        "http://192.0.2.1/dvwa/vulnerabilities/sqli/?id=1&Submit=Submit",  # SQL Injection
-        "http://192.0.2.1/dvwa/vulnerabilities/xss_s/",  # Stored XSS
-        "http://192.0.2.1/dvwa/vulnerabilities/csrf/",  # CSRF
-        "http://192.0.2.1/dvwa/vulnerabilities/fi/?page=include.php",  # File Inclusion
-        "http://192.0.2.1/dvwa/vulnerabilities/upload/",  # File Upload
-        "http://192.0.2.1/dvwa/vulnerabilities/brute/",  # Brute Force
+        "http://127.0.0.1/dvwa/vulnerabilities/xss_r/?name=test",  # Reflected XSS
+        "http://127.0.0.1/dvwa/vulnerabilities/sqli/?id=1&Submit=Submit",  # SQL Injection
+        "http://127.0.0.1/dvwa/vulnerabilities/xss_s/",  # Stored XSS
+        "http://127.0.0.1/dvwa/vulnerabilities/csrf/",  # CSRF
+        "http://127.0.0.1/dvwa/vulnerabilities/fi/?page=include.php",  # File Inclusion
+        "http://127.0.0.1/dvwa/vulnerabilities/upload/",  # File Upload
+        "http://127.0.0.1/dvwa/vulnerabilities/brute/",  # Brute Force
     ]
     
     print(f"🎯 Testing Multi-AI Pentester Team on {len(dvwa_vulns)} REAL DVWA vulnerable endpoints...")

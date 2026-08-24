@@ -751,7 +751,7 @@ Available SecLists wordlist categories:
 
 Select the 2-3 most effective wordlist categories for this target.
 Consider:
-- For IP addresses like 192.0.2.1: focus on 'directories' and 'admin' 
+- For IP addresses like 127.0.0.1: focus on 'directories' and 'admin' 
 - For DVWA/PHP apps: prioritize 'directories', 'admin', 'files'
 - For API endpoints: select 'api' category
 - For CMS sites: choose 'cms' category
@@ -816,7 +816,7 @@ URL patterns observed: {url_patterns}
 For this target, recommend the most effective directory/file paths to test for discovery.
 Focus on paths that are likely to exist based on the technology stack and domain.
 
-For domain like "192.0.2.1" with potential DVWA, include paths like:
+For domain like "127.0.0.1" with potential DVWA, include paths like:
 /dvwa/, /vulnerabilities/, /setup/, /security/, /database/, /config/
 
 For PHP applications, include:

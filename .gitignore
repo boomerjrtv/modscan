@@ -52,3 +52,14 @@ SecLists/
 SecLists/
 .venv
 *.pyc
+
+# Private operational state — never publish
+config.local.json
+trigger_*.json
+engine.log
+engine_*.log
+/data/*
+!data/.gitkeep
+*.bak.*
+scan_registry*.json
+data/scan_registry*.json
