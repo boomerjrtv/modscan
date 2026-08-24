@@ -63,3 +63,4 @@ engine_*.log
 *.bak.*
 scan_registry*.json
 data/scan_registry*.json
+git-filter-repo
