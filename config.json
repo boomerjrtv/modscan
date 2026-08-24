@@ -1,0 +1,53 @@
+{
+  "blind_xss_domain": "",
+  "gemini_api_key": "",
+  "collaborator": {
+    "auth_token": "",
+    "base_domain": "example.invalid",
+    "enabled": false,
+    "https": true
+  },
+  "cpu_target_utilization": 70,
+  "dashboard_host": "127.0.0.1",
+  "dashboard_port": 5000,
+  "database_path": "./data/scan.db",
+  "log_directory": "./logs",
+  "log_file": "./logs/engine.log",
+  "max_crawl_depth": 3,
+  "proxy_list": [],
+  "rescan_cooldown_hours": 24,
+  "rescan_ttl_hours": 24,
+  "screenshot_dir": "./screenshots",
+  "secret_key": "change-me-locally",
+  "shodan_api_key": "",
+  "template_folder": "./templates",
+  "xss_dom_phase": false,
+  "ai_assistance": {
+    "enabled": false,
+    "mode": "disabled",
+    "llm_fallback": "",
+    "payload_generation": false,
+    "response_analysis": false,
+    "target_prioritization": false
+  },
+  "advanced_scanners": {
+    "enabled": true,
+    "max_concurrent_scanners": 4,
+    "scan_timeout": 30,
+    "intelligent_classification": true,
+    "cross_validation": true,
+    "unlimited_mode": false
+  },
+  "performance": {
+    "unlimited_concurrency": false,
+    "network_bandwidth_gbps": 1,
+    "cpu_cores": 4,
+    "memory_gb": 8,
+    "aggressive_mode": false
+  },
+  "authorized_domains": [
+    "127.0.0.1",
+    "localhost"
+  ],
+  "wildcard_domains": []
+}
